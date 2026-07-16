@@ -1568,6 +1568,40 @@ mod tests {
         (address, task)
     }
 
+    async fn identified_tcp_upstream(
+        identity: &'static [u8],
+    ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("TCP upstream bind");
+        let address = listener.local_addr().expect("TCP upstream address");
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    let mut request = [0_u8; 1];
+                    if stream.read_exact(&mut request).await.is_err() {
+                        return;
+                    }
+                    if stream.write_all(identity).await.is_err() {
+                        return;
+                    }
+                    let mut remainder = [0_u8; 32];
+                    while stream
+                        .read(&mut remainder)
+                        .await
+                        .is_ok_and(|count| count > 0)
+                    {}
+                });
+            }
+        });
+        (address, task)
+    }
+
     async fn https_h2_upstream_response(server_name: &str) -> Vec<u8> {
         use rustls::{ServerConfig, crypto::aws_lc_rs, pki_types::PrivateKeyDer};
         use std::{
@@ -1871,6 +1905,105 @@ mod tests {
             .expect("last-known-good run");
         first_task.abort();
         idle_task.await.expect("idle upstream task");
+        second_task.abort();
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[tokio::test]
+    async fn managed_reload_cancels_tcp_at_drain_deadline() {
+        use std::fs;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (first_upstream, first_task) = identified_tcp_upstream(b"old").await;
+        let (second_upstream, second_task) = identified_tcp_upstream(b"new").await;
+        let reserved = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("reserve proxy port");
+        let proxy_addr = reserved.local_addr().expect("proxy address");
+        drop(reserved);
+        let root = std::env::temp_dir().join(format!(
+            "aegisproxy-managed-tcp-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("test clock")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test directory");
+        let config_path = root.join("proxy.toml");
+        let mut managed = config(RouteConfig {
+            id: "managed-tcp".into(),
+            listeners: vec!["public".into()],
+            hosts: vec![],
+            paths: vec![],
+            path_prefixes: vec![],
+            methods: vec![],
+            headers: vec![],
+            default: true,
+            priority: 0,
+            middlewares: vec![],
+            upstream_group: Some("app".into()),
+        });
+        managed.listeners[0].bind = proxy_addr;
+        managed.listeners[0].protocol = "tcp".into();
+        managed.runtime.state_dir = root.join("state").to_string_lossy().into_owned();
+        managed.runtime.config_poll_secs = 1;
+        managed.upstream_groups[0].drain_timeout_secs = 1;
+        managed.upstream_groups[0].endpoints[0].url = format!("tcp://{first_upstream}")
+            .parse()
+            .expect("first upstream");
+        fs::write(
+            &config_path,
+            toml::to_string_pretty(&managed).expect("serialize first config"),
+        )
+        .expect("write first config");
+        let shutdown = CancellationToken::new();
+        let proxy_task = tokio::spawn(run_managed(config_path.clone(), shutdown.clone()));
+        let mut old_connection = connect_to_proxy(proxy_addr).await;
+        old_connection.write_all(b"x").await.expect("old request");
+        let mut identity = [0_u8; 3];
+        old_connection
+            .read_exact(&mut identity)
+            .await
+            .expect("old identity");
+        assert_eq!(&identity, b"old");
+
+        managed.upstream_groups[0].endpoints[0].id = "app-new".into();
+        managed.upstream_groups[0].endpoints[0].url = format!("tcp://{second_upstream}")
+            .parse()
+            .expect("second upstream");
+        fs::write(
+            &config_path,
+            toml::to_string_pretty(&managed).expect("serialize second config"),
+        )
+        .expect("write second config");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(4);
+        loop {
+            let mut probe = connect_to_proxy(proxy_addr).await;
+            probe.write_all(b"x").await.expect("probe request");
+            probe
+                .read_exact(&mut identity)
+                .await
+                .expect("probe identity");
+            if &identity == b"new" {
+                break;
+            }
+            assert_eq!(&identity, b"old");
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "TCP reload timed out"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let closed = tokio::time::timeout(Duration::from_secs(2), old_connection.read_u8())
+            .await
+            .expect("old TCP relay exceeded drain deadline");
+        assert!(closed.is_err());
+
+        shutdown.cancel();
+        proxy_task.await.expect("proxy task").expect("proxy run");
+        first_task.abort();
         second_task.abort();
         fs::remove_dir_all(root).expect("cleanup");
     }
