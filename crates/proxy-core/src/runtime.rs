@@ -444,8 +444,8 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use aegisproxy_config::{
-        AdminConfig, Config, EndpointConfig, LimitsConfig, ListenerConfig, RuntimeConfig,
-        TlsConfig, TrustedProxyConfig, UpstreamGroupConfig, revision::RevisionStore,
+        AdminConfig, CertificateConfig, Config, EndpointConfig, LimitsConfig, ListenerConfig,
+        RuntimeConfig, TlsConfig, TrustedProxyConfig, UpstreamGroupConfig, revision::RevisionStore,
     };
 
     use super::*;
@@ -599,6 +599,18 @@ mod tests {
         let third = revisions
             .create_candidate(&third_config, "third")
             .expect("third");
+        let mut preparation_failure = second_config.clone();
+        let missing = format!("file://{}", state.join("missing-secret").display());
+        preparation_failure.tls.identity = Some(missing.clone());
+        preparation_failure.certificates.push(CertificateConfig {
+            id: "missing".into(),
+            hosts: vec!["missing.example".into()],
+            certificate_chain: missing.clone(),
+            private_key: missing,
+        });
+        let preparation_failure = revisions
+            .create_candidate(&preparation_failure, "preparation-failure")
+            .expect("preparation failure candidate");
         let restart = revisions
             .create_candidate(&config(8081), "restart")
             .expect("restart");
@@ -624,6 +636,13 @@ mod tests {
             .await
             .expect("activate");
         assert_eq!(activated.previous.as_deref(), Some(first.id.as_str()));
+        assert_eq!(&*runtime.revision(), second.id);
+        assert!(matches!(
+            coordinator
+                .activate(&preparation_failure.id, Some(&second.id))
+                .await,
+            Err(ActivationError::Preparation(_))
+        ));
         assert_eq!(&*runtime.revision(), second.id);
         assert!(matches!(
             coordinator.activate(&restart.id, Some(&second.id)).await,
