@@ -463,6 +463,11 @@ impl ProxyService {
             );
         }
         let websocket = is_websocket_upgrade(&request);
+        let preserve_te_trailers = request.version() == hyper::Version::HTTP_2
+            && request
+                .headers()
+                .get(hyper::header::TE)
+                .is_some_and(|value| value.as_bytes() == b"trailers");
         if request.headers().contains_key(UPGRADE) && !websocket {
             return error_response(StatusCode::BAD_REQUEST, "invalid upgrade request\n");
         }
@@ -514,7 +519,7 @@ impl ProxyService {
         };
         parts.uri = uri;
         parts.version = hyper::Version::HTTP_11;
-        strip_hop_by_hop_headers(&mut parts.headers, websocket);
+        strip_hop_by_hop_headers(&mut parts.headers, websocket, preserve_te_trailers);
         for name in [
             "forwarded",
             "x-forwarded-for",
@@ -582,9 +587,9 @@ impl ProxyService {
                             _ = tokio::io::copy_bidirectional(&mut client, &mut upstream) => {}
                         }
                     });
-                    strip_hop_by_hop_headers(response.headers_mut(), true);
+                    strip_hop_by_hop_headers(response.headers_mut(), true, false);
                 } else {
-                    strip_hop_by_hop_headers(response.headers_mut(), false);
+                    strip_hop_by_hop_headers(response.headers_mut(), false, false);
                 }
                 response.map(|body| body.map_err(|error| Box::new(error) as BoxError).boxed())
             }
@@ -681,7 +686,11 @@ fn is_websocket_upgrade<B>(request: &Request<B>) -> bool {
             .any(|token| token.trim().eq_ignore_ascii_case("upgrade"))
 }
 
-fn strip_hop_by_hop_headers(headers: &mut hyper::HeaderMap, preserve_upgrade: bool) {
+fn strip_hop_by_hop_headers(
+    headers: &mut hyper::HeaderMap,
+    preserve_upgrade: bool,
+    preserve_te_trailers: bool,
+) {
     let connection_tokens: Vec<String> = headers
         .get_all(CONNECTION)
         .iter()
@@ -709,6 +718,9 @@ fn strip_hop_by_hop_headers(headers: &mut hyper::HeaderMap, preserve_upgrade: bo
     } else {
         headers.remove(CONNECTION);
         headers.remove(UPGRADE);
+    }
+    if preserve_te_trailers {
+        headers.insert(hyper::header::TE, HeaderValue::from_static("trailers"));
     }
 }
 
