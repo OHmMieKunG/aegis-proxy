@@ -759,7 +759,7 @@ mod tests {
         RouteConfig, RuntimeConfig, TrustedProxyConfig, UpstreamGroupConfig,
     };
     use http_body_util::Empty;
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
 
     fn request(method: &str, host: &str, path: &str) -> Request<Empty<bytes::Bytes>> {
         Request::builder()
@@ -804,7 +804,7 @@ mod tests {
                     ca_bundle: None,
                 }],
             }],
-            middlewares: HashMap::new(),
+            middlewares: BTreeMap::new(),
             routes: vec![route],
             admin: AdminConfig::default(),
         }

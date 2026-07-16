@@ -3,9 +3,10 @@
 //! Strict, bounded configuration types and validation.
 
 mod conflict;
+mod redact;
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashSet},
     fs,
     net::{IpAddr, SocketAddr},
     path::Path,
@@ -62,7 +63,7 @@ pub struct Config {
     pub upstream_groups: Vec<UpstreamGroupConfig>,
     /// Middleware definitions.
     #[serde(default)]
-    pub middlewares: HashMap<String, MiddlewareConfig>,
+    pub middlewares: BTreeMap<String, MiddlewareConfig>,
     /// Routes.
     #[serde(default)]
     pub routes: Vec<RouteConfig>,
@@ -332,6 +333,8 @@ pub enum ConfigError {
     #[error("configuration is invalid: {0}")]
     Invalid(String),
 }
+
+pub use redact::redacted;
 
 /// Parse and validate a bounded configuration file.
 pub fn load_file(path: impl AsRef<Path>) -> Result<Config, ConfigError> {
@@ -939,7 +942,7 @@ mod tests {
             certificates: vec![],
             trusted_proxies: TrustedProxyConfig::default(),
             upstream_groups: vec![],
-            middlewares: HashMap::new(),
+            middlewares: BTreeMap::new(),
             routes: vec![],
             admin: AdminConfig::default(),
         }

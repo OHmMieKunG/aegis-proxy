@@ -31,6 +31,11 @@ enum Command {
         #[arg(long)]
         config: PathBuf,
     },
+    /// Format validated configuration to stdout without resolving secrets.
+    Fmt {
+        #[arg(long)]
+        config: PathBuf,
+    },
     /// Run the data plane.
     Run {
         #[arg(long)]
@@ -90,6 +95,21 @@ async fn main() -> Result<(), BoxError> {
             writeln!(io::stdout().lock(), "valid")?;
         }
         Command::Preview { config } => {
+            let config = load_config(config).await?;
+            let routes = aegisproxy_core::RouteIndex::compile(&config);
+            let mut output = io::stdout().lock();
+            writeln!(
+                output,
+                "# route_fingerprint = {:016x}",
+                routes.fingerprint()
+            )?;
+            writeln!(
+                output,
+                "{}",
+                toml::to_string_pretty(&aegisproxy_config::redacted(&config))?
+            )?;
+        }
+        Command::Fmt { config } => {
             let config = load_config(config).await?;
             writeln!(io::stdout().lock(), "{}", toml::to_string_pretty(&config)?)?;
         }

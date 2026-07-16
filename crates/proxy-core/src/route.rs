@@ -413,7 +413,7 @@ impl Fnv1a {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
 
     use aegisproxy_config::{
         AdminConfig, Config, LimitsConfig, RouteConfig, RuntimeConfig, TlsConfig,
@@ -449,7 +449,7 @@ mod tests {
             certificates: vec![],
             trusted_proxies: TrustedProxyConfig::default(),
             upstream_groups: vec![],
-            middlewares: HashMap::new(),
+            middlewares: BTreeMap::new(),
             routes,
             admin: AdminConfig::default(),
         }

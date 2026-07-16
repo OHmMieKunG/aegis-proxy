@@ -222,7 +222,7 @@ async fn proxies_unary_and_streaming_grpc_with_trailers() {
                 ca_bundle: Some(format!("file://{}", upstream_ca_path.display())),
             }],
         }],
-        middlewares: std::collections::HashMap::new(),
+        middlewares: std::collections::BTreeMap::new(),
         routes: vec![RouteConfig {
             id: "grpc".into(),
             listeners: vec!["public".into()],
