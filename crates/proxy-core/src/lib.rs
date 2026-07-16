@@ -79,25 +79,15 @@ pub async fn run(config: Arc<Config>, shutdown: CancellationToken) -> Result<(),
     let runtime = RuntimeHandle::new(Arc::clone(&snapshot));
     let snapshot = runtime.load();
     let config = Arc::clone(&snapshot.config);
-    let route_index = Arc::clone(&snapshot.route_index);
-    let mut tls_acceptors = snapshot.tls_acceptors.clone();
-    let upstream_clients = Arc::clone(&snapshot.upstream_clients);
-    let upstream_pools = Arc::clone(&snapshot.upstream_pools);
-    let dns_endpoints = Arc::clone(&snapshot.dns_endpoints);
     let handshake_permits = Arc::new(Semaphore::new(config.tls.max_handshakes));
     let mut tasks = tokio::task::JoinSet::new();
     for listener in &config.listeners {
         let tcp = TcpListener::bind(listener.bind).await?;
         let listener_id = listener.id.clone();
-        let tls_acceptor = tls_acceptors.remove(&listener_id);
-        let config = Arc::clone(&config);
+        let runtime = runtime.clone();
         let shutdown = shutdown.clone();
         let limits = config.limits.clone();
         let handshake_permits = Arc::clone(&handshake_permits);
-        let upstream_clients = Arc::clone(&upstream_clients);
-        let upstream_pools = Arc::clone(&upstream_pools);
-        let route_index = Arc::clone(&route_index);
-        let dns_endpoints = Arc::clone(&dns_endpoints);
         tracing::info!(listener = %listener_id, bind = %listener.bind, protocol = %listener.protocol, "listener started");
         if matches!(listener.protocol.as_str(), "tcp" | "tls_passthrough") {
             let tls_passthrough = listener.protocol == "tls_passthrough";
@@ -107,12 +97,9 @@ pub async fn run(config: Arc<Config>, shutdown: CancellationToken) -> Result<(),
                     TcpListenerContext {
                         listener_id,
                         tls_passthrough,
-                        config,
-                        route_index,
+                        runtime,
                         limits,
                         handshake_permits,
-                        upstream_pools,
-                        dns_endpoints,
                         shutdown,
                     },
                 )
@@ -124,13 +111,9 @@ pub async fn run(config: Arc<Config>, shutdown: CancellationToken) -> Result<(),
                     tcp,
                     ListenerContext {
                         listener_id,
-                        config,
-                        route_index,
+                        runtime,
                         limits,
-                        tls_acceptor,
                         handshake_permits,
-                        upstream_clients,
-                        upstream_pools,
                         shutdown,
                     },
                 )
@@ -145,7 +128,7 @@ pub async fn run(config: Arc<Config>, shutdown: CancellationToken) -> Result<(),
         )));
     }
     while tasks.join_next().await.is_some() {}
-    for pool in upstream_pools.values() {
+    for pool in snapshot.upstream_pools.values() {
         let handles: Vec<_> = pool
             .endpoints()
             .iter()
@@ -459,26 +442,18 @@ fn prepare_tls(config: &Config) -> Result<HashMap<String, TlsAcceptor>, ProxyErr
 #[derive(Clone)]
 struct ListenerContext {
     listener_id: String,
-    config: Arc<Config>,
-    route_index: Arc<RouteIndex>,
+    runtime: RuntimeHandle,
     limits: LimitsConfig,
-    tls_acceptor: Option<TlsAcceptor>,
     handshake_permits: Arc<Semaphore>,
-    upstream_clients: UpstreamClients,
-    upstream_pools: UpstreamPools,
     shutdown: CancellationToken,
 }
 
 async fn accept_loop(listener: TcpListener, context: ListenerContext) {
     let ListenerContext {
         listener_id,
-        config,
-        route_index,
+        runtime,
         limits,
-        tls_acceptor,
         handshake_permits,
-        upstream_clients,
-        upstream_pools,
         shutdown,
     } = context;
     let permits = Arc::new(Semaphore::new(limits.max_connections));
@@ -503,6 +478,8 @@ async fn accept_loop(listener: TcpListener, context: ListenerContext) {
             tracing::debug!(%peer, "connection limit reached");
             continue;
         };
+        let snapshot = runtime.load();
+        let tls_acceptor = snapshot.tls_acceptors.get(&listener_id).cloned();
         let handshake_permit = if tls_acceptor.is_some() {
             let Ok(permit) = handshake_permits.clone().try_acquire_owned() else {
                 tracing::debug!(%peer, "TLS handshake limit reached");
@@ -512,33 +489,27 @@ async fn accept_loop(listener: TcpListener, context: ListenerContext) {
         } else {
             None
         };
-        let config = Arc::clone(&config);
-        let route_index = Arc::clone(&route_index);
+        let runtime = runtime.clone();
         let shutdown = shutdown.clone();
         let limits = limits.clone();
         let listener_id = listener_id.clone();
         let tls_acceptor = tls_acceptor.clone();
-        let upstream_clients = Arc::clone(&upstream_clients);
-        let upstream_pools = Arc::clone(&upstream_pools);
         let upgrade_tasks = upgrade_tasks.clone();
         connections.spawn(async move {
             let _permit = permit;
             let connection = ConnectionContext {
                 peer,
                 listener_id,
-                config,
-                route_index,
+                runtime,
                 limits,
                 shutdown,
                 upgrade_tasks,
-                upstream_clients,
-                upstream_pools,
                 tls_server_name: None,
             };
             let result = match tls_acceptor {
                 Some(acceptor) => {
                     let accepted = tokio::time::timeout(
-                        Duration::from_secs(connection.config.tls.handshake_timeout_secs),
+                        Duration::from_secs(snapshot.config.tls.handshake_timeout_secs),
                         acceptor.accept(stream),
                     )
                     .await;
@@ -566,7 +537,8 @@ async fn accept_loop(listener: TcpListener, context: ListenerContext) {
     }
     drop(listener);
     upgrade_tasks.close();
-    let drain_deadline = std::time::Duration::from_secs(config.runtime.shutdown_grace_secs);
+    let drain_deadline =
+        std::time::Duration::from_secs(runtime.load().config.runtime.shutdown_grace_secs);
     if tokio::time::timeout(drain_deadline, async {
         while connections.join_next().await.is_some() {}
         upgrade_tasks.wait().await;
@@ -583,13 +555,10 @@ async fn accept_loop(listener: TcpListener, context: ListenerContext) {
 struct ConnectionContext {
     peer: SocketAddr,
     listener_id: String,
-    config: Arc<Config>,
-    route_index: Arc<RouteIndex>,
+    runtime: RuntimeHandle,
     limits: LimitsConfig,
     shutdown: CancellationToken,
     upgrade_tasks: TaskTracker,
-    upstream_clients: UpstreamClients,
-    upstream_pools: UpstreamPools,
     tls_server_name: Option<String>,
 }
 
@@ -620,13 +589,10 @@ where
     let io = TokioIo::new(stream);
     let max_header_bytes = context.limits.max_header_bytes;
     let service = ProxyService {
-        config: context.config,
-        route_index: context.route_index,
+        runtime: context.runtime,
         peer: context.peer,
         listener_id: context.listener_id,
         limits: context.limits,
-        clients: context.upstream_clients,
-        pools: context.upstream_pools,
         shutdown: context.shutdown.clone(),
         upgrade_tasks: context.upgrade_tasks,
         tls_server_name: context.tls_server_name,
@@ -658,13 +624,10 @@ where
 {
     let io = TokioIo::new(stream);
     let service = ProxyService {
-        config: context.config,
-        route_index: context.route_index,
+        runtime: context.runtime,
         peer: context.peer,
         listener_id: context.listener_id,
         limits: context.limits,
-        clients: context.upstream_clients,
-        pools: context.upstream_pools,
         shutdown: context.shutdown.clone(),
         upgrade_tasks: context.upgrade_tasks,
         tls_server_name: context.tls_server_name,
@@ -685,6 +648,17 @@ where
 
 #[derive(Clone)]
 struct ProxyService {
+    runtime: RuntimeHandle,
+    peer: SocketAddr,
+    listener_id: String,
+    limits: LimitsConfig,
+    shutdown: CancellationToken,
+    upgrade_tasks: TaskTracker,
+    tls_server_name: Option<String>,
+}
+
+#[derive(Clone)]
+struct PinnedProxyService {
     config: Arc<Config>,
     route_index: Arc<RouteIndex>,
     peer: SocketAddr,
@@ -704,11 +678,24 @@ impl Service<Request<Incoming>> for ProxyService {
 
     fn call(&self, request: Request<Incoming>) -> Self::Future {
         let service = self.clone();
-        Box::pin(async move { Ok(service.forward(request).await) })
+        let snapshot = service.runtime.load();
+        let pinned = PinnedProxyService {
+            config: Arc::clone(&snapshot.config),
+            route_index: Arc::clone(&snapshot.route_index),
+            peer: service.peer,
+            listener_id: service.listener_id,
+            limits: service.limits,
+            clients: Arc::clone(&snapshot.upstream_clients),
+            pools: Arc::clone(&snapshot.upstream_pools),
+            shutdown: service.shutdown,
+            upgrade_tasks: service.upgrade_tasks,
+            tls_server_name: service.tls_server_name,
+        };
+        Box::pin(async move { Ok(pinned.forward(request).await) })
     }
 }
 
-impl ProxyService {
+impl PinnedProxyService {
     async fn forward(&self, mut request: Request<Incoming>) -> Response<ResponseBody> {
         if let Some(status) = reject_unsafe_request_target(&request) {
             return error_response(status, "request target is not supported\n");

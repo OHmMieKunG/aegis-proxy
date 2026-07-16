@@ -1,6 +1,6 @@
 use std::{io, sync::Arc, time::Duration};
 
-use aegisproxy_config::{Config, LimitsConfig};
+use aegisproxy_config::LimitsConfig;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -8,7 +8,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use super::{DnsEndpoints, RouteIndex, UpstreamPools, endpoint_key};
+use super::{RuntimeHandle, endpoint_key};
 
 const CLIENT_HELLO_MAX_BYTES: usize = 16 * 1024;
 const RELAY_BUFFER_BYTES: usize = 16 * 1024;
@@ -17,12 +17,9 @@ const RELAY_BUFFER_BYTES: usize = 16 * 1024;
 pub(crate) struct TcpListenerContext {
     pub(crate) listener_id: String,
     pub(crate) tls_passthrough: bool,
-    pub(crate) config: Arc<Config>,
-    pub(crate) route_index: Arc<RouteIndex>,
+    pub(crate) runtime: RuntimeHandle,
     pub(crate) limits: LimitsConfig,
     pub(crate) handshake_permits: Arc<Semaphore>,
-    pub(crate) upstream_pools: UpstreamPools,
-    pub(crate) dns_endpoints: DnsEndpoints,
     pub(crate) shutdown: CancellationToken,
 }
 
@@ -67,7 +64,7 @@ pub(crate) async fn accept_loop(listener: TcpListener, context: TcpListenerConte
         });
     }
     drop(listener);
-    let deadline = Duration::from_secs(context.config.runtime.shutdown_grace_secs);
+    let deadline = Duration::from_secs(context.runtime.load().config.runtime.shutdown_grace_secs);
     if tokio::time::timeout(deadline, async {
         while connections.join_next().await.is_some() {}
     })
@@ -84,9 +81,10 @@ async fn proxy_connection(
     context: &TcpListenerContext,
     handshake_permit: Option<tokio::sync::OwnedSemaphorePermit>,
 ) -> io::Result<()> {
+    let snapshot = context.runtime.load();
     let (prefix, server_name) = if context.tls_passthrough {
         let result = tokio::time::timeout(
-            Duration::from_secs(context.config.tls.handshake_timeout_secs),
+            Duration::from_secs(snapshot.config.tls.handshake_timeout_secs),
             read_client_hello(&mut client),
         )
         .await
@@ -97,10 +95,10 @@ async fn proxy_connection(
         drop(handshake_permit);
         (Vec::new(), None)
     };
-    let route = context
+    let route = snapshot
         .route_index
         .select_sni(
-            &context.config,
+            &snapshot.config,
             &context.listener_id,
             server_name.as_deref(),
         )
@@ -109,20 +107,20 @@ async fn proxy_connection(
         .upstream_group
         .as_deref()
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "TCP route has no upstream"))?;
-    let pool = context
+    let pool = snapshot
         .upstream_pools
         .get(group_id)
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "TCP upstream group is missing"))?;
     let selected = pool
         .select()
         .map_err(|_| io::Error::new(io::ErrorKind::NotConnected, "TCP upstream unavailable"))?;
-    let dns = context
+    let dns = snapshot
         .dns_endpoints
         .get(&endpoint_key(group_id, &selected.config().id))
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "TCP DNS endpoint is missing"))?;
     let mut upstream = match connect_upstream(
         dns,
-        Duration::from_secs(context.limits.tcp_connect_timeout_secs),
+        Duration::from_secs(snapshot.config.limits.tcp_connect_timeout_secs),
     )
     .await
     {
@@ -134,7 +132,7 @@ async fn proxy_connection(
     };
     if !prefix.is_empty() {
         if let Err(error) = tokio::time::timeout(
-            Duration::from_secs(context.limits.tcp_connect_timeout_secs),
+            Duration::from_secs(snapshot.config.limits.tcp_connect_timeout_secs),
             upstream.write_all(&prefix),
         )
         .await
@@ -148,8 +146,8 @@ async fn proxy_connection(
     relay(
         &mut client,
         &mut upstream,
-        Duration::from_secs(context.limits.tcp_idle_timeout_secs),
-        Duration::from_secs(context.limits.tcp_connection_lifetime_secs),
+        Duration::from_secs(snapshot.config.limits.tcp_idle_timeout_secs),
+        Duration::from_secs(snapshot.config.limits.tcp_connection_lifetime_secs),
     )
     .await
 }
