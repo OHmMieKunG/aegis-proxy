@@ -1067,6 +1067,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn propagates_client_cancellation_upstream() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        use tokio::sync::oneshot;
+
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("upstream bind");
+        let upstream_addr = upstream.local_addr().expect("upstream address");
+        let (request_seen_tx, request_seen_rx) = oneshot::channel();
+        let upstream_task = tokio::spawn(async move {
+            let (mut stream, _) = upstream.accept().await.expect("upstream accept");
+            let mut request = [0_u8; 4096];
+            let count = stream.read(&mut request).await.expect("request read");
+            assert!(count > 0);
+            request_seen_tx.send(()).expect("signal request");
+            let count =
+                tokio::time::timeout(std::time::Duration::from_secs(1), stream.read(&mut request))
+                    .await
+                    .expect("upstream connection stayed open after client cancellation")
+                    .expect("upstream read after cancellation");
+            assert_eq!(count, 0);
+        });
+        let (proxy_addr, shutdown, task) = start_test_proxy(upstream_addr, |_| {}).await;
+        let mut client = connect_to_proxy(proxy_addr).await;
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: example.test\r\n\r\n")
+            .await
+            .expect("request write");
+        request_seen_rx.await.expect("upstream saw request");
+        drop(client);
+        upstream_task.await.expect("upstream task");
+        shutdown.cancel();
+        task.await.expect("proxy task").expect("proxy run");
+    }
+
+    #[tokio::test]
     async fn rejects_oversized_body_before_upstream() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
