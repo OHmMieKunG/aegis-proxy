@@ -16,7 +16,7 @@ use hyper::{
 };
 use hyper_util::{
     client::legacy::{Client, connect::HttpConnector},
-    rt::{TokioExecutor, TokioIo},
+    rt::{TokioExecutor, TokioIo, TokioTimer},
 };
 use thiserror::Error;
 use tokio::{
@@ -155,11 +155,14 @@ async fn serve_connection(
         shutdown: shutdown.clone(),
         upgrade_tasks,
     };
-    let connection = hyper::server::conn::http1::Builder::new()
+    let mut http = hyper::server::conn::http1::Builder::new();
+    http.timer(TokioTimer::new())
+        .header_read_timeout(std::time::Duration::from_secs(
+            service.limits.request_header_timeout_secs,
+        ))
         .max_buf_size(max_header_bytes)
-        .keep_alive(true)
-        .serve_connection(io, service)
-        .with_upgrades();
+        .keep_alive(true);
+    let connection = http.serve_connection(io, service).with_upgrades();
     tokio::pin!(connection);
     tokio::select! {
         result = &mut connection => result,
@@ -285,7 +288,20 @@ impl ProxyService {
             parts,
             Limited::new(body, self.limits.max_request_body).boxed(),
         );
-        let result = self.client.request(request).await;
+        let result = match tokio::time::timeout(
+            std::time::Duration::from_secs(self.limits.response_header_timeout_secs),
+            self.client.request(request),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                return error_response(
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "upstream response timed out\n",
+                );
+            }
+        };
         match result {
             Ok(mut response) => {
                 if response.status() == StatusCode::SWITCHING_PROTOCOLS {
@@ -716,5 +732,59 @@ mod tests {
         shutdown.cancel();
         task.await.expect("proxy task").expect("proxy run");
         upstream_task.await.expect("upstream task");
+    }
+
+    #[tokio::test]
+    async fn maps_upstream_response_timeout_to_gateway_timeout() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("upstream bind");
+        let upstream_addr = upstream.local_addr().expect("upstream address");
+        let upstream_task = tokio::spawn(async move {
+            let (mut stream, _) = upstream.accept().await.expect("upstream accept");
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).await.expect("request read");
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        });
+        let reserved = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("reserve proxy port");
+        let proxy_addr = reserved.local_addr().expect("proxy address");
+        drop(reserved);
+        let mut config = config(RouteConfig {
+            id: "timeout".into(),
+            listeners: vec!["public".into()],
+            hosts: vec!["example.test".into()],
+            path_prefixes: vec!["/".into()],
+            methods: vec![],
+            headers: vec![],
+            priority: 0,
+            middlewares: vec![],
+            upstream_group: Some("app".into()),
+        });
+        config.listeners[0].bind = proxy_addr;
+        config.limits.response_header_timeout_secs = 1;
+        config.upstream_groups[0].endpoints[0].url = format!("http://{upstream_addr}")
+            .parse()
+            .expect("endpoint url");
+        let shutdown = CancellationToken::new();
+        let task = tokio::spawn(run(Arc::new(config), shutdown.clone()));
+        let mut client = TcpStream::connect(proxy_addr).await.expect("proxy connect");
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("client write");
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("client read");
+        assert!(response.starts_with(b"HTTP/1.1 504 Gateway Timeout"));
+        shutdown.cancel();
+        task.await.expect("proxy task").expect("proxy run");
+        upstream_task.abort();
     }
 }
