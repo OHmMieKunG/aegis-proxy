@@ -420,6 +420,7 @@ mod tests {
         TrustedProxyConfig,
     };
     use hyper::header::HOST;
+    use proptest::prelude::*;
 
     use super::*;
 
@@ -551,5 +552,47 @@ mod tests {
             right_index.fingerprint(),
             RouteIndex::compile(&changed).fingerprint()
         );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        #[test]
+        fn canonical_path_is_idempotent(
+            segments in prop::collection::vec("[A-Za-z0-9_-]{1,12}", 1..16)
+        ) {
+            let path = format!("/{}", segments.join("/"));
+            let once = canonical_path(&path).expect("generated canonical path");
+            let twice = canonical_path(&once).expect("canonical path remains valid");
+            prop_assert_eq!(once, twice);
+        }
+
+        #[test]
+        fn declaration_order_never_changes_selected_route(
+            prefix_priority in -100_i32..100,
+            exact_priority in -100_i32..100,
+        ) {
+            let mut prefix = route("prefix");
+            prefix.priority = prefix_priority;
+            let mut exact = route("exact");
+            exact.priority = exact_priority;
+            exact.paths = vec!["/".into()];
+            exact.path_prefixes.clear();
+
+            let left = config(vec![prefix.clone(), exact.clone()]);
+            let right = config(vec![exact, prefix]);
+            let request = Request::builder()
+                .uri("/")
+                .header(HOST, "example.test")
+                .body(())
+                .expect("request");
+            let left_id = RouteIndex::compile(&left)
+                .select(&left, &request, "public")
+                .map(|route| route.id.as_str());
+            let right_id = RouteIndex::compile(&right)
+                .select(&right, &request, "public")
+                .map(|route| route.id.as_str());
+            prop_assert_eq!(left_id, right_id);
+        }
     }
 }

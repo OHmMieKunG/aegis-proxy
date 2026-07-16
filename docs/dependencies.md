@@ -19,6 +19,7 @@ Phase 0 inventory; versions are locked in `Cargo.lock` and must be re-reviewed o
 | x509-parser | Bounded certificate issuer/validity metadata | no optional features | MIT/Apache-2.0 | Crate forbids unsafe; untrusted ASN.1 parser | custom DER parser | Pin; retain parser/fuzz review on upgrade |
 | rcgen (dev) | Ephemeral TLS test certificates | `aws_lc_rs`, `crypto`, `pem` | MIT/Apache-2.0 | AWS-LC native build | checked-in private fixtures | Test-only, review with Rustls |
 | futures-util (dev) | Multi-frame gRPC test bodies | default | MIT/Apache-2.0 | No project unsafe; transitive review | custom Body fixture | Test-only, track with futures |
+| proptest (dev) | Shrinking property tests for route determinism and canonicalization | `std`; fork/timeout/bit-set disabled | MIT/Apache-2.0 | Test-only transitive surface; no runtime code | hand-written case matrices | Pin lockfile; keep bounded case counts and inputs |
 | zeroize | Clear owned secret buffers on drop | `std` | Apache-2.0/MIT | Safe API; compiler optimization limits documented | manual volatile clearing | Review with secret-boundary changes |
 | age | X25519 encrypted private-key envelopes | no optional features | Apache-2.0/MIT | Pure-Rust cryptography with audited unsafe/transitive surface | custom AEAD envelope | Pin lockfile; restore and interoperability tests |
 | arc-swap | Atomic immutable certificate/runtime snapshots | default | Apache-2.0/MIT | Small unsafe internals implementing atomic pointer ownership | `RwLock<Arc<_>>` | Concurrency tests; review upgrades |
