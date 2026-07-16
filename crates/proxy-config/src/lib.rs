@@ -4,6 +4,7 @@
 
 mod conflict;
 mod redact;
+pub mod revision;
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
