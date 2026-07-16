@@ -6,6 +6,8 @@ Configuration state must use a local filesystem with atomic same-directory renam
 
 The daemon exclusively locks `<state-dir>/config/owner.lock`. Failure to acquire the lock exits; it never guesses that another writer is dead. Immutable TOML revisions and JSON metadata use exclusive creation, bounded reads, SHA-256 verification, file sync, and directory sync where supported. Mutable `active.json` and `activation.json` are replaced from a synced temporary file in the same directory.
 
+Revision retention keeps every revision for at least 30 days and always keeps the newest 70. The active revision, immediate previous revision, and activation-journal references are protected regardless of age. Candidate creation fails at the hard 1,000-revision ceiling when protected or minimum-age revisions cannot be removed; it does not delete recovery state to make space.
+
 ## Normal startup
 
 ```text

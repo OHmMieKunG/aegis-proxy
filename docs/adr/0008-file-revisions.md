@@ -17,7 +17,7 @@ Versioned files; SQLite; PostgreSQL.
 
 ## Decision
 
-Use immutable files, pointers, journals, fsync, retention, and append-only audit.
+Use immutable files, pointers, journals, fsync, retention, and append-only audit. Phase 5 keeps every revision for at least 30 days and the newest 70 revisions regardless of age. Active, immediate-previous, and activation-journal targets are never pruned. A hard 1,000-revision ceiling fails candidate creation if the age floor and protected targets prevent safe pruning.
 
 ## Rationale
 
@@ -25,7 +25,7 @@ The state is small and file-shaped; backup/restore remains inspectable.
 
 ## Consequences
 
-Querying and multi-writer coordination are intentionally limited.
+Querying and multi-writer coordination are intentionally limited. V1 does not persist a success/rejection classification per revision, so the 70-revision recent window conservatively covers both outcomes instead of implementing separate 50-successful and 20-rejected buckets.
 
 ## Security implications
 

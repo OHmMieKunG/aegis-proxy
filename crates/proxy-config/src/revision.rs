@@ -17,6 +17,8 @@ use thiserror::Error;
 use crate::{Config, MAX_CONFIG_BYTES, validate};
 
 const MAX_REVISIONS: usize = 1_000;
+const RETAIN_RECENT_REVISIONS: usize = 70;
+const MIN_RETENTION_SECS: u64 = 30 * 24 * 60 * 60;
 const MAX_METADATA_BYTES: usize = 64 * 1024;
 const MAX_STATE_BYTES: usize = 64 * 1024;
 const MAX_SOURCE_BYTES: usize = 128;
@@ -201,13 +203,11 @@ impl RevisionStore {
             ));
         }
         let hash = hex_sha256(&canonical);
-        if let Some(existing) = self
-            .list()?
-            .into_iter()
-            .find(|revision| revision.hash == hash)
-        {
-            return Ok(existing);
+        let revisions = self.list()?;
+        if let Some(existing) = revisions.iter().find(|revision| revision.hash == hash) {
+            return Ok(existing.clone());
         }
+        self.prune_revisions(&revisions)?;
         if revision_count(&self.config_dir.join("revisions"))? >= MAX_REVISIONS {
             return Err(RevisionError::Limit);
         }
@@ -524,6 +524,45 @@ impl RevisionStore {
 
     fn write_journal(&self, journal: &ActivationJournal) -> Result<(), RevisionError> {
         write_json_atomic(&self.config_dir.join("activation.json"), journal)
+    }
+
+    fn prune_revisions(&self, revisions: &[RevisionMetadata]) -> Result<(), RevisionError> {
+        if revisions.len() <= RETAIN_RECENT_REVISIONS {
+            return Ok(());
+        }
+        let mut protected = HashSet::new();
+        if let Some(pointer) = self.active()? {
+            protected.insert(pointer.active.id);
+            if let Some(previous) = pointer.previous {
+                protected.insert(previous.id);
+            }
+        }
+        if let Some(journal) = self.load_journal()? {
+            protected.insert(journal.candidate.id);
+            if let Some(previous) = journal.previous {
+                protected.insert(previous.id);
+            }
+        }
+        let cutoff = unix_time()?.saturating_sub(MIN_RETENTION_SECS);
+        let prune_before = revisions.len() - RETAIN_RECENT_REVISIONS;
+        for revision in &revisions[..prune_before] {
+            if revision.created_unix_secs > cutoff || protected.contains(&revision.id) {
+                continue;
+            }
+            remove_synced(
+                &self
+                    .config_dir
+                    .join("metadata")
+                    .join(format!("{}.json", revision.id)),
+            )?;
+            remove_synced(
+                &self
+                    .config_dir
+                    .join("revisions")
+                    .join(format!("{}.toml", revision.id)),
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -960,6 +999,66 @@ mod tests {
             .collect();
         assert!(ids.iter().all(|id| id == &ids[0]));
         assert_eq!(store.list().expect("list").len(), 1);
+        drop(store);
+        fs::remove_dir_all(state).expect("cleanup");
+    }
+
+    #[test]
+    fn retention_prunes_old_candidates_but_protects_rollback_targets() {
+        let state = temporary_state();
+        let store = RevisionStore::open(&state).expect("store");
+        let mut revisions = Vec::new();
+        for poll_secs in 1..=73 {
+            let mut candidate = config();
+            candidate.runtime.config_poll_secs = poll_secs;
+            revisions.push(
+                store
+                    .create_candidate(&candidate, "retention")
+                    .expect("candidate"),
+            );
+        }
+        store
+            .begin_activation(&revisions[0].id, None)
+            .expect("first intent");
+        store
+            .mark_probation(&revisions[0].id)
+            .expect("first probation");
+        store
+            .commit_activation(&revisions[0].id)
+            .expect("first commit");
+        store
+            .begin_activation(&revisions[1].id, Some(&revisions[0].id))
+            .expect("second intent");
+        store
+            .mark_probation(&revisions[1].id)
+            .expect("second probation");
+        store
+            .commit_activation(&revisions[1].id)
+            .expect("second commit");
+        for revision in &revisions {
+            let mut aged = revision.clone();
+            aged.created_unix_secs = 0;
+            write_json_atomic(
+                &state
+                    .join("config/metadata")
+                    .join(format!("{}.json", revision.id)),
+                &aged,
+            )
+            .expect("age metadata");
+        }
+
+        let mut newest = config();
+        newest.runtime.config_poll_secs = 74;
+        store
+            .create_candidate(&newest, "retention")
+            .expect("trigger retention");
+        assert!(store.load(&revisions[0].id).is_ok());
+        assert!(store.load(&revisions[1].id).is_ok());
+        assert!(matches!(
+            store.load(&revisions[2].id),
+            Err(RevisionError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound
+        ));
+        assert_eq!(store.list().expect("retained revisions").len(), 73);
         drop(store);
         fs::remove_dir_all(state).expect("cleanup");
     }
