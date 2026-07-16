@@ -25,6 +25,7 @@ name = "aegisproxy-config"
 version = "0.1.0"
 dependencies = [
  "aegisproxy-secrets",
+ "http",
  "ipnet",
  "serde",
  "thiserror 2.0.18",

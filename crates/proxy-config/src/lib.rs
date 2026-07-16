@@ -10,6 +10,7 @@ use std::{
 };
 
 use aegisproxy_secrets::SecretRef;
+use http::{HeaderName, HeaderValue, Method};
 use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -17,6 +18,17 @@ use url::Url;
 
 /// Maximum configuration bytes accepted by the offline parser.
 pub const MAX_CONFIG_BYTES: usize = 2 * 1024 * 1024;
+
+const MAX_LISTENERS: usize = 128;
+const MAX_ROUTES: usize = 4_096;
+const MAX_ROUTE_LISTENERS: usize = 32;
+const MAX_ROUTE_HOSTS: usize = 64;
+const MAX_ROUTE_PATHS: usize = 64;
+const MAX_ROUTE_METHODS: usize = 32;
+const MAX_ROUTE_HEADERS: usize = 32;
+const MAX_ROUTE_MIDDLEWARES: usize = 64;
+const MAX_HEADER_VALUE_BYTES: usize = 1_024;
+const MAX_PATH_BYTES: usize = 2_048;
 
 /// Root configuration document.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -266,6 +278,9 @@ pub struct RouteConfig {
     /// Exact header predicates.
     #[serde(default)]
     pub headers: Vec<HeaderMatch>,
+    /// Explicit catch-all route. Match predicates must be empty.
+    #[serde(default)]
+    pub default: bool,
     /// Explicit priority.
     #[serde(default)]
     pub priority: i32,
@@ -331,10 +346,15 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             config.schema_version
         )));
     }
-    if config.listeners.is_empty() {
-        return Err(ConfigError::Invalid(
-            "at least one listener is required".into(),
-        ));
+    if config.listeners.is_empty() || config.listeners.len() > MAX_LISTENERS {
+        return Err(ConfigError::Invalid(format!(
+            "listeners must contain 1..={MAX_LISTENERS} entries"
+        )));
+    }
+    if config.routes.len() > MAX_ROUTES {
+        return Err(ConfigError::Invalid(format!(
+            "route count exceeds {MAX_ROUTES}"
+        )));
     }
     if !matches!(config.tls.minimum_version.as_str(), "1.2" | "1.3") {
         return Err(ConfigError::Invalid(
@@ -586,12 +606,25 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                 route.id
             )));
         }
-        if route.listeners.is_empty() {
+        if route.listeners.is_empty() || route.listeners.len() > MAX_ROUTE_LISTENERS {
             return Err(ConfigError::Invalid(format!(
-                "route {} has no listeners",
+                "route {} listeners must contain 1..={MAX_ROUTE_LISTENERS} entries",
+                route.id,
+            )));
+        }
+        validate_unique_strings(&route.id, "listener", &route.listeners)?;
+        if route.hosts.len() > MAX_ROUTE_HOSTS
+            || route.path_prefixes.len() > MAX_ROUTE_PATHS
+            || route.methods.len() > MAX_ROUTE_METHODS
+            || route.headers.len() > MAX_ROUTE_HEADERS
+            || route.middlewares.len() > MAX_ROUTE_MIDDLEWARES
+        {
+            return Err(ConfigError::Invalid(format!(
+                "route {} exceeds a matcher or middleware count limit",
                 route.id
             )));
         }
+        validate_route_matchers(route)?;
         if route.upstream_group.is_none() {
             return Err(ConfigError::Invalid(format!(
                 "route {} has no upstream_group",
@@ -612,6 +645,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                 )));
             }
         }
+        validate_unique_strings(&route.id, "middleware", &route.middlewares)?;
         for middleware in &route.middlewares {
             if !config.middlewares.contains_key(middleware) {
                 return Err(ConfigError::Invalid(format!(
@@ -619,6 +653,169 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                     route.id, middleware
                 )));
             }
+        }
+    }
+    Ok(())
+}
+
+fn validate_route_matchers(route: &RouteConfig) -> Result<(), ConfigError> {
+    if route.default {
+        if !route.hosts.is_empty()
+            || !route.path_prefixes.is_empty()
+            || !route.methods.is_empty()
+            || !route.headers.is_empty()
+            || route.priority != 0
+        {
+            return Err(ConfigError::Invalid(format!(
+                "route {} is default and cannot contain matchers or a nonzero priority",
+                route.id
+            )));
+        }
+        return Ok(());
+    }
+
+    if route.hosts.is_empty()
+        && route.methods.is_empty()
+        && route.headers.is_empty()
+        && (route.path_prefixes.is_empty()
+            || route.path_prefixes.iter().any(|prefix| prefix == "/"))
+    {
+        return Err(ConfigError::Invalid(format!(
+            "route {} is a catch-all and must set default = true",
+            route.id
+        )));
+    }
+
+    let mut hosts = HashSet::new();
+    for host in &route.hosts {
+        valid_certificate_host(host).map_err(|_| {
+            ConfigError::Invalid(format!("route {} has invalid host {host:?}", route.id))
+        })?;
+        if !hosts.insert(host.as_str()) {
+            return Err(ConfigError::Invalid(format!(
+                "route {} contains duplicate host {host:?}",
+                route.id
+            )));
+        }
+    }
+
+    let mut paths = HashSet::new();
+    for prefix in &route.path_prefixes {
+        validate_path_prefix(&route.id, prefix)?;
+        if !paths.insert(prefix.as_str()) {
+            return Err(ConfigError::Invalid(format!(
+                "route {} contains duplicate path prefix {prefix:?}",
+                route.id
+            )));
+        }
+    }
+
+    let mut methods = HashSet::new();
+    for method in &route.methods {
+        let parsed = Method::from_bytes(method.as_bytes()).map_err(|_| {
+            ConfigError::Invalid(format!("route {} has invalid method {method:?}", route.id))
+        })?;
+        if parsed.as_str() != method
+            || method.bytes().any(|byte| byte.is_ascii_lowercase())
+            || parsed == Method::CONNECT
+        {
+            return Err(ConfigError::Invalid(format!(
+                "route {} method {method:?} is not canonical or supported",
+                route.id
+            )));
+        }
+        if !methods.insert(method.as_str()) {
+            return Err(ConfigError::Invalid(format!(
+                "route {} contains duplicate method {method:?}",
+                route.id
+            )));
+        }
+    }
+
+    let mut headers = HashSet::new();
+    for predicate in &route.headers {
+        if predicate.value.len() > MAX_HEADER_VALUE_BYTES {
+            return Err(ConfigError::Invalid(format!(
+                "route {} header {} value exceeds {MAX_HEADER_VALUE_BYTES} bytes",
+                route.id, predicate.name
+            )));
+        }
+        let name = HeaderName::from_bytes(predicate.name.as_bytes()).map_err(|_| {
+            ConfigError::Invalid(format!(
+                "route {} has invalid header name {:?}",
+                route.id, predicate.name
+            ))
+        })?;
+        HeaderValue::try_from(predicate.value.as_str()).map_err(|_| {
+            ConfigError::Invalid(format!(
+                "route {} header {} has an invalid value",
+                route.id, predicate.name
+            ))
+        })?;
+        if name.as_str() != predicate.name || prohibited_route_header(&name) {
+            return Err(ConfigError::Invalid(format!(
+                "route {} header {:?} is not canonical or routable",
+                route.id, predicate.name
+            )));
+        }
+        if !headers.insert(name) {
+            return Err(ConfigError::Invalid(format!(
+                "route {} contains duplicate header predicate {:?}",
+                route.id, predicate.name
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_path_prefix(route_id: &str, prefix: &str) -> Result<(), ConfigError> {
+    let valid = !prefix.is_empty()
+        && prefix.len() <= MAX_PATH_BYTES
+        && prefix.is_ascii()
+        && prefix.starts_with('/')
+        && !prefix.contains('%')
+        && !prefix.contains('\\')
+        && !prefix.contains('?')
+        && !prefix.contains('#')
+        && !prefix.contains("//")
+        && (prefix == "/" || !prefix.ends_with('/'))
+        && !prefix
+            .split('/')
+            .any(|segment| matches!(segment, "." | ".."));
+    if !valid {
+        return Err(ConfigError::Invalid(format!(
+            "route {route_id} has non-canonical path prefix {prefix:?}"
+        )));
+    }
+    Ok(())
+}
+
+fn prohibited_route_header(name: &HeaderName) -> bool {
+    matches!(
+        name.as_str(),
+        "connection"
+            | "content-length"
+            | "host"
+            | "keep-alive"
+            | "proxy-connection"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
+            | "upgrade"
+    )
+}
+
+fn validate_unique_strings(
+    route_id: &str,
+    field: &str,
+    values: &[String],
+) -> Result<(), ConfigError> {
+    let mut seen = HashSet::new();
+    for value in values {
+        if !seen.insert(value.as_str()) {
+            return Err(ConfigError::Invalid(format!(
+                "route {route_id} contains duplicate {field} reference {value:?}"
+            )));
         }
     }
     Ok(())
@@ -821,5 +1018,76 @@ mod tests {
         config.upstream_groups[0].endpoints[0].url = "http://127.0.0.1:8080".parse().expect("URL");
         config.upstream_groups[0].endpoints[0].server_name = None;
         assert!(validate(&config).is_err());
+    }
+
+    fn test_route() -> RouteConfig {
+        RouteConfig {
+            id: "route".into(),
+            listeners: vec!["public".into()],
+            hosts: vec!["example.test".into()],
+            path_prefixes: vec!["/api".into()],
+            methods: vec!["GET".into()],
+            headers: vec![HeaderMatch {
+                name: "x-tenant".into(),
+                value: "blue".into(),
+            }],
+            default: false,
+            priority: 0,
+            middlewares: vec![],
+            upstream_group: Some("app".into()),
+        }
+    }
+
+    #[test]
+    fn requires_explicit_default_route() {
+        let mut route = test_route();
+        route.hosts.clear();
+        route.path_prefixes = vec!["/".into()];
+        route.methods.clear();
+        route.headers.clear();
+        assert!(validate_route_matchers(&route).is_err());
+
+        route.path_prefixes.clear();
+        route.default = true;
+        assert!(validate_route_matchers(&route).is_ok());
+        route.priority = 1;
+        assert!(validate_route_matchers(&route).is_err());
+    }
+
+    #[test]
+    fn rejects_noncanonical_route_predicates() {
+        let mut route = test_route();
+        route.hosts = vec!["Example.Test".into()];
+        assert!(validate_route_matchers(&route).is_err());
+
+        let mut route = test_route();
+        route.path_prefixes = vec!["/api/%2fadmin".into()];
+        assert!(validate_route_matchers(&route).is_err());
+
+        let mut route = test_route();
+        route.methods = vec!["get".into()];
+        assert!(validate_route_matchers(&route).is_err());
+
+        let mut route = test_route();
+        route.headers[0].value = "blue\r\ninjected: true".into();
+        assert!(validate_route_matchers(&route).is_err());
+    }
+
+    #[test]
+    fn rejects_ambiguous_route_predicate_lists() {
+        let mut route = test_route();
+        route.hosts.push("example.test".into());
+        assert!(validate_route_matchers(&route).is_err());
+
+        let mut route = test_route();
+        route.headers.push(HeaderMatch {
+            name: "x-tenant".into(),
+            value: "green".into(),
+        });
+        assert!(validate_route_matchers(&route).is_err());
+
+        let mut route = test_route();
+        route.headers[0].name = "connection".into();
+        assert!(validate_route_matchers(&route).is_err());
     }
 }

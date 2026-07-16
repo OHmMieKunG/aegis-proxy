@@ -230,6 +230,7 @@ async fn proxies_unary_and_streaming_grpc_with_trailers() {
             path_prefixes: vec!["/".into()],
             methods: vec!["POST".into()],
             headers: vec![],
+            default: false,
             priority: 0,
             middlewares: vec![],
             upstream_group: Some("grpc".into()),

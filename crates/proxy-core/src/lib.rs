@@ -770,6 +770,7 @@ pub fn select_route<'a, B>(
         })
         .max_by_key(|route| {
             (
+                !route.default,
                 route.priority,
                 route
                     .path_prefixes
@@ -878,6 +879,7 @@ mod tests {
             path_prefixes: vec!["/".into()],
             methods: vec![],
             headers: vec![],
+            default: false,
             priority: 0,
             middlewares: vec![],
             upstream_group: Some("app".into()),
@@ -1244,6 +1246,7 @@ mod tests {
                 name: "x-tenant".into(),
                 value: "blue".into(),
             }],
+            default: false,
             priority: 10,
             middlewares: vec![],
             upstream_group: Some("app".into()),
@@ -1262,6 +1265,46 @@ mod tests {
         );
         let miss = request("POST", "api.example.test", "/api/v1");
         assert!(select_route(&config, &miss, "public").is_none());
+    }
+
+    #[test]
+    fn explicit_default_route_never_overrides_a_specific_match() {
+        let specific = RouteConfig {
+            id: "specific".into(),
+            listeners: vec!["public".into()],
+            hosts: vec!["example.test".into()],
+            path_prefixes: vec!["/".into()],
+            methods: vec![],
+            headers: vec![],
+            default: false,
+            priority: -10,
+            middlewares: vec![],
+            upstream_group: Some("app".into()),
+        };
+        let mut config = config(specific);
+        config.routes.push(RouteConfig {
+            id: "fallback".into(),
+            listeners: vec!["public".into()],
+            hosts: vec![],
+            path_prefixes: vec![],
+            methods: vec![],
+            headers: vec![],
+            default: true,
+            priority: 0,
+            middlewares: vec![],
+            upstream_group: Some("app".into()),
+        });
+
+        assert_eq!(
+            select_route(&config, &request("GET", "example.test", "/"), "public")
+                .map(|route| route.id.as_str()),
+            Some("specific")
+        );
+        assert_eq!(
+            select_route(&config, &request("GET", "other.test", "/"), "public")
+                .map(|route| route.id.as_str()),
+            Some("fallback")
+        );
     }
 
     #[test]
@@ -1364,6 +1407,7 @@ mod tests {
             path_prefixes: vec!["/".into()],
             methods: vec![],
             headers: vec![],
+            default: false,
             priority: 0,
             middlewares: vec![],
             upstream_group: Some("app".into()),
@@ -1429,6 +1473,7 @@ mod tests {
             path_prefixes: vec!["/ws".into()],
             methods: vec![],
             headers: vec![],
+            default: false,
             priority: 0,
             middlewares: vec![],
             upstream_group: Some("app".into()),
@@ -1492,6 +1537,7 @@ mod tests {
             path_prefixes: vec!["/".into()],
             methods: vec![],
             headers: vec![],
+            default: false,
             priority: 0,
             middlewares: vec![],
             upstream_group: Some("app".into()),
@@ -1711,6 +1757,7 @@ mod tests {
             path_prefixes: vec!["/".into()],
             methods: vec![],
             headers: vec![],
+            default: false,
             priority: 0,
             middlewares: vec![],
             upstream_group: Some("app".into()),
