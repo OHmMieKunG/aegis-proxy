@@ -25,6 +25,7 @@ const MAX_LISTENERS: usize = 128;
 const MAX_ROUTES: usize = 4_096;
 const MAX_ROUTE_LISTENERS: usize = 32;
 const MAX_ROUTE_HOSTS: usize = 64;
+const MAX_ROUTE_EXACT_PATHS: usize = 64;
 const MAX_ROUTE_PATHS: usize = 64;
 const MAX_ROUTE_METHODS: usize = 32;
 const MAX_ROUTE_HEADERS: usize = 32;
@@ -271,6 +272,9 @@ pub struct RouteConfig {
     /// Exact or wildcard hosts.
     #[serde(default)]
     pub hosts: Vec<String>,
+    /// Canonical exact paths.
+    #[serde(default)]
+    pub paths: Vec<String>,
     /// Segment-aware path prefixes.
     #[serde(default)]
     pub path_prefixes: Vec<String>,
@@ -299,8 +303,9 @@ pub struct RouteConfig {
 pub struct HeaderMatch {
     /// Header name.
     pub name: String,
-    /// Exact value.
-    pub value: String,
+    /// Exact value. Omit to match header presence only.
+    #[serde(default)]
+    pub value: Option<String>,
 }
 
 /// Administrative settings.
@@ -616,6 +621,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         }
         validate_unique_strings(&route.id, "listener", &route.listeners)?;
         if route.hosts.len() > MAX_ROUTE_HOSTS
+            || route.paths.len() > MAX_ROUTE_EXACT_PATHS
             || route.path_prefixes.len() > MAX_ROUTE_PATHS
             || route.methods.len() > MAX_ROUTE_METHODS
             || route.headers.len() > MAX_ROUTE_HEADERS
@@ -664,6 +670,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
 fn validate_route_matchers(route: &RouteConfig) -> Result<(), ConfigError> {
     if route.default {
         if !route.hosts.is_empty()
+            || !route.paths.is_empty()
             || !route.path_prefixes.is_empty()
             || !route.methods.is_empty()
             || !route.headers.is_empty()
@@ -678,6 +685,7 @@ fn validate_route_matchers(route: &RouteConfig) -> Result<(), ConfigError> {
     }
 
     if route.hosts.is_empty()
+        && route.paths.is_empty()
         && route.methods.is_empty()
         && route.headers.is_empty()
         && (route.path_prefixes.is_empty()
@@ -702,9 +710,20 @@ fn validate_route_matchers(route: &RouteConfig) -> Result<(), ConfigError> {
         }
     }
 
+    let mut exact_paths = HashSet::new();
+    for path in &route.paths {
+        validate_path(&route.id, path, false)?;
+        if !exact_paths.insert(path.as_str()) {
+            return Err(ConfigError::Invalid(format!(
+                "route {} contains duplicate exact path {path:?}",
+                route.id
+            )));
+        }
+    }
+
     let mut paths = HashSet::new();
     for prefix in &route.path_prefixes {
-        validate_path_prefix(&route.id, prefix)?;
+        validate_path(&route.id, prefix, true)?;
         if !paths.insert(prefix.as_str()) {
             return Err(ConfigError::Invalid(format!(
                 "route {} contains duplicate path prefix {prefix:?}",
@@ -737,24 +756,26 @@ fn validate_route_matchers(route: &RouteConfig) -> Result<(), ConfigError> {
 
     let mut headers = HashSet::new();
     for predicate in &route.headers {
-        if predicate.value.len() > MAX_HEADER_VALUE_BYTES {
-            return Err(ConfigError::Invalid(format!(
-                "route {} header {} value exceeds {MAX_HEADER_VALUE_BYTES} bytes",
-                route.id, predicate.name
-            )));
-        }
         let name = HeaderName::from_bytes(predicate.name.as_bytes()).map_err(|_| {
             ConfigError::Invalid(format!(
                 "route {} has invalid header name {:?}",
                 route.id, predicate.name
             ))
         })?;
-        HeaderValue::try_from(predicate.value.as_str()).map_err(|_| {
-            ConfigError::Invalid(format!(
-                "route {} header {} has an invalid value",
-                route.id, predicate.name
-            ))
-        })?;
+        if let Some(value) = &predicate.value {
+            if value.len() > MAX_HEADER_VALUE_BYTES {
+                return Err(ConfigError::Invalid(format!(
+                    "route {} header {} value exceeds {MAX_HEADER_VALUE_BYTES} bytes",
+                    route.id, predicate.name
+                )));
+            }
+            HeaderValue::try_from(value.as_str()).map_err(|_| {
+                ConfigError::Invalid(format!(
+                    "route {} header {} has an invalid value",
+                    route.id, predicate.name
+                ))
+            })?;
+        }
         if name.as_str() != predicate.name || prohibited_route_header(&name) {
             return Err(ConfigError::Invalid(format!(
                 "route {} header {:?} is not canonical or routable",
@@ -771,23 +792,21 @@ fn validate_route_matchers(route: &RouteConfig) -> Result<(), ConfigError> {
     Ok(())
 }
 
-fn validate_path_prefix(route_id: &str, prefix: &str) -> Result<(), ConfigError> {
-    let valid = !prefix.is_empty()
-        && prefix.len() <= MAX_PATH_BYTES
-        && prefix.is_ascii()
-        && prefix.starts_with('/')
-        && !prefix.contains('%')
-        && !prefix.contains('\\')
-        && !prefix.contains('?')
-        && !prefix.contains('#')
-        && !prefix.contains("//")
-        && (prefix == "/" || !prefix.ends_with('/'))
-        && !prefix
-            .split('/')
-            .any(|segment| matches!(segment, "." | ".."));
+fn validate_path(route_id: &str, path: &str, prefix: bool) -> Result<(), ConfigError> {
+    let valid = !path.is_empty()
+        && path.len() <= MAX_PATH_BYTES
+        && path.is_ascii()
+        && path.starts_with('/')
+        && !path.contains('%')
+        && !path.contains('\\')
+        && !path.contains('?')
+        && !path.contains('#')
+        && !path.contains("//")
+        && (!prefix || path == "/" || !path.ends_with('/'))
+        && !path.split('/').any(|segment| matches!(segment, "." | ".."));
     if !valid {
         return Err(ConfigError::Invalid(format!(
-            "route {route_id} has non-canonical path prefix {prefix:?}"
+            "route {route_id} has non-canonical path {path:?}"
         )));
     }
     Ok(())
@@ -1028,11 +1047,12 @@ mod tests {
             id: "route".into(),
             listeners: vec!["public".into()],
             hosts: vec!["example.test".into()],
+            paths: vec![],
             path_prefixes: vec!["/api".into()],
             methods: vec!["GET".into()],
             headers: vec![HeaderMatch {
                 name: "x-tenant".into(),
-                value: "blue".into(),
+                value: Some("blue".into()),
             }],
             default: false,
             priority: 0,
@@ -1072,7 +1092,7 @@ mod tests {
         assert!(validate_route_matchers(&route).is_err());
 
         let mut route = test_route();
-        route.headers[0].value = "blue\r\ninjected: true".into();
+        route.headers[0].value = Some("blue\r\ninjected: true".into());
         assert!(validate_route_matchers(&route).is_err());
     }
 
@@ -1085,12 +1105,25 @@ mod tests {
         let mut route = test_route();
         route.headers.push(HeaderMatch {
             name: "x-tenant".into(),
-            value: "green".into(),
+            value: Some("green".into()),
         });
         assert!(validate_route_matchers(&route).is_err());
 
         let mut route = test_route();
         route.headers[0].name = "connection".into();
+        assert!(validate_route_matchers(&route).is_err());
+    }
+
+    #[test]
+    fn validates_exact_paths_and_header_presence() {
+        let mut route = test_route();
+        route.paths = vec!["/api/".into()];
+        route.path_prefixes.clear();
+        route.headers[0].value = None;
+        assert!(validate_route_matchers(&route).is_ok());
+
+        route.paths.clear();
+        route.path_prefixes = vec!["/api/".into()];
         assert!(validate_route_matchers(&route).is_err());
     }
 }

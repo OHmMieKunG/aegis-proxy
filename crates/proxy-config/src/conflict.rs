@@ -36,6 +36,7 @@ pub(crate) fn validate_route_conflicts(routes: &[RouteConfig]) -> Result<(), Con
                 || !headers_overlap(left, right)
                 || !equal_host_specificity_can_overlap(left, right)
                 || !equal_path_specificity_can_overlap(left, right)
+                || constraint_specificity(left) != constraint_specificity(right)
             {
                 continue;
             }
@@ -49,6 +50,19 @@ pub(crate) fn validate_route_conflicts(routes: &[RouteConfig]) -> Result<(), Con
         }
     }
     Ok(())
+}
+
+fn constraint_specificity(route: &RouteConfig) -> (bool, usize, usize, usize) {
+    (
+        !route.methods.is_empty(),
+        route.methods.len(),
+        route.headers.len(),
+        route
+            .headers
+            .iter()
+            .filter(|predicate| predicate.value.is_some())
+            .count(),
+    )
 }
 
 fn conflict_error(
@@ -68,6 +82,7 @@ fn same_matchers(left: &RouteConfig, right: &RouteConfig) -> bool {
     left.default == right.default
         && same_string_set(&left.listeners, &right.listeners)
         && same_string_set(&left.hosts, &right.hosts)
+        && same_string_set(&left.paths, &right.paths)
         && same_string_set(&left.path_prefixes, &right.path_prefixes)
         && same_string_set(&left.methods, &right.methods)
         && same_headers(left, right)
@@ -102,15 +117,20 @@ fn methods_overlap(left: &RouteConfig, right: &RouteConfig) -> bool {
 }
 
 fn headers_overlap(left: &RouteConfig, right: &RouteConfig) -> bool {
-    let left_values: HashMap<&str, &str> = left
+    let left_values: HashMap<&str, Option<&str>> = left
         .headers
         .iter()
-        .map(|predicate| (predicate.name.as_str(), predicate.value.as_str()))
+        .map(|predicate| (predicate.name.as_str(), predicate.value.as_deref()))
         .collect();
     right.headers.iter().all(|predicate| {
         left_values
             .get(predicate.name.as_str())
-            .is_none_or(|value| *value == predicate.value)
+            .is_none_or(
+                |left_value| match (*left_value, predicate.value.as_deref()) {
+                    (Some(left), Some(right)) => left == right,
+                    _ => true,
+                },
+            )
     })
 }
 
@@ -120,7 +140,9 @@ fn equal_host_specificity_can_overlap(left: &RouteConfig, right: &RouteConfig) -
     }
     left.hosts.iter().any(|left_host| {
         right.hosts.iter().any(|right_host| {
-            left_host.len() == right_host.len() && hosts_overlap(left_host, right_host)
+            left_host.starts_with("*.") == right_host.starts_with("*.")
+                && left_host.len() == right_host.len()
+                && hosts_overlap(left_host, right_host)
         })
     })
 }
@@ -144,8 +166,18 @@ fn wildcard_matches(pattern: &str, exact: &str) -> bool {
 }
 
 fn equal_path_specificity_can_overlap(left: &RouteConfig, right: &RouteConfig) -> bool {
+    if left
+        .paths
+        .iter()
+        .any(|left_path| right.paths.iter().any(|right_path| left_path == right_path))
+    {
+        return true;
+    }
     if left.path_prefixes.is_empty() || right.path_prefixes.is_empty() {
-        return left.path_prefixes.is_empty() && right.path_prefixes.is_empty();
+        return left.paths.is_empty()
+            && right.paths.is_empty()
+            && left.path_prefixes.is_empty()
+            && right.path_prefixes.is_empty();
     }
     left.path_prefixes.iter().any(|left_path| {
         right.path_prefixes.iter().any(|right_path| {
@@ -178,6 +210,7 @@ mod tests {
             id: id.into(),
             listeners: vec!["public".into()],
             hosts: vec!["example.test".into()],
+            paths: vec![],
             path_prefixes: vec!["/api".into()],
             methods: vec!["GET".into()],
             headers: vec![],
@@ -201,12 +234,12 @@ mod tests {
         let mut left = route("left");
         left.headers.push(HeaderMatch {
             name: "x-left".into(),
-            value: "yes".into(),
+            value: Some("yes".into()),
         });
         let mut right = route("right");
         right.headers.push(HeaderMatch {
             name: "x-right".into(),
-            value: "yes".into(),
+            value: Some("yes".into()),
         });
         assert!(validate_route_conflicts(&[left.clone(), right.clone()]).is_err());
         right.priority = 1;
@@ -234,14 +267,41 @@ mod tests {
         let mut left = route("left");
         left.headers.push(HeaderMatch {
             name: "x-tenant".into(),
-            value: "blue".into(),
+            value: Some("blue".into()),
         });
         let mut right = route("right");
         right.headers.push(HeaderMatch {
             name: "x-tenant".into(),
-            value: "green".into(),
+            value: Some("green".into()),
         });
         assert!(validate_route_conflicts(&[left, right]).is_ok());
+    }
+
+    #[test]
+    fn accepts_more_specific_method_header_host_and_path() {
+        let mut broad = route("broad");
+        broad.methods.clear();
+        broad.headers.push(HeaderMatch {
+            name: "x-authenticated".into(),
+            value: None,
+        });
+        let mut narrow = route("narrow");
+        narrow.headers.push(HeaderMatch {
+            name: "x-authenticated".into(),
+            value: Some("yes".into()),
+        });
+        assert!(validate_route_conflicts(&[broad, narrow]).is_ok());
+
+        let mut wildcard = route("wildcard");
+        wildcard.hosts = vec!["*.example.test".into()];
+        let exact = route("exact");
+        assert!(validate_route_conflicts(&[wildcard, exact]).is_ok());
+
+        let prefix = route("prefix");
+        let mut exact = route("exact");
+        exact.paths = vec!["/api".into()];
+        exact.path_prefixes.clear();
+        assert!(validate_route_conflicts(&[prefix, exact]).is_ok());
     }
 
     #[test]
@@ -249,6 +309,7 @@ mod tests {
         let mut left = route("left");
         left.default = true;
         left.hosts.clear();
+        left.paths.clear();
         left.path_prefixes.clear();
         left.methods.clear();
         let mut right = left.clone();

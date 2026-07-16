@@ -736,51 +736,117 @@ pub fn select_route<'a, B>(
         .routes
         .iter()
         .filter(|route| route.listeners.iter().any(|id| id == listener_id))
-        .filter(|route| {
-            (route.hosts.is_empty()
-                || route.hosts.iter().any(|candidate| {
-                    let candidate = candidate.to_ascii_lowercase();
-                    candidate == host
-                        || candidate.strip_prefix("*.").is_some_and(|suffix| {
-                            host.strip_suffix(suffix).is_some_and(|prefix| {
-                                prefix.ends_with('.') && !prefix[..prefix.len() - 1].contains('.')
-                            })
-                        })
-                }))
-                && (route.path_prefixes.is_empty()
-                    || route.path_prefixes.iter().any(|prefix| {
-                        prefix == "/"
-                            || path == prefix
-                            || path
-                                .strip_prefix(prefix)
-                                .is_some_and(|rest| rest.starts_with('/'))
-                    }))
-                && (route.methods.is_empty()
-                    || route
-                        .methods
-                        .iter()
-                        .any(|method| method.eq_ignore_ascii_case(request.method().as_str())))
-                && route.headers.iter().all(|predicate| {
-                    request
-                        .headers()
-                        .get(&predicate.name)
-                        .and_then(|value| value.to_str().ok())
-                        .is_some_and(|value| value == predicate.value)
+        .filter_map(|route| {
+            route_match_score(route, request, &host, path).map(|score| (score, route))
+        })
+        .max_by_key(|(score, _)| *score)
+        .map(|(_, route)| route)
+}
+
+type RouteMatchScore = (bool, i32, u8, usize, u8, usize, bool, usize, usize, usize);
+
+fn route_match_score<B>(
+    route: &RouteConfig,
+    request: &Request<B>,
+    host: &str,
+    path: &str,
+) -> Option<RouteMatchScore> {
+    if route.default {
+        return Some((false, 0, 0, 0, 0, 0, false, 0, 0, 0));
+    }
+    let (host_kind, host_length) = host_match_score(&route.hosts, host)?;
+    let (path_kind, path_length) = path_match_score(route, path)?;
+    let method_specific = !route.methods.is_empty();
+    if method_specific
+        && !route
+            .methods
+            .iter()
+            .any(|method| method == request.method().as_str())
+    {
+        return None;
+    }
+    if !route.headers.iter().all(|predicate| {
+        let value = request.headers().get(&predicate.name);
+        match &predicate.value {
+            Some(expected) => value
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value == expected),
+            None => value.is_some(),
+        }
+    }) {
+        return None;
+    }
+    let exact_headers = route
+        .headers
+        .iter()
+        .filter(|predicate| predicate.value.is_some())
+        .count();
+    Some((
+        true,
+        route.priority,
+        host_kind,
+        host_length,
+        path_kind,
+        path_length,
+        method_specific,
+        if method_specific {
+            usize::MAX - route.methods.len()
+        } else {
+            0
+        },
+        route.headers.len(),
+        exact_headers,
+    ))
+}
+
+fn host_match_score(hosts: &[String], host: &str) -> Option<(u8, usize)> {
+    if hosts.is_empty() {
+        return Some((0, 0));
+    }
+    hosts
+        .iter()
+        .filter_map(|candidate| {
+            if candidate == host {
+                Some((2, candidate.len()))
+            } else if candidate.strip_prefix("*.").is_some_and(|suffix| {
+                host.strip_suffix(suffix).is_some_and(|prefix| {
+                    prefix.ends_with('.') && !prefix[..prefix.len() - 1].contains('.')
                 })
+            }) {
+                Some((1, candidate.len()))
+            } else {
+                None
+            }
         })
-        .max_by_key(|route| {
-            (
-                !route.default,
-                route.priority,
-                route
-                    .path_prefixes
-                    .iter()
-                    .map(String::len)
-                    .max()
-                    .unwrap_or(0),
-                route.hosts.iter().map(String::len).max().unwrap_or(0),
-            )
+        .max()
+}
+
+fn path_match_score(route: &RouteConfig, path: &str) -> Option<(u8, usize)> {
+    if let Some(length) = route
+        .paths
+        .iter()
+        .filter(|candidate| candidate.as_str() == path)
+        .map(String::len)
+        .max()
+    {
+        return Some((2, length));
+    }
+    if let Some(length) = route
+        .path_prefixes
+        .iter()
+        .filter(|prefix| {
+            prefix.as_str() == "/"
+                || path == prefix.as_str()
+                || path
+                    .strip_prefix(prefix.as_str())
+                    .is_some_and(|rest| rest.starts_with('/'))
         })
+        .map(String::len)
+        .max()
+    {
+        return Some((1, length));
+    }
+    (route.paths.is_empty() && route.path_prefixes.is_empty()).then_some((0, 0))
 }
 
 fn normalize_host(value: &str) -> String {
@@ -876,6 +942,7 @@ mod tests {
             id: "test".into(),
             listeners: vec!["public".into()],
             hosts: vec!["example.test".into()],
+            paths: vec![],
             path_prefixes: vec!["/".into()],
             methods: vec![],
             headers: vec![],
@@ -1240,11 +1307,12 @@ mod tests {
             id: "app".into(),
             listeners: vec!["public".into()],
             hosts: vec!["*.example.test".into()],
+            paths: vec![],
             path_prefixes: vec!["/api".into()],
             methods: vec!["GET".into()],
             headers: vec![aegisproxy_config::HeaderMatch {
                 name: "x-tenant".into(),
-                value: "blue".into(),
+                value: Some("blue".into()),
             }],
             default: false,
             priority: 10,
@@ -1273,6 +1341,7 @@ mod tests {
             id: "specific".into(),
             listeners: vec!["public".into()],
             hosts: vec!["example.test".into()],
+            paths: vec![],
             path_prefixes: vec!["/".into()],
             methods: vec![],
             headers: vec![],
@@ -1286,6 +1355,7 @@ mod tests {
             id: "fallback".into(),
             listeners: vec!["public".into()],
             hosts: vec![],
+            paths: vec![],
             path_prefixes: vec![],
             methods: vec![],
             headers: vec![],
@@ -1304,6 +1374,63 @@ mod tests {
             select_route(&config, &request("GET", "other.test", "/"), "public")
                 .map(|route| route.id.as_str()),
             Some("fallback")
+        );
+    }
+
+    #[test]
+    fn exact_host_and_path_outrank_prefix_with_presence_predicate() {
+        let prefix = RouteConfig {
+            id: "prefix".into(),
+            listeners: vec!["public".into()],
+            hosts: vec!["*.example.test".into()],
+            paths: vec![],
+            path_prefixes: vec!["/api".into()],
+            methods: vec![],
+            headers: vec![],
+            default: false,
+            priority: 0,
+            middlewares: vec![],
+            upstream_group: Some("app".into()),
+        };
+        let mut config = config(prefix);
+        config.routes.push(RouteConfig {
+            id: "exact".into(),
+            listeners: vec!["public".into()],
+            hosts: vec!["api.example.test".into()],
+            paths: vec!["/api/users".into()],
+            path_prefixes: vec![],
+            methods: vec!["GET".into()],
+            headers: vec![aegisproxy_config::HeaderMatch {
+                name: "x-authenticated".into(),
+                value: None,
+            }],
+            default: false,
+            priority: 0,
+            middlewares: vec![],
+            upstream_group: Some("app".into()),
+        });
+
+        let exact = Request::builder()
+            .method("GET")
+            .uri("/api/users")
+            .header(HOST, "api.example.test")
+            .header("x-authenticated", "")
+            .body(Empty::<bytes::Bytes>::new())
+            .expect("request");
+        assert_eq!(
+            select_route(&config, &exact, "public").map(|route| route.id.as_str()),
+            Some("exact")
+        );
+
+        let no_header = request("GET", "api.example.test", "/api/users");
+        assert_eq!(
+            select_route(&config, &no_header, "public").map(|route| route.id.as_str()),
+            Some("prefix")
+        );
+        let trailing = request("GET", "api.example.test", "/api/users/");
+        assert_eq!(
+            select_route(&config, &trailing, "public").map(|route| route.id.as_str()),
+            Some("prefix")
         );
     }
 
@@ -1404,6 +1531,7 @@ mod tests {
             id: "app".into(),
             listeners: vec!["public".into()],
             hosts: vec!["example.test".into()],
+            paths: vec![],
             path_prefixes: vec!["/".into()],
             methods: vec![],
             headers: vec![],
@@ -1470,6 +1598,7 @@ mod tests {
             id: "websocket".into(),
             listeners: vec!["public".into()],
             hosts: vec!["example.test".into()],
+            paths: vec![],
             path_prefixes: vec!["/ws".into()],
             methods: vec![],
             headers: vec![],
@@ -1534,6 +1663,7 @@ mod tests {
             id: "timeout".into(),
             listeners: vec!["public".into()],
             hosts: vec!["example.test".into()],
+            paths: vec![],
             path_prefixes: vec!["/".into()],
             methods: vec![],
             headers: vec![],
@@ -1754,6 +1884,7 @@ mod tests {
             id: "invalid".into(),
             listeners: vec!["public".into()],
             hosts: vec!["example.test".into()],
+            paths: vec![],
             path_prefixes: vec!["/".into()],
             methods: vec![],
             headers: vec![],

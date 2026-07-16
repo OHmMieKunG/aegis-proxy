@@ -227,6 +227,7 @@ async fn proxies_unary_and_streaming_grpc_with_trailers() {
             id: "grpc".into(),
             listeners: vec!["public".into()],
             hosts: vec!["example.test".into()],
+            paths: vec![],
             path_prefixes: vec!["/".into()],
             methods: vec!["POST".into()],
             headers: vec![],
