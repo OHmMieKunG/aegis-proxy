@@ -286,9 +286,28 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             "limits.max_connections is outside 1..=1000000".into(),
         ));
     }
-    if config.limits.max_header_bytes == 0 || config.limits.max_header_bytes > 16 * 1024 * 1024 {
+    if config.limits.max_header_bytes < 8 * 1024 || config.limits.max_header_bytes > 1024 * 1024 {
         return Err(ConfigError::Invalid(
-            "limits.max_header_bytes is outside safe bounds".into(),
+            "limits.max_header_bytes is outside 8192..=1048576".into(),
+        ));
+    }
+    if config.limits.max_headers == 0 || config.limits.max_headers > 1024 {
+        return Err(ConfigError::Invalid(
+            "limits.max_headers is outside 1..=1024".into(),
+        ));
+    }
+    if config.limits.max_request_body == 0 || config.limits.max_request_body > 1024 * 1024 * 1024 {
+        return Err(ConfigError::Invalid(
+            "limits.max_request_body is outside 1..=1073741824".into(),
+        ));
+    }
+    if config.limits.request_header_timeout_secs == 0
+        || config.limits.request_header_timeout_secs > 300
+        || config.limits.response_header_timeout_secs == 0
+        || config.limits.response_header_timeout_secs > 3600
+    {
+        return Err(ConfigError::Invalid(
+            "configured timeouts are outside safe bounds".into(),
         ));
     }
     let mut ids = HashSet::new();
@@ -329,8 +348,21 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                 group.id
             )));
         }
+        if group.algorithm != "round_robin" {
+            return Err(ConfigError::Invalid(format!(
+                "unsupported upstream algorithm {}",
+                group.algorithm
+            )));
+        }
+        let mut endpoint_ids = HashSet::new();
         for endpoint in &group.endpoints {
             valid_id(&endpoint.id)?;
+            if !endpoint_ids.insert(endpoint.id.as_str()) {
+                return Err(ConfigError::Invalid(format!(
+                    "duplicate endpoint id {} in group {}",
+                    endpoint.id, group.id
+                )));
+            }
             if endpoint.weight == 0 {
                 return Err(ConfigError::Invalid(format!(
                     "endpoint {} has zero weight",
@@ -418,34 +450,54 @@ fn valid_id(value: &str) -> Result<(), ConfigError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn base_config() -> Config {
+        Config {
+            schema_version: 1,
+            runtime: RuntimeConfig::default(),
+            limits: LimitsConfig::default(),
+            listeners: vec![ListenerConfig {
+                id: "public".into(),
+                bind: "127.0.0.1:8080".parse().expect("test address"),
+                protocol: "http".into(),
+            }],
+            trusted_proxies: TrustedProxyConfig::default(),
+            upstream_groups: vec![],
+            middlewares: HashMap::new(),
+            routes: vec![],
+            admin: AdminConfig::default(),
+        }
+    }
+
     #[test]
     fn rejects_duplicate_listener_bind() {
-        let config = Config {
-            schema_version: 1,
-            listeners: vec![
-                ListenerConfig {
-                    id: "one".into(),
-                    bind: "127.0.0.1:1".parse().unwrap(),
-                    protocol: "http".into(),
-                },
-                ListenerConfig {
-                    id: "two".into(),
-                    bind: "127.0.0.1:1".parse().unwrap(),
-                    protocol: "http".into(),
-                },
-            ],
-            ..Config {
-                schema_version: 1,
-                runtime: RuntimeConfig::default(),
-                limits: LimitsConfig::default(),
-                listeners: vec![],
-                trusted_proxies: TrustedProxyConfig::default(),
-                upstream_groups: vec![],
-                middlewares: HashMap::new(),
-                routes: vec![],
-                admin: AdminConfig::default(),
-            }
-        };
+        let mut config = base_config();
+        config.listeners.push(ListenerConfig {
+            id: "other".into(),
+            bind: config.listeners[0].bind,
+            protocol: "http".into(),
+        });
         assert!(validate(&config).is_err());
+    }
+
+    #[test]
+    fn rejects_unsafe_resource_limits() {
+        let mut config = base_config();
+        config.limits.max_header_bytes = 1024;
+        assert!(validate(&config).is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_fields() {
+        let source = r#"
+            schema_version = 1
+            unexpected = true
+
+            [[listeners]]
+            id = "public"
+            bind = "127.0.0.1:8080"
+            protocol = "http"
+        "#;
+        assert!(toml::from_str::<Config>(source).is_err());
     }
 }

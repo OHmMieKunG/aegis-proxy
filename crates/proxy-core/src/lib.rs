@@ -7,7 +7,7 @@ use std::{
 };
 
 use aegisproxy_config::{Config, LimitsConfig, RouteConfig};
-use http_body_util::{BodyExt, Full, combinators::BoxBody};
+use http_body_util::{BodyExt, Full, Limited, combinators::BoxBody};
 use hyper::service::Service;
 use hyper::{
     Request, Response, StatusCode, Uri,
@@ -232,7 +232,7 @@ impl ProxyService {
         }
         let request = Request::from_parts(
             parts,
-            body.map_err(|error| Box::new(error) as BoxError).boxed(),
+            Limited::new(body, self.limits.max_request_body).boxed(),
         );
         let result = tokio::select! {
             _ = self.shutdown.cancelled() => return error_response(StatusCode::SERVICE_UNAVAILABLE, "proxy is shutting down\n"),
