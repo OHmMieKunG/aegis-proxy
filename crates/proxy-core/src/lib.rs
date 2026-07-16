@@ -640,7 +640,10 @@ fn health_interval(endpoint_id: &str, policy: &HealthCheckConfig) -> Duration {
     Duration::from_millis(policy.interval_secs * 1_000 * percent / 100)
 }
 
-fn prepare_tls(config: &Config) -> Result<HashMap<String, TlsAcceptor>, ProxyError> {
+fn prepare_tls(
+    config: &Config,
+    tls_challenges: aegisproxy_tls::acme::TlsAlpnChallengeRegistry,
+) -> Result<HashMap<String, TlsAcceptor>, ProxyError> {
     let mut identities = HashMap::new();
     let decryption_identity = config.tls.identity.as_deref();
     for certificate in &config.certificates {
@@ -675,7 +678,8 @@ fn prepare_tls(config: &Config) -> Result<HashMap<String, TlsAcceptor>, ProxyErr
                 })
             })
             .collect();
-        let resolver = CertificateResolver::new(&selected?)?;
+        let resolver =
+            CertificateResolver::with_acme_challenges(&selected?, tls_challenges.clone())?;
         acceptors.insert(
             listener.id.clone(),
             tls_acceptor(resolver, &config.tls.minimum_version)?,

@@ -12,7 +12,10 @@ use aegisproxy_config::{
     Config,
     revision::{RevisionError, RevisionStore},
 };
-use aegisproxy_tls::{TlsAcceptor, acme::HttpChallengeRegistry};
+use aegisproxy_tls::{
+    TlsAcceptor,
+    acme::{HttpChallengeRegistry, TlsAlpnChallengeRegistry},
+};
 use arc_swap::ArcSwap;
 use thiserror::Error;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
@@ -33,6 +36,7 @@ pub(crate) struct RuntimeSnapshot {
     pub(crate) upstream_clients: UpstreamClients,
     pub(crate) upstream_pools: UpstreamPools,
     pub(crate) dns_endpoints: DnsEndpoints,
+    pub(crate) tls_challenges: TlsAlpnChallengeRegistry,
     background_cancel: CancellationToken,
     health_tasks: TaskTracker,
     dns_tasks: TaskTracker,
@@ -82,6 +86,10 @@ impl RuntimeSnapshot {
                 Arc::clone(&previous.dns_endpoints),
             )
         });
+        let tls_challenges = previous
+            .map(|previous| previous.tls_challenges.clone())
+            .unwrap_or_default();
+        let preparation_tls_challenges = tls_challenges.clone();
         let (tls_acceptors, upstream_clients, upstream_pools, dns_endpoints) =
             tokio::task::spawn_blocking(move || {
                 let (mut clients, mut dns_endpoints) = build_upstream_clients(&preparation_config)?;
@@ -115,7 +123,7 @@ impl RuntimeSnapshot {
                     }
                 }
                 Ok::<_, ProxyError>((
-                    prepare_tls(&preparation_config)?,
+                    prepare_tls(&preparation_config, preparation_tls_challenges)?,
                     clients,
                     pools,
                     dns_endpoints,
@@ -151,6 +159,7 @@ impl RuntimeSnapshot {
             upstream_clients,
             upstream_pools,
             dns_endpoints,
+            tls_challenges,
             background_cancel,
             health_tasks,
             dns_tasks,
@@ -169,6 +178,7 @@ impl RuntimeSnapshot {
 pub struct RuntimeHandle {
     current: Arc<ArcSwap<RuntimeSnapshot>>,
     http_challenges: HttpChallengeRegistry,
+    tls_challenges: TlsAlpnChallengeRegistry,
 }
 
 impl fmt::Debug for RuntimeHandle {
@@ -182,9 +192,11 @@ impl fmt::Debug for RuntimeHandle {
 
 impl RuntimeHandle {
     pub(crate) fn new(initial: Arc<RuntimeSnapshot>) -> Self {
+        let tls_challenges = initial.tls_challenges.clone();
         Self {
             current: Arc::new(ArcSwap::from(initial)),
             http_challenges: HttpChallengeRegistry::default(),
+            tls_challenges,
         }
     }
 
@@ -205,6 +217,12 @@ impl RuntimeHandle {
     #[must_use]
     pub fn http_challenges(&self) -> HttpChallengeRegistry {
         self.http_challenges.clone()
+    }
+
+    /// Return the process-wide TLS-ALPN-01 registry retained across configuration reloads.
+    #[must_use]
+    pub fn tls_challenges(&self) -> TlsAlpnChallengeRegistry {
+        self.tls_challenges.clone()
     }
 }
 
@@ -588,6 +606,51 @@ mod tests {
         first.stop_background().await;
         same.stop_background().await;
         changed.stop_background().await;
+    }
+
+    #[tokio::test]
+    async fn retains_tls_alpn_challenges_across_snapshot_reload() {
+        let shutdown = CancellationToken::new();
+        let first = RuntimeSnapshot::prepare(config(8080), "first", &shutdown)
+            .await
+            .expect("first");
+        let lease = first
+            .tls_challenges
+            .install(
+                "example.test",
+                [0x42; 32],
+                std::time::Duration::from_secs(60),
+            )
+            .await
+            .expect("install challenge");
+        let second =
+            RuntimeSnapshot::prepare_reusing(config(8080), "second", &shutdown, Some(&first))
+                .await
+                .expect("second");
+        assert!(matches!(
+            second
+                .tls_challenges
+                .install(
+                    "example.test",
+                    [0x24; 32],
+                    std::time::Duration::from_secs(60)
+                )
+                .await,
+            Err(aegisproxy_tls::acme::TlsAlpnChallengeError::Collision)
+        ));
+        let handle = RuntimeHandle::new(second);
+        assert!(matches!(
+            handle
+                .tls_challenges()
+                .install(
+                    "example.test",
+                    [0x11; 32],
+                    std::time::Duration::from_secs(60)
+                )
+                .await,
+            Err(aegisproxy_tls::acme::TlsAlpnChallengeError::Collision)
+        ));
+        drop(lease);
     }
 
     #[tokio::test]
