@@ -1,28 +1,28 @@
 # ADR-0010: ACME client
 
-Status: Accepted for Phase 6 | Date: 2026-07-16
+Status: Accepted and pinned for Phase 6 | Date: 2026-07-16
 
 ## Context
-ACME needs HTTP-01, DNS-01, TLS-ALPN-01, renewal, and safe failure.
+ACME needs HTTP-01, DNS-01, TLS-ALPN-01, renewal, account recovery, and safe failure. Current dependency capabilities were rechecked before Phase 6 implementation.
 ## Constraints
-Local Pebble tests; no production credentials; one state owner in v1.
+Local Pebble tests; no production credentials; one state owner in v1; Tokio/Hyper/Rustls/AWS-LC compatibility; account credentials must be encrypted before persistence; crate-specific types must not enter configuration or public API contracts.
 ## Options considered
-`instant-acme`; shelling out to Certbot; custom protocol client.
+`instant-acme 0.8.5`; higher-level `rustls-acme`; shelling out to Certbot/acme.sh; custom RFC 8555 client.
 ## Decision
-Use a reviewed pure-Rust ACME client and typed challenge adapters; no shell.
+Pin `instant-acme 0.8.5` behind `proxy-tls::acme::AcmeClient`, with default features disabled and only `aws-lc-rs` plus `hyper-rustls` enabled initially. Add its optional `time`/`x509-parser` ARI features only when the renewal scheduler consumes them. Challenge serving, DNS changes, storage, locking, scheduling, validation, and policy remain application-owned. No subprocess is permitted.
 ## Rationale
-Avoid subprocess injection and keep order/storage state in the proxy.
+The crate is Apache-2.0, declares Rust 1.70 support, released 0.8.5 in 2026, and its official API supports all required challenge types, serializable account credentials, EAB, account-key rollover, revocation, profiles, concurrent orders, and optional ARI. It already uses the selected networking and crypto stack. The adapter limits replacement cost and prevents credential-rich errors/types from leaking outward.
 ## Consequences
-Provider coverage is intentionally small and maintained in project code.
+Account keys are currently P-256 only. Provider coverage remains intentionally small and maintained in project code. Optional ARI dependencies are not paid for until used. The project owns orchestration and must not confuse library protocol support with complete lifecycle safety.
 ## Security implications
-Encrypted account keys, scoped DNS credentials, order locks, and challenge isolation.
+Serialized `AccountCredentials` contains the private account key and must be size-bounded, age-encrypted, redacted, permission-restricted, and never logged. Scoped DNS credentials, single-flight order locks, exact challenge isolation, validated CA responses, and retained working certificates remain mandatory. Dependency advisories require a release gate; `cargo-audit` is unavailable in the current environment.
 ## Reliability implications
-Jitter/backoff and last-working-certificate retention.
+Jitter/backoff, explicit CA classification, bounded concurrency, durable account storage, Pebble tests, and last-working-certificate retention are application responsibilities. Client failure cannot remove or replace active material.
 ## Operational implications
-Explicit staging/production directories and expiry alerts.
+Explicit staging/production directories and expiry alerts. Custom roots are allowed only by explicit configuration, primarily for Pebble/private CAs; system trust remains the default.
 ## Migration implications
-Account/order metadata is versioned; client replacement needs Pebble regression tests.
+Account/order metadata is versioned outside the crate credential JSON. Client upgrade/replacement requires decrypt/restore, Pebble issuance/renewal/rollover, and rollback compatibility tests.
 ## Alternatives rejected
-Certbot subprocesses and a hand-written ACME protocol.
+`rustls-acme` owns more listener/lifecycle policy than desired; subprocess clients add command, credential, and state coordination surfaces; a hand-written protocol client duplicates nonce/JWS/order correctness work.
 ## Revisit conditions
-Library capability, advisory, provider, or compliance change.
+Unresolved advisory, maintenance decline, required non-P-256 account keys, incompatible MSRV/Rustls/Hyper, missing CA behavior, FIPS/compliance change, or repeated Pebble/public-CA interoperability defects.
