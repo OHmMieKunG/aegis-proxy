@@ -1648,8 +1648,42 @@ mod tests {
     async fn managed_file_reload_is_atomic_and_rejects_invalid_change() {
         use std::fs;
         use std::time::{SystemTime, UNIX_EPOCH};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::sync::oneshot;
 
-        let (first_upstream, first_task) = identified_upstream(b"first").await;
+        let first_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("first upstream bind");
+        let first_upstream = first_listener.local_addr().expect("first upstream address");
+        let (release_tx, release_rx) = oneshot::channel();
+        let first_task = tokio::spawn(async move {
+            let mut release_rx = Some(release_rx);
+            loop {
+                let (mut stream, _) = first_listener.accept().await.expect("first accept");
+                let release = release_rx.take();
+                tokio::spawn(async move {
+                    let mut request = [0_u8; 4096];
+                    let _ = stream.read(&mut request).await.expect("first request");
+                    if let Some(release) = release {
+                        stream
+                            .write_all(
+                                b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\na",
+                            )
+                            .await
+                            .expect("first response chunk");
+                        release.await.expect("release old snapshot stream");
+                        stream.write_all(b"b").await.expect("second response chunk");
+                    } else {
+                        stream
+                            .write_all(
+                                b"HTTP/1.1 200 OK\r\ncontent-length: 5\r\nconnection: close\r\n\r\nfirst",
+                            )
+                            .await
+                            .expect("ordinary first response");
+                    }
+                });
+            }
+        });
         let (second_upstream, second_task) = identified_upstream(b"second").await;
         let reserved = TcpListener::bind("127.0.0.1:0")
             .await
@@ -1692,7 +1726,25 @@ mod tests {
         .expect("write first config");
         let shutdown = CancellationToken::new();
         let proxy_task = tokio::spawn(run_managed(config_path.clone(), shutdown.clone()));
-        assert!(proxy_get(proxy_addr).await.ends_with(b"first"));
+        let mut in_flight = connect_to_proxy(proxy_addr).await;
+        in_flight
+            .write_all(b"GET / HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("in-flight request");
+        let mut first_chunk = Vec::new();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !first_chunk.ends_with(b"a") {
+                assert!(first_chunk.len() < 1024, "unexpected response header size");
+                let count = in_flight
+                    .read_buf(&mut first_chunk)
+                    .await
+                    .expect("old snapshot response");
+                assert!(count > 0, "old snapshot response closed early");
+            }
+        })
+        .await
+        .expect("old snapshot response timed out");
+        assert!(first_chunk.starts_with(b"HTTP/1.1 200 OK"));
 
         managed.upstream_groups[0].endpoints[0].url = format!("http://{second_upstream}")
             .parse()
@@ -1713,6 +1765,13 @@ mod tests {
             assert!(tokio::time::Instant::now() < deadline, "reload timed out");
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+        release_tx.send(()).expect("release old snapshot stream");
+        let mut old_tail = Vec::new();
+        in_flight
+            .read_to_end(&mut old_tail)
+            .await
+            .expect("finish old snapshot response");
+        assert!(old_tail.ends_with(b"b"));
 
         fs::write(&config_path, "schema_version = 1\nunknown = true\n")
             .expect("write invalid config");
