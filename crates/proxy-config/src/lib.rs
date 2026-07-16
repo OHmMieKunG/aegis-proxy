@@ -565,12 +565,17 @@ pub use redact::redacted;
 /// Parse and validate a bounded configuration file.
 pub fn load_file(path: impl AsRef<Path>) -> Result<Config, ConfigError> {
     let bytes = fs::read(path)?;
+    load_bytes(&bytes)
+}
+
+/// Parse and validate bounded configuration bytes.
+pub fn load_bytes(bytes: &[u8]) -> Result<Config, ConfigError> {
     if bytes.len() > MAX_CONFIG_BYTES {
         return Err(ConfigError::Invalid(format!(
             "configuration exceeds {MAX_CONFIG_BYTES} bytes"
         )));
     }
-    let text = std::str::from_utf8(&bytes)
+    let text = std::str::from_utf8(bytes)
         .map_err(|_| ConfigError::Invalid("configuration must be UTF-8".into()))?;
     let config: Config = toml::from_str(text)?;
     validate(&config)?;

@@ -30,6 +30,7 @@ use hyper_util::{
     client::legacy::{Client, connect::HttpConnector},
     rt::{TokioExecutor, TokioIo, TokioTimer},
 };
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -294,6 +295,7 @@ async fn watch_config_file(
     runtime: RuntimeHandle,
     shutdown: CancellationToken,
 ) {
+    let mut last_hash = None;
     let mut last_error: Option<String> = None;
     loop {
         let interval = Duration::from_secs(runtime.load().config.runtime.config_poll_secs);
@@ -303,11 +305,15 @@ async fn watch_config_file(
         }
         let loaded = tokio::task::spawn_blocking({
             let config_path = config_path.clone();
-            move || aegisproxy_config::load_file(config_path)
+            move || {
+                let bytes = std::fs::read(config_path).map_err(ConfigError::from)?;
+                let hash: [u8; 32] = Sha256::digest(&bytes).into();
+                Ok::<_, ConfigError>((hash, aegisproxy_config::load_bytes(&bytes)))
+            }
         })
         .await;
-        let config = match loaded {
-            Ok(Ok(config)) => config,
+        let (hash, parsed) = match loaded {
+            Ok(Ok(loaded)) => loaded,
             Ok(Err(error)) => {
                 let message = error.to_string();
                 if last_error.as_deref() != Some(message.as_str()) {
@@ -322,6 +328,17 @@ async fn watch_config_file(
             }
         };
         last_error = None;
+        if last_hash == Some(hash) {
+            continue;
+        }
+        last_hash = Some(hash);
+        let config = match parsed {
+            Ok(config) => config,
+            Err(error) => {
+                tracing::error!(%error, "changed configuration rejected");
+                continue;
+            }
+        };
         let candidate = tokio::task::spawn_blocking({
             let revisions = Arc::clone(&revisions);
             move || revisions.create_candidate(&config, "file")
