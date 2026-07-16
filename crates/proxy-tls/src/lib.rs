@@ -3,6 +3,7 @@
 //! TLS identity loading, certificate selection, and server configuration.
 
 mod acceptor;
+pub mod acme;
 mod client;
 mod generation;
 mod selector;
