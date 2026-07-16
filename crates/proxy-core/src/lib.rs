@@ -1715,7 +1715,14 @@ mod tests {
         });
         managed.listeners[0].bind = proxy_addr;
         managed.runtime.state_dir = root.join("state").to_string_lossy().into_owned();
-        managed.runtime.config_poll_secs = 1;
+        #[cfg(not(unix))]
+        {
+            managed.runtime.config_poll_secs = 1;
+        }
+        #[cfg(unix)]
+        {
+            managed.runtime.config_poll_secs = 60;
+        }
         managed.upstream_groups[0].endpoints[0].url = format!("http://{first_upstream}")
             .parse()
             .expect("first upstream");
@@ -1754,6 +1761,14 @@ mod tests {
             toml::to_string_pretty(&managed).expect("serialize second config"),
         )
         .expect("write second config");
+        #[cfg(unix)]
+        assert!(
+            std::process::Command::new("kill")
+                .args(["-HUP", &std::process::id().to_string()])
+                .status()
+                .expect("send SIGHUP")
+                .success()
+        );
         let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
         loop {
             let response = proxy_get(proxy_addr).await;
@@ -1775,7 +1790,22 @@ mod tests {
 
         fs::write(&config_path, "schema_version = 1\nunknown = true\n")
             .expect("write invalid config");
-        tokio::time::sleep(Duration::from_millis(1_100)).await;
+        #[cfg(unix)]
+        assert!(
+            std::process::Command::new("kill")
+                .args(["-HUP", &std::process::id().to_string()])
+                .status()
+                .expect("send invalid-config SIGHUP")
+                .success()
+        );
+        #[cfg(not(unix))]
+        {
+            tokio::time::sleep(Duration::from_millis(1_100)).await;
+        }
+        #[cfg(unix)]
+        {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
         assert!(proxy_get(proxy_addr).await.ends_with(b"second"));
         shutdown.cancel();
         proxy_task.await.expect("proxy task").expect("proxy run");

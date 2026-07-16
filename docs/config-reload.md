@@ -50,4 +50,4 @@ Offline activation and rollback are intentionally absent. Mutation requires prep
 - Corrupt, oversized, unknown-field, hash-mismatched, or missing referenced state fails closed.
 - If in-memory rollback succeeds but durable rollback fails, traffic uses the old snapshot and further administrative mutation is disabled until restart/recovery.
 
-Automated tests cover same-hash concurrency, stale compare-and-swap, journal-before-pointer recovery, incomplete probation, committed restart, invalid live reload, explicit recovery, and accepted requests returning either the old or new successful response during reload. Power-loss guarantees still require Linux filesystem crash testing on the deployment storage stack.
+Automated tests cover same-hash concurrency, stale compare-and-swap, journal-before-pointer recovery, incomplete probation, committed restart, invalid live reload, explicit recovery, Unix SIGHUP activation, and accepted requests returning either the old or new successful response during reload. Power-loss guarantees still require Linux filesystem crash testing on the deployment storage stack.
