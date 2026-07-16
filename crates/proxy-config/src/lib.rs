@@ -5,7 +5,7 @@
 use std::{
     collections::{HashMap, HashSet},
     fs,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     path::Path,
 };
 
@@ -377,6 +377,16 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                     endpoint.id
                 )));
             }
+            let host = endpoint.url.host_str().unwrap_or_default();
+            let ip = host.parse::<IpAddr>().map_err(|_| {
+                ConfigError::Invalid(format!(
+                    "endpoint {} must use a literal IP until DNS discovery is implemented",
+                    endpoint.id
+                ))
+            })?;
+            validate_egress_ip(ip, &group.allowed_cidrs).map_err(|reason| {
+                ConfigError::Invalid(format!("endpoint {} is not allowed: {reason}", endpoint.id))
+            })?;
         }
     }
     let listener_ids: HashSet<&str> = config.listeners.iter().map(|l| l.id.as_str()).collect();
@@ -428,6 +438,27 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                 )));
             }
         }
+    }
+    Ok(())
+}
+
+fn validate_egress_ip(ip: IpAddr, allowed: &[IpNet]) -> Result<(), &'static str> {
+    if ip.is_unspecified() || ip.is_multicast() {
+        return Err("unspecified and multicast addresses are forbidden");
+    }
+    let link_local = match ip {
+        IpAddr::V4(ip) => ip.is_link_local(),
+        IpAddr::V6(ip) => ip.is_unicast_link_local(),
+    };
+    if link_local {
+        return Err("link-local addresses are forbidden");
+    }
+    let private = match ip {
+        IpAddr::V4(ip) => ip.is_private() || ip.is_loopback(),
+        IpAddr::V6(ip) => (ip.segments()[0] & 0xfe00) == 0xfc00 || ip.is_loopback(),
+    };
+    if private && !allowed.iter().any(|network| network.contains(&ip)) {
+        return Err("private or loopback address requires allowed_cidrs");
     }
     Ok(())
 }
@@ -499,5 +530,15 @@ mod tests {
             protocol = "http"
         "#;
         assert!(toml::from_str::<Config>(source).is_err());
+    }
+
+    #[test]
+    fn egress_policy_requires_explicit_private_network() {
+        let loopback: IpAddr = "127.0.0.1".parse().expect("IP");
+        assert!(validate_egress_ip(loopback, &[]).is_err());
+        let allowed = ["127.0.0.1/32".parse().expect("CIDR")];
+        assert!(validate_egress_ip(loopback, &allowed).is_ok());
+        let metadata: IpAddr = "169.254.169.254".parse().expect("IP");
+        assert!(validate_egress_ip(metadata, &["169.254.0.0/16".parse().expect("CIDR")]).is_err());
     }
 }

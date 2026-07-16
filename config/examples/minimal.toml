@@ -8,6 +8,7 @@ protocol = "http"
 [[upstream_groups]]
 id = "app"
 algorithm = "round_robin"
+allowed_cidrs = ["127.0.0.1/32"]
 
 [[upstream_groups.endpoints]]
 id = "app-1"

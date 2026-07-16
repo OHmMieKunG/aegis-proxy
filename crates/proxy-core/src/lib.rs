@@ -6,7 +6,7 @@ use std::{
     convert::Infallible, error::Error, future::Future, net::SocketAddr, pin::Pin, sync::Arc,
 };
 
-use aegisproxy_config::{Config, LimitsConfig, RouteConfig};
+use aegisproxy_config::{Config, ConfigError, LimitsConfig, RouteConfig};
 use http_body_util::{BodyExt, Full, Limited, combinators::BoxBody};
 use hyper::service::Service;
 use hyper::{
@@ -33,6 +33,9 @@ pub type ResponseBody = BoxBody<bytes::Bytes, BoxError>;
 /// Proxy runtime error.
 #[derive(Debug, Error)]
 pub enum ProxyError {
+    /// Invalid startup configuration.
+    #[error("configuration failed validation: {0}")]
+    Config(#[from] ConfigError),
     /// Listener bind failure.
     #[error("listener failed: {0}")]
     Io(#[from] std::io::Error),
@@ -40,6 +43,7 @@ pub enum ProxyError {
 
 /// Run configured HTTP listeners until cancellation.
 pub async fn run(config: Arc<Config>, shutdown: CancellationToken) -> Result<(), ProxyError> {
+    aegisproxy_config::validate(&config)?;
     let mut tasks = tokio::task::JoinSet::new();
     for listener in config
         .listeners
@@ -60,8 +64,6 @@ pub async fn run(config: Arc<Config>, shutdown: CancellationToken) -> Result<(),
             "no http listeners configured",
         )));
     }
-    shutdown.cancelled().await;
-    tasks.abort_all();
     while tasks.join_next().await.is_some() {}
     Ok(())
 }
@@ -74,8 +76,19 @@ async fn accept_loop(
     shutdown: CancellationToken,
 ) {
     let permits = Arc::new(Semaphore::new(limits.max_connections));
+    let mut connections = tokio::task::JoinSet::new();
     loop {
-        let accepted = tokio::select! { _ = shutdown.cancelled() => break, result = listener.accept() => result };
+        let accepted = tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => break,
+            completed = connections.join_next(), if !connections.is_empty() => {
+                if let Some(Err(error)) = completed {
+                    tracing::debug!(%error, "connection task failed");
+                }
+                continue;
+            }
+            result = listener.accept() => result,
+        };
         let Ok((stream, peer)) = accepted else {
             continue;
         };
@@ -87,7 +100,7 @@ async fn accept_loop(
         let shutdown = shutdown.clone();
         let limits = limits.clone();
         let listener_id = listener_id.clone();
-        tokio::spawn(async move {
+        connections.spawn(async move {
             let _permit = permit;
             if let Err(error) =
                 serve_connection(stream, peer, listener_id, config, limits, shutdown).await
@@ -95,6 +108,16 @@ async fn accept_loop(
                 tracing::debug!(%peer, %error, "connection ended");
             }
         });
+    }
+    let drain_deadline = std::time::Duration::from_secs(config.runtime.shutdown_grace_secs);
+    if tokio::time::timeout(drain_deadline, async {
+        while connections.join_next().await.is_some() {}
+    })
+    .await
+    .is_err()
+    {
+        connections.abort_all();
+        while connections.join_next().await.is_some() {}
     }
 }
 
@@ -115,14 +138,20 @@ async fn serve_connection(
         listener_id,
         limits,
         client,
-        shutdown,
     };
-    hyper::server::conn::http1::Builder::new()
+    let connection = hyper::server::conn::http1::Builder::new()
         .max_buf_size(max_header_bytes)
         .keep_alive(true)
         .serve_connection(io, service)
-        .with_upgrades()
-        .await
+        .with_upgrades();
+    tokio::pin!(connection);
+    tokio::select! {
+        result = &mut connection => result,
+        _ = shutdown.cancelled() => {
+            connection.as_mut().graceful_shutdown();
+            connection.await
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -132,7 +161,6 @@ struct ProxyService {
     listener_id: String,
     limits: LimitsConfig,
     client: Client<HttpConnector, ResponseBody>,
-    shutdown: CancellationToken,
 }
 
 impl Service<Request<Incoming>> for ProxyService {
@@ -234,10 +262,7 @@ impl ProxyService {
             parts,
             Limited::new(body, self.limits.max_request_body).boxed(),
         );
-        let result = tokio::select! {
-            _ = self.shutdown.cancelled() => return error_response(StatusCode::SERVICE_UNAVAILABLE, "proxy is shutting down\n"),
-            result = self.client.request(request) => result,
-        };
+        let result = self.client.request(request).await;
         match result {
             Ok(response) => {
                 response.map(|body| body.map_err(|error| Box::new(error) as BoxError).boxed())
@@ -409,7 +434,7 @@ mod tests {
             upstream_groups: vec![UpstreamGroupConfig {
                 id: "app".into(),
                 algorithm: "round_robin".into(),
-                allowed_cidrs: vec![],
+                allowed_cidrs: vec!["127.0.0.1/32".parse().expect("CIDR")],
                 endpoints: vec![EndpointConfig {
                     id: "app-1".into(),
                     url: "http://127.0.0.1:9000".parse().expect("url"),
@@ -491,14 +516,19 @@ mod tests {
     async fn forwards_http_request_and_response() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
+        use tokio::sync::oneshot;
         let upstream = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("upstream bind");
         let upstream_addr = upstream.local_addr().expect("upstream address");
+        let (request_seen_tx, request_seen_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
         let upstream_task = tokio::spawn(async move {
             let (mut stream, _) = upstream.accept().await.expect("upstream accept");
             let mut request = vec![0_u8; 4096];
             let _ = stream.read(&mut request).await.expect("upstream read");
+            request_seen_tx.send(()).expect("signal request");
+            release_rx.await.expect("release response");
             stream
                 .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")
                 .await
@@ -531,6 +561,9 @@ mod tests {
             .write_all(b"GET /hello HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n")
             .await
             .expect("client write");
+        request_seen_rx.await.expect("upstream saw request");
+        shutdown.cancel();
+        release_tx.send(()).expect("release upstream");
         let mut response = Vec::new();
         client
             .read_to_end(&mut response)
@@ -538,7 +571,6 @@ mod tests {
             .expect("client read");
         assert!(response.starts_with(b"HTTP/1.1 200 OK"));
         assert!(response.ends_with(b"ok"));
-        shutdown.cancel();
         task.await.expect("proxy task").expect("proxy run");
         upstream_task.await.expect("upstream task");
     }
