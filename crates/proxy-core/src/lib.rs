@@ -2,12 +2,14 @@
 #![warn(missing_debug_implementations, missing_docs)]
 //! Data-plane HTTP forwarding primitives.
 
+mod route;
+
 use std::{
     collections::HashMap, convert::Infallible, error::Error, future::Future, net::SocketAddr,
     pin::Pin, sync::Arc, time::Duration,
 };
 
-use aegisproxy_config::{Config, ConfigError, LimitsConfig, RouteConfig};
+use aegisproxy_config::{Config, ConfigError, LimitsConfig};
 use aegisproxy_tls::{CertificateResolver, Identity, TlsAcceptor, load_identity, tls_acceptor};
 use http_body_util::{BodyExt, Full, Limited, combinators::BoxBody};
 use hyper::service::Service;
@@ -29,6 +31,9 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
+
+pub use route::RouteIndex;
+use route::{PathError, canonical_host, canonicalize_request_path, request_host};
 
 /// Boxed body error.
 pub type BoxError = Box<dyn Error + Send + Sync>;
@@ -57,6 +62,7 @@ pub enum ProxyError {
 /// Run configured HTTP and HTTPS listeners until cancellation.
 pub async fn run(config: Arc<Config>, shutdown: CancellationToken) -> Result<(), ProxyError> {
     aegisproxy_config::validate(&config)?;
+    let route_index = Arc::new(RouteIndex::compile(&config));
     let preparation_config = Arc::clone(&config);
     let (mut tls_acceptors, upstream_clients) = tokio::task::spawn_blocking(move || {
         Ok::<_, ProxyError>((
@@ -81,6 +87,7 @@ pub async fn run(config: Arc<Config>, shutdown: CancellationToken) -> Result<(),
         let limits = config.limits.clone();
         let handshake_permits = Arc::clone(&handshake_permits);
         let upstream_clients = Arc::clone(&upstream_clients);
+        let route_index = Arc::clone(&route_index);
         tracing::info!(listener = %listener_id, bind = %listener.bind, protocol = %listener.protocol, "listener started");
         tasks.spawn(async move {
             accept_loop(
@@ -88,6 +95,7 @@ pub async fn run(config: Arc<Config>, shutdown: CancellationToken) -> Result<(),
                 ListenerContext {
                     listener_id,
                     config,
+                    route_index,
                     limits,
                     tls_acceptor,
                     handshake_permits,
@@ -200,6 +208,7 @@ fn prepare_tls(config: &Config) -> Result<HashMap<String, TlsAcceptor>, ProxyErr
 struct ListenerContext {
     listener_id: String,
     config: Arc<Config>,
+    route_index: Arc<RouteIndex>,
     limits: LimitsConfig,
     tls_acceptor: Option<TlsAcceptor>,
     handshake_permits: Arc<Semaphore>,
@@ -211,6 +220,7 @@ async fn accept_loop(listener: TcpListener, context: ListenerContext) {
     let ListenerContext {
         listener_id,
         config,
+        route_index,
         limits,
         tls_acceptor,
         handshake_permits,
@@ -249,6 +259,7 @@ async fn accept_loop(listener: TcpListener, context: ListenerContext) {
             None
         };
         let config = Arc::clone(&config);
+        let route_index = Arc::clone(&route_index);
         let shutdown = shutdown.clone();
         let limits = limits.clone();
         let listener_id = listener_id.clone();
@@ -261,6 +272,7 @@ async fn accept_loop(listener: TcpListener, context: ListenerContext) {
                 peer,
                 listener_id,
                 config,
+                route_index,
                 limits,
                 shutdown,
                 upgrade_tasks,
@@ -315,6 +327,7 @@ struct ConnectionContext {
     peer: SocketAddr,
     listener_id: String,
     config: Arc<Config>,
+    route_index: Arc<RouteIndex>,
     limits: LimitsConfig,
     shutdown: CancellationToken,
     upgrade_tasks: TaskTracker,
@@ -350,6 +363,7 @@ where
     let max_header_bytes = context.limits.max_header_bytes;
     let service = ProxyService {
         config: context.config,
+        route_index: context.route_index,
         peer: context.peer,
         listener_id: context.listener_id,
         limits: context.limits,
@@ -386,6 +400,7 @@ where
     let io = TokioIo::new(stream);
     let service = ProxyService {
         config: context.config,
+        route_index: context.route_index,
         peer: context.peer,
         listener_id: context.listener_id,
         limits: context.limits,
@@ -411,6 +426,7 @@ where
 #[derive(Clone)]
 struct ProxyService {
     config: Arc<Config>,
+    route_index: Arc<RouteIndex>,
     peer: SocketAddr,
     listener_id: String,
     limits: LimitsConfig,
@@ -436,11 +452,23 @@ impl ProxyService {
         if let Some(status) = reject_unsafe_request_target(&request) {
             return error_response(status, "request target is not supported\n");
         }
+        match canonicalize_request_path(&mut request, self.limits.max_request_target) {
+            Ok(()) => {}
+            Err(PathError::TooLong) => {
+                return error_response(StatusCode::URI_TOO_LONG, "request target is too long\n");
+            }
+            Err(PathError::Invalid) => {
+                return error_response(StatusCode::BAD_REQUEST, "request path is not canonical\n");
+            }
+        }
         if self
             .tls_server_name
             .as_deref()
             .is_some_and(|server_name| match request_host(&request) {
-                Ok(host) => host != normalize_host(server_name),
+                Ok(host) => match canonical_host(server_name) {
+                    Ok(server_name) => host != server_name,
+                    Err(()) => true,
+                },
                 Err(()) => true,
             })
         {
@@ -472,7 +500,10 @@ impl ProxyService {
             return error_response(StatusCode::BAD_REQUEST, "invalid upgrade request\n");
         }
         let client_upgrade = websocket.then(|| hyper::upgrade::on(&mut request));
-        let Some(route) = select_route(&self.config, &request, &self.listener_id) else {
+        let Some(route) = self
+            .route_index
+            .select(&self.config, &request, &self.listener_id)
+        else {
             return error_response(StatusCode::NOT_FOUND, "no matching route\n");
         };
         let Some(group_id) = route.upstream_group.as_deref() else {
@@ -652,24 +683,6 @@ fn reject_unsafe_request_target<B>(request: &Request<B>) -> Option<StatusCode> {
     None
 }
 
-fn request_host<B>(request: &Request<B>) -> Result<String, ()> {
-    let authority_host = request
-        .uri()
-        .authority()
-        .map(|authority| normalize_host(authority.as_str()));
-    let header_host = request
-        .headers()
-        .get(HOST)
-        .and_then(|value| value.to_str().ok())
-        .map(normalize_host);
-    match (authority_host, header_host) {
-        (Some(authority), Some(header)) if authority != header => Err(()),
-        (Some(authority), _) => Ok(authority),
-        (_, Some(header)) if !header.is_empty() => Ok(header),
-        _ => Err(()),
-    }
-}
-
 fn is_websocket_upgrade<B>(request: &Request<B>) -> bool {
     request.method() == hyper::Method::GET
         && request
@@ -724,142 +737,6 @@ fn strip_hop_by_hop_headers(
     }
 }
 
-/// Choose the highest-priority route whose listener, host, path, and method match.
-pub fn select_route<'a, B>(
-    config: &'a Config,
-    request: &Request<B>,
-    listener_id: &str,
-) -> Option<&'a RouteConfig> {
-    let host = request_host(request).unwrap_or_default();
-    let path = request.uri().path();
-    config
-        .routes
-        .iter()
-        .filter(|route| route.listeners.iter().any(|id| id == listener_id))
-        .filter_map(|route| {
-            route_match_score(route, request, &host, path).map(|score| (score, route))
-        })
-        .max_by_key(|(score, _)| *score)
-        .map(|(_, route)| route)
-}
-
-type RouteMatchScore = (bool, i32, u8, usize, u8, usize, bool, usize, usize, usize);
-
-fn route_match_score<B>(
-    route: &RouteConfig,
-    request: &Request<B>,
-    host: &str,
-    path: &str,
-) -> Option<RouteMatchScore> {
-    if route.default {
-        return Some((false, 0, 0, 0, 0, 0, false, 0, 0, 0));
-    }
-    let (host_kind, host_length) = host_match_score(&route.hosts, host)?;
-    let (path_kind, path_length) = path_match_score(route, path)?;
-    let method_specific = !route.methods.is_empty();
-    if method_specific
-        && !route
-            .methods
-            .iter()
-            .any(|method| method == request.method().as_str())
-    {
-        return None;
-    }
-    if !route.headers.iter().all(|predicate| {
-        let value = request.headers().get(&predicate.name);
-        match &predicate.value {
-            Some(expected) => value
-                .and_then(|value| value.to_str().ok())
-                .is_some_and(|value| value == expected),
-            None => value.is_some(),
-        }
-    }) {
-        return None;
-    }
-    let exact_headers = route
-        .headers
-        .iter()
-        .filter(|predicate| predicate.value.is_some())
-        .count();
-    Some((
-        true,
-        route.priority,
-        host_kind,
-        host_length,
-        path_kind,
-        path_length,
-        method_specific,
-        if method_specific {
-            usize::MAX - route.methods.len()
-        } else {
-            0
-        },
-        route.headers.len(),
-        exact_headers,
-    ))
-}
-
-fn host_match_score(hosts: &[String], host: &str) -> Option<(u8, usize)> {
-    if hosts.is_empty() {
-        return Some((0, 0));
-    }
-    hosts
-        .iter()
-        .filter_map(|candidate| {
-            if candidate == host {
-                Some((2, candidate.len()))
-            } else if candidate.strip_prefix("*.").is_some_and(|suffix| {
-                host.strip_suffix(suffix).is_some_and(|prefix| {
-                    prefix.ends_with('.') && !prefix[..prefix.len() - 1].contains('.')
-                })
-            }) {
-                Some((1, candidate.len()))
-            } else {
-                None
-            }
-        })
-        .max()
-}
-
-fn path_match_score(route: &RouteConfig, path: &str) -> Option<(u8, usize)> {
-    if let Some(length) = route
-        .paths
-        .iter()
-        .filter(|candidate| candidate.as_str() == path)
-        .map(String::len)
-        .max()
-    {
-        return Some((2, length));
-    }
-    if let Some(length) = route
-        .path_prefixes
-        .iter()
-        .filter(|prefix| {
-            prefix.as_str() == "/"
-                || path == prefix.as_str()
-                || path
-                    .strip_prefix(prefix.as_str())
-                    .is_some_and(|rest| rest.starts_with('/'))
-        })
-        .map(String::len)
-        .max()
-    {
-        return Some((1, length));
-    }
-    (route.paths.is_empty() && route.path_prefixes.is_empty()).then_some((0, 0))
-}
-
-fn normalize_host(value: &str) -> String {
-    let value = value.trim_end_matches('.').to_ascii_lowercase();
-    if let Some(rest) = value.strip_prefix('[') {
-        return rest.split(']').next().unwrap_or(rest).to_owned();
-    }
-    value
-        .rsplit_once(':')
-        .filter(|(_, port)| port.bytes().all(|byte| byte.is_ascii_digit()))
-        .map_or(value.clone(), |(host, _)| host.to_owned())
-}
-
 /// Create a bounded error response.
 pub fn error_response(status: StatusCode, message: &'static str) -> Response<ResponseBody> {
     Response::builder()
@@ -891,6 +768,14 @@ mod tests {
             .header(HOST, host)
             .body(Empty::<bytes::Bytes>::new())
             .expect("test request is valid")
+    }
+
+    fn select_route<'a, B>(
+        config: &'a Config,
+        request: &Request<B>,
+        listener_id: &str,
+    ) -> Option<&'a RouteConfig> {
+        RouteIndex::compile(config).select(config, request, listener_id)
     }
 
     fn config(route: RouteConfig) -> Config {
@@ -1515,6 +1400,7 @@ mod tests {
             let count = stream.read(&mut request).await.expect("upstream read");
             let request = std::str::from_utf8(&request[..count]).expect("request text");
             assert!(request.contains(&format!("host: {upstream_addr}")));
+            assert!(request.starts_with("GET /hello/~user HTTP/1.1\r\n"));
             request_seen_tx.send(()).expect("signal request");
             release_rx.await.expect("release response");
             stream
@@ -1548,7 +1434,9 @@ mod tests {
         let task = tokio::spawn(run(Arc::new(config), shutdown.clone()));
         let mut client = connect_to_proxy(proxy_addr).await;
         client
-            .write_all(b"GET /hello HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n")
+            .write_all(
+                b"GET /hello/%7euser HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n",
+            )
             .await
             .expect("client write");
         request_seen_rx.await.expect("upstream saw request");
@@ -2012,6 +1900,38 @@ mod tests {
         )
         .await;
         assert!(!response.starts_with(b"HTTP/1.1 200"));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), upstream.accept())
+                .await
+                .is_err()
+        );
+        shutdown.cancel();
+        task.await.expect("proxy task").expect("proxy run");
+    }
+
+    #[tokio::test]
+    async fn rejects_encoded_path_separator_before_upstream() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("upstream bind");
+        let upstream_addr = upstream.local_addr().expect("upstream address");
+        let (proxy_addr, shutdown, task) = start_test_proxy(upstream_addr, |_| {}).await;
+        let mut client = connect_to_proxy(proxy_addr).await;
+        client
+            .write_all(
+                b"GET /public%2fadmin HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .expect("request write");
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("response read");
+        assert!(response.starts_with(b"HTTP/1.1 400 Bad Request"));
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(100), upstream.accept())
                 .await

@@ -103,6 +103,8 @@ pub struct LimitsConfig {
     pub max_header_bytes: usize,
     /// Maximum header count.
     pub max_headers: usize,
+    /// Maximum request-target bytes, including query.
+    pub max_request_target: usize,
     /// Maximum concurrent HTTP/2 streams per connection.
     pub max_http2_streams: u32,
     /// Maximum request body bytes.
@@ -119,6 +121,7 @@ impl Default for LimitsConfig {
             max_connections: 4096,
             max_header_bytes: 32 * 1024,
             max_headers: 100,
+            max_request_target: 8 * 1024,
             max_http2_streams: 128,
             max_request_body: 32 * 1024 * 1024,
             request_header_timeout_secs: 10,
@@ -442,6 +445,11 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
     if config.limits.max_headers == 0 || config.limits.max_headers > 1024 {
         return Err(ConfigError::Invalid(
             "limits.max_headers is outside 1..=1024".into(),
+        ));
+    }
+    if config.limits.max_request_target < 1_024 || config.limits.max_request_target > 64 * 1024 {
+        return Err(ConfigError::Invalid(
+            "limits.max_request_target is outside 1024..=65536".into(),
         ));
     }
     if config.limits.max_http2_streams == 0 || config.limits.max_http2_streams > 10_000 {
@@ -953,6 +961,9 @@ mod tests {
     fn rejects_unsafe_resource_limits() {
         let mut config = base_config();
         config.limits.max_header_bytes = 1024;
+        assert!(validate(&config).is_err());
+        config.limits.max_header_bytes = LimitsConfig::default().max_header_bytes;
+        config.limits.max_request_target = 512;
         assert!(validate(&config).is_err());
     }
 
