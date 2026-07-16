@@ -1,6 +1,6 @@
 # ADR-0003: Rustls crypto provider
 
-Status: Proposed for Phase 2 verification
+Status: Accepted
 Date: 2026-07-16
 
 ## Context
@@ -17,35 +17,35 @@ Rustls ring provider; Rustls aws-lc-rs provider; OpenSSL bindings.
 
 ## Decision
 
-Keep provider selection explicit and verify `aws-lc-rs` versus `ring` in Phase 2; no accidental default provider.
+Use Rustls with the `aws_lc_rs` provider selected through explicit Cargo features. Disable Rustls default features and enable only `aws_lc_rs`, `std`, and TLS 1.2 support. Do not claim FIPS validation and do not install a fallback provider.
 
 ## Rationale
 
-The plan values Rustls; provider choice affects native build and license risk and must be evidence-based.
+The provider compiled and linked successfully in the Windows GNU workspace, the Linux release container, and the Linux test container. It supports the required Rustls TLS 1.2/1.3 policy. Ring remains a viable portability fallback, but carrying two runtime providers increases artifact and review surface without a demonstrated need.
 
 ## Consequences
 
-The lockfile and release targets must build the selected provider.
+The native AWS-LC build increases clean build time and requires CMake plus a C toolchain. Container build caches are used, and every supported release target must compile the provider.
 
 ## Security implications
 
-Provider advisories and crypto policy are release gates; no custom cryptography.
+Provider advisories and crypto policy are release gates; no custom cryptography, runtime provider choice, FIPS claim, or silent fallback exists.
 
 ## Reliability implications
 
-Provider build failures block the target artifact rather than silently falling back.
+Provider build failures block the target artifact rather than silently falling back. Windows MSVC remains unverified because the local environment lacks the MSVC linker; Linux builds pass.
 
 ## Operational implications
 
-Container/toolchain images must include required native build inputs if selected.
+Container/toolchain images include CMake. Build-time and SBOM/native-code surface are documented and monitored.
 
 ## Migration implications
 
-Changing provider requires TLS interoperability and artifact review.
+Changing provider requires a superseding ADR, TLS interoperability matrix, artifact/SBOM review, and full certificate-store restore test.
 
 ## Alternatives rejected
 
-Native OpenSSL is not selected for v1 because it adds ABI/package surface.
+Ring was rejected for the current target because AWS-LC already passed both supported Linux build paths. Native OpenSSL remains rejected because it adds ABI/package surface.
 
 ## Revisit conditions
 
