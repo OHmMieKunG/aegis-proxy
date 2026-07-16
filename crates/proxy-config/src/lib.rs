@@ -2,6 +2,8 @@
 #![warn(missing_debug_implementations, missing_docs)]
 //! Strict, bounded configuration types and validation.
 
+mod conflict;
+
 use std::{
     collections::{HashMap, HashSet},
     fs,
@@ -655,6 +657,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             }
         }
     }
+    conflict::validate_route_conflicts(&config.routes)?;
     Ok(())
 }
 
