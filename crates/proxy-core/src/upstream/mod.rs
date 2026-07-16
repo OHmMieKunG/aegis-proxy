@@ -1,3 +1,4 @@
+mod circuit;
 mod health;
 mod pool;
 

@@ -13,7 +13,10 @@ use aegisproxy_config::{
 use hyper::body::{Body, Frame, SizeHint};
 use thiserror::Error;
 
-use super::health::{EndpointHealth, EndpointState};
+use super::{
+    circuit::{CircuitBreaker, CircuitPermit},
+    health::{EndpointHealth, EndpointState},
+};
 
 #[derive(Debug, Error)]
 pub(crate) enum PoolError {
@@ -23,6 +26,8 @@ pub(crate) enum PoolError {
     ZeroWeight,
     #[error("no upstream endpoint is available")]
     Unavailable,
+    #[error("upstream circuit is open")]
+    CircuitOpen,
 }
 
 #[derive(Debug)]
@@ -64,6 +69,7 @@ pub(crate) struct SelectedEndpoint {
     endpoint: Arc<EndpointRuntime>,
     passive_health: Arc<PassiveHealthConfig>,
     active_health: bool,
+    circuit_permit: Option<CircuitPermit>,
 }
 
 impl SelectedEndpoint {
@@ -72,12 +78,18 @@ impl SelectedEndpoint {
     }
 
     pub(crate) fn record_success(&self) {
+        if let Some(permit) = &self.circuit_permit {
+            permit.record_success();
+        }
         self.endpoint
             .health
             .record_passive_success(self.passive_health.healthy_threshold, self.active_health);
     }
 
     pub(crate) fn record_failure(&self) {
+        if let Some(permit) = &self.circuit_permit {
+            permit.record_failure();
+        }
         self.endpoint
             .health
             .record_passive_failure(std::time::Instant::now(), &self.passive_health);
@@ -137,6 +149,7 @@ pub(crate) struct UpstreamPool {
     smooth_current: Mutex<Vec<i64>>,
     passive_health: Arc<PassiveHealthConfig>,
     active_health: bool,
+    circuit: Option<Arc<CircuitBreaker>>,
 }
 
 impl UpstreamPool {
@@ -161,10 +174,16 @@ impl UpstreamPool {
             random_counter: AtomicU64::new(0x9e37_79b9_7f4a_7c15),
             passive_health: Arc::new(group.passive_health.clone()),
             active_health: group.health.is_some(),
+            circuit: group.circuit_breaker.clone().map(CircuitBreaker::new),
         })
     }
 
     pub(crate) fn select(&self) -> Result<SelectedEndpoint, PoolError> {
+        let circuit_permit = self
+            .circuit
+            .as_ref()
+            .map(|circuit| circuit.acquire().ok_or(PoolError::CircuitOpen))
+            .transpose()?;
         let eligible = self.eligible_indices();
         if eligible.is_empty() {
             return Err(PoolError::Unavailable);
@@ -181,6 +200,7 @@ impl UpstreamPool {
             endpoint,
             passive_health: Arc::clone(&self.passive_health),
             active_health: self.active_health,
+            circuit_permit,
         })
     }
 

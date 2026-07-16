@@ -1134,10 +1134,6 @@ fn validate_upstream_policy(
                 field("circuit_breaker")
             )));
         }
-        return Err(ConfigError::Invalid(format!(
-            "{} is not activated until the Phase 4 circuit state machine is installed",
-            field("circuit_breaker")
-        )));
     }
     Ok(())
 }
@@ -1744,12 +1740,7 @@ mod tests {
         group.health = None;
 
         group.circuit_breaker = Some(CircuitBreakerConfig::default());
-        assert!(
-            validate_upstream_policy(0, &group)
-                .expect_err("inactive circuit must fail")
-                .to_string()
-                .contains("not activated")
-        );
+        validate_upstream_policy(0, &group).expect("active circuit must validate");
         group
             .circuit_breaker
             .as_mut()

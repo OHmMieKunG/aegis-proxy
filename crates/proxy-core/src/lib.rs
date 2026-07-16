@@ -1800,6 +1800,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn circuit_opens_after_configured_upstream_failures() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("upstream bind");
+        let upstream_addr = upstream.local_addr().expect("upstream address");
+        let requests = Arc::new(AtomicUsize::new(0));
+        let request_count = Arc::clone(&requests);
+        let upstream_task = tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = upstream.accept().await else {
+                    return;
+                };
+                let request_count = Arc::clone(&request_count);
+                tokio::spawn(async move {
+                    let service = hyper::service::service_fn(move |_| {
+                        request_count.fetch_add(1, Ordering::Relaxed);
+                        async {
+                            Ok::<_, Infallible>(
+                                Response::builder()
+                                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                    .body(Full::new(bytes::Bytes::from_static(b"failed")))
+                                    .expect("response"),
+                            )
+                        }
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(TokioIo::new(stream), service)
+                        .await;
+                });
+            }
+        });
+        let (proxy_addr, shutdown, proxy_task) = start_test_proxy(upstream_addr, |config| {
+            config.upstream_groups[0].circuit_breaker =
+                Some(aegisproxy_config::CircuitBreakerConfig {
+                    sample_size: 1,
+                    minimum_requests: 1,
+                    failure_percent: 100,
+                    open_secs: 10,
+                    half_open_requests: 1,
+                });
+        })
+        .await;
+
+        assert!(proxy_get(proxy_addr).await.starts_with(b"HTTP/1.1 500"));
+        assert!(proxy_get(proxy_addr).await.starts_with(b"HTTP/1.1 503"));
+        assert_eq!(requests.load(Ordering::Relaxed), 1);
+        shutdown.cancel();
+        proxy_task.await.expect("proxy task").expect("proxy result");
+        upstream_task.abort();
+    }
+
+    #[tokio::test]
     async fn tunnels_websocket_upgrade_bytes() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
