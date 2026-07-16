@@ -350,6 +350,27 @@ fn reject_unsafe_request_target<B>(request: &Request<B>) -> Option<StatusCode> {
     if request.headers().get(HOST).is_none() {
         return Some(StatusCode::BAD_REQUEST);
     }
+    let content_lengths: Vec<&[u8]> = request
+        .headers()
+        .get_all(hyper::header::CONTENT_LENGTH)
+        .iter()
+        .map(HeaderValue::as_bytes)
+        .collect();
+    let transfer_encodings: Vec<&str> = request
+        .headers()
+        .get_all(hyper::header::TRANSFER_ENCODING)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .collect();
+    if (!content_lengths.is_empty() && !transfer_encodings.is_empty())
+        || content_lengths.len() > 1
+        || transfer_encodings.len() > 1
+        || transfer_encodings
+            .first()
+            .is_some_and(|value| !value.eq_ignore_ascii_case("chunked"))
+    {
+        return Some(StatusCode::BAD_REQUEST);
+    }
     None
 }
 
@@ -533,6 +554,41 @@ mod tests {
             routes: vec![route],
             admin: AdminConfig::default(),
         }
+    }
+
+    async fn start_test_proxy(
+        upstream_addr: SocketAddr,
+        configure: impl FnOnce(&mut Config),
+    ) -> (
+        SocketAddr,
+        CancellationToken,
+        tokio::task::JoinHandle<Result<(), ProxyError>>,
+    ) {
+        let reserved = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("reserve proxy port");
+        let proxy_addr = reserved.local_addr().expect("proxy address");
+        drop(reserved);
+        let mut config = config(RouteConfig {
+            id: "test".into(),
+            listeners: vec!["public".into()],
+            hosts: vec!["example.test".into()],
+            path_prefixes: vec!["/".into()],
+            methods: vec![],
+            headers: vec![],
+            priority: 0,
+            middlewares: vec![],
+            upstream_group: Some("app".into()),
+        });
+        config.listeners[0].bind = proxy_addr;
+        config.upstream_groups[0].endpoints[0].url = format!("http://{upstream_addr}")
+            .parse()
+            .expect("endpoint URL");
+        configure(&mut config);
+        let shutdown = CancellationToken::new();
+        let task = tokio::spawn(run(Arc::new(config), shutdown.clone()));
+        tokio::task::yield_now().await;
+        (proxy_addr, shutdown, task)
     }
 
     #[test]
@@ -786,5 +842,144 @@ mod tests {
         shutdown.cancel();
         task.await.expect("proxy task").expect("proxy run");
         upstream_task.abort();
+    }
+
+    #[tokio::test]
+    async fn streams_response_before_upstream_finishes() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        use tokio::sync::oneshot;
+
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("upstream bind");
+        let upstream_addr = upstream.local_addr().expect("upstream address");
+        let (release_tx, release_rx) = oneshot::channel();
+        let upstream_task = tokio::spawn(async move {
+            let (mut stream, _) = upstream.accept().await.expect("upstream accept");
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).await.expect("request read");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\na")
+                .await
+                .expect("first response chunk");
+            release_rx.await.expect("release second chunk");
+            stream.write_all(b"b").await.expect("second response chunk");
+        });
+        let (proxy_addr, shutdown, task) = start_test_proxy(upstream_addr, |_| {}).await;
+        let mut client = TcpStream::connect(proxy_addr).await.expect("proxy connect");
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("request write");
+        let mut first = [0_u8; 1024];
+        let count =
+            tokio::time::timeout(std::time::Duration::from_secs(1), client.read(&mut first))
+                .await
+                .expect("proxy buffered the response")
+                .expect("response read");
+        assert!(first[..count].ends_with(b"a"));
+        release_tx.send(()).expect("release upstream");
+        let mut rest = Vec::new();
+        client
+            .read_to_end(&mut rest)
+            .await
+            .expect("remaining response");
+        assert!(rest.ends_with(b"b"));
+        shutdown.cancel();
+        task.await.expect("proxy task").expect("proxy run");
+        upstream_task.await.expect("upstream task");
+    }
+
+    #[tokio::test]
+    async fn rejects_oversized_body_before_upstream() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("upstream bind");
+        let upstream_addr = upstream.local_addr().expect("upstream address");
+        let (proxy_addr, shutdown, task) = start_test_proxy(upstream_addr, |config| {
+            config.limits.max_request_body = 4;
+        })
+        .await;
+        let mut client = TcpStream::connect(proxy_addr).await.expect("proxy connect");
+        client
+            .write_all(b"POST / HTTP/1.1\r\nHost: example.test\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello")
+            .await
+            .expect("request write");
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("response read");
+        assert!(response.starts_with(b"HTTP/1.1 413 Payload Too Large"));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), upstream.accept())
+                .await
+                .is_err()
+        );
+        shutdown.cancel();
+        task.await.expect("proxy task").expect("proxy run");
+    }
+
+    #[tokio::test]
+    async fn rejects_ambiguous_framing_before_upstream() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("upstream bind");
+        let upstream_addr = upstream.local_addr().expect("upstream address");
+        let (proxy_addr, shutdown, task) = start_test_proxy(upstream_addr, |_| {}).await;
+        let mut client = TcpStream::connect(proxy_addr).await.expect("proxy connect");
+        client
+            .write_all(b"POST / HTTP/1.1\r\nHost: example.test\r\nContent-Length: 4\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n0\r\n\r\n")
+            .await
+            .expect("request write");
+        let mut response = Vec::new();
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            client.read_to_end(&mut response),
+        )
+        .await;
+        assert!(!response.starts_with(b"HTTP/1.1 200"));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), upstream.accept())
+                .await
+                .is_err()
+        );
+        shutdown.cancel();
+        task.await.expect("proxy task").expect("proxy run");
+    }
+
+    #[tokio::test]
+    async fn closes_slow_request_headers() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("upstream bind");
+        let upstream_addr = upstream.local_addr().expect("upstream address");
+        let (proxy_addr, shutdown, task) = start_test_proxy(upstream_addr, |config| {
+            config.limits.request_header_timeout_secs = 1;
+        })
+        .await;
+        let mut client = TcpStream::connect(proxy_addr).await.expect("proxy connect");
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost:")
+            .await
+            .expect("partial header write");
+        let mut byte = [0_u8; 1];
+        let count = tokio::time::timeout(std::time::Duration::from_secs(2), client.read(&mut byte))
+            .await
+            .expect("header timeout did not fire")
+            .expect("read after timeout");
+        assert_eq!(count, 0);
+        shutdown.cancel();
+        task.await.expect("proxy task").expect("proxy run");
     }
 }
