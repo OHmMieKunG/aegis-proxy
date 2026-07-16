@@ -591,6 +591,20 @@ mod tests {
         (proxy_addr, shutdown, task)
     }
 
+    async fn connect_to_proxy(address: SocketAddr) -> tokio::net::TcpStream {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+        loop {
+            match tokio::net::TcpStream::connect(address).await {
+                Ok(stream) => return stream,
+                Err(error) if tokio::time::Instant::now() < deadline => {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    drop(error);
+                }
+                Err(error) => panic!("proxy did not become ready: {error}"),
+            }
+        }
+    }
+
     #[test]
     fn route_matching_is_deterministic_and_header_aware() {
         let route = RouteConfig {
@@ -699,7 +713,7 @@ mod tests {
             .expect("endpoint url");
         let shutdown = CancellationToken::new();
         let task = tokio::spawn(run(Arc::new(config), shutdown.clone()));
-        let mut client = TcpStream::connect(proxy_addr).await.expect("proxy connect");
+        let mut client = connect_to_proxy(proxy_addr).await;
         client
             .write_all(b"GET /hello HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n")
             .await
@@ -765,7 +779,7 @@ mod tests {
         let shutdown = CancellationToken::new();
         let task = tokio::spawn(run(Arc::new(config), shutdown.clone()));
 
-        let mut client = TcpStream::connect(proxy_addr).await.expect("proxy connect");
+        let mut client = connect_to_proxy(proxy_addr).await;
         client
             .write_all(
                 b"GET /ws HTTP/1.1\r\nHost: example.test\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
@@ -828,7 +842,7 @@ mod tests {
             .expect("endpoint url");
         let shutdown = CancellationToken::new();
         let task = tokio::spawn(run(Arc::new(config), shutdown.clone()));
-        let mut client = TcpStream::connect(proxy_addr).await.expect("proxy connect");
+        let mut client = connect_to_proxy(proxy_addr).await;
         client
             .write_all(b"GET / HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n")
             .await
@@ -867,7 +881,7 @@ mod tests {
             stream.write_all(b"b").await.expect("second response chunk");
         });
         let (proxy_addr, shutdown, task) = start_test_proxy(upstream_addr, |_| {}).await;
-        let mut client = TcpStream::connect(proxy_addr).await.expect("proxy connect");
+        let mut client = connect_to_proxy(proxy_addr).await;
         client
             .write_all(b"GET / HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n")
             .await
@@ -931,7 +945,7 @@ mod tests {
                 .expect("response write");
         });
         let (proxy_addr, shutdown, task) = start_test_proxy(upstream_addr, |_| {}).await;
-        let mut client = TcpStream::connect(proxy_addr).await.expect("proxy connect");
+        let mut client = connect_to_proxy(proxy_addr).await;
         client
             .write_all(b"POST / HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n1\r\na\r\n")
             .await
@@ -987,7 +1001,7 @@ mod tests {
             }
         });
         let (proxy_addr, shutdown, task) = start_test_proxy(upstream_addr, |_| {}).await;
-        let mut client = TcpStream::connect(proxy_addr).await.expect("proxy connect");
+        let mut client = connect_to_proxy(proxy_addr).await;
         client
             .write_all(b"GET /one HTTP/1.1\r\nHost: example.test\r\n\r\n")
             .await
@@ -1065,7 +1079,7 @@ mod tests {
             config.limits.max_request_body = 4;
         })
         .await;
-        let mut client = TcpStream::connect(proxy_addr).await.expect("proxy connect");
+        let mut client = connect_to_proxy(proxy_addr).await;
         client
             .write_all(b"POST / HTTP/1.1\r\nHost: example.test\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello")
             .await
@@ -1095,7 +1109,7 @@ mod tests {
             .expect("upstream bind");
         let upstream_addr = upstream.local_addr().expect("upstream address");
         let (proxy_addr, shutdown, task) = start_test_proxy(upstream_addr, |_| {}).await;
-        let mut client = TcpStream::connect(proxy_addr).await.expect("proxy connect");
+        let mut client = connect_to_proxy(proxy_addr).await;
         client
             .write_all(b"POST / HTTP/1.1\r\nHost: example.test\r\nContent-Length: 4\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n0\r\n\r\n")
             .await
@@ -1129,7 +1143,7 @@ mod tests {
             config.limits.request_header_timeout_secs = 1;
         })
         .await;
-        let mut client = TcpStream::connect(proxy_addr).await.expect("proxy connect");
+        let mut client = connect_to_proxy(proxy_addr).await;
         client
             .write_all(b"GET / HTTP/1.1\r\nHost:")
             .await
