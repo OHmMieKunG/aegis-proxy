@@ -4,10 +4,15 @@ RUN apt-get update \
     && apt-get install --no-install-recommends -y cmake \
     && rm -rf /var/lib/apt/lists/*
 COPY . .
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/src/target \
+RUN --mount=type=cache,id=aegisproxy-cargo-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=aegisproxy-target,target=/src/target \
     cargo build --locked --release --bin rust-proxy \
     && cp target/release/rust-proxy /tmp/rust-proxy
+
+FROM builder AS test
+RUN --mount=type=cache,id=aegisproxy-cargo-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=aegisproxy-target,target=/src/target \
+    cargo test --locked --workspace --all-features
 
 FROM debian:bookworm-slim
 RUN apt-get update \
