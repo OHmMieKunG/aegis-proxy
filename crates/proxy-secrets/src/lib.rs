@@ -87,8 +87,19 @@ impl SecretRef {
         let Some(raw) = value.strip_prefix("file://") else {
             return Err(SecretError::InvalidReference(value.to_owned()));
         };
+        if !portable_absolute_file_path(raw) {
+            return Err(SecretError::InvalidReference(value.to_owned()));
+        }
+        #[cfg(windows)]
+        let raw = raw
+            .strip_prefix('/')
+            .filter(|candidate| windows_drive_absolute(candidate))
+            .unwrap_or(raw);
         let path = Path::new(raw);
-        if !path.is_absolute() || raw.contains("..") {
+        if path
+            .components()
+            .any(|component| component == std::path::Component::ParentDir)
+        {
             return Err(SecretError::InvalidReference(value.to_owned()));
         }
         Ok(Self::File(path.to_path_buf()))
@@ -102,13 +113,32 @@ impl SecretRef {
                 .ok_or_else(|| {
                     SecretError::InvalidReference(format!("missing environment variable {name}"))
                 })?,
-            Self::File(path) => read_file(path, max_bytes)?,
+            Self::File(path) if path.is_absolute() => read_file(path, max_bytes)?,
+            Self::File(_) => {
+                return Err(SecretError::InvalidReference(
+                    "file reference is absolute for a different platform".into(),
+                ));
+            }
         };
         if bytes.len() > max_bytes {
             return Err(SecretError::TooLarge(max_bytes));
         }
         Ok(SecretBytes::new(bytes))
     }
+}
+
+fn portable_absolute_file_path(raw: &str) -> bool {
+    (raw.starts_with('/') && !raw.starts_with("//"))
+        || windows_drive_absolute(raw)
+        || raw.strip_prefix('/').is_some_and(windows_drive_absolute)
+}
+
+fn windows_drive_absolute(raw: &str) -> bool {
+    let bytes = raw.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'/' | b'\\')
 }
 
 fn read_file(path: &Path, max_bytes: usize) -> Result<Vec<u8>, SecretError> {
@@ -143,6 +173,9 @@ mod tests {
     fn rejects_unapproved_secret_providers() {
         assert!(SecretRef::parse("exec://printenv").is_err());
         assert!(SecretRef::parse("file://relative/key.pem").is_err());
+        assert!(SecretRef::parse("file:////server/share/key.pem").is_err());
+        assert!(SecretRef::parse("file:///etc/aegisproxy/key.pem").is_ok());
+        assert!(SecretRef::parse("file:///C:/aegisproxy/key.pem").is_ok());
         assert!(SecretRef::parse("env://TLS_KEY").is_ok());
     }
 
