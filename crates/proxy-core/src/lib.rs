@@ -295,13 +295,22 @@ async fn watch_config_file(
     runtime: RuntimeHandle,
     shutdown: CancellationToken,
 ) {
+    #[cfg(unix)]
+    let mut sighup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()).ok();
     let mut last_hash = None;
     let mut last_error: Option<String> = None;
     loop {
         let interval = Duration::from_secs(runtime.load().config.runtime.config_poll_secs);
+        #[cfg(unix)]
         tokio::select! {
             _ = shutdown.cancelled() => break,
-            () = tokio::time::sleep(interval) => {}
+            () = tokio::time::sleep(interval) => {},
+            () = receive_sighup(&mut sighup) => {},
+        }
+        #[cfg(not(unix))]
+        tokio::select! {
+            _ = shutdown.cancelled() => break,
+            () = tokio::time::sleep(interval) => {},
         }
         let loaded = tokio::task::spawn_blocking({
             let config_path = config_path.clone();
@@ -366,6 +375,16 @@ async fn watch_config_file(
             }
         }
     }
+}
+
+#[cfg(unix)]
+async fn receive_sighup(signal: &mut Option<tokio::signal::unix::Signal>) {
+    if let Some(signal) = signal
+        && signal.recv().await.is_some()
+    {
+        return;
+    }
+    std::future::pending::<()>().await;
 }
 
 fn build_upstream_clients(config: &Config) -> Result<(UpstreamClients, DnsEndpoints), ProxyError> {
