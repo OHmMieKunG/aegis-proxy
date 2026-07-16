@@ -571,6 +571,7 @@ async fn accept_loop(listener: TcpListener, context: ListenerContext) {
             }
         });
     }
+    drop(listener);
     upgrade_tasks.close();
     let drain_deadline = std::time::Duration::from_secs(config.runtime.shutdown_grace_secs);
     if tokio::time::timeout(drain_deadline, async {
@@ -1277,6 +1278,23 @@ mod tests {
                     drop(error);
                 }
                 Err(error) => panic!("proxy did not become ready: {error}"),
+            }
+        }
+    }
+
+    async fn wait_for_listener_close(address: SocketAddr) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        loop {
+            match TcpStream::connect(address).await {
+                Err(_) => return,
+                Ok(stream) if tokio::time::Instant::now() < deadline => {
+                    drop(stream);
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Ok(stream) => {
+                    drop(stream);
+                    panic!("listener remained open during drain");
+                }
             }
         }
     }
@@ -2609,8 +2627,7 @@ mod tests {
         let (proxy_addr, shutdown, task) = start_test_proxy(upstream_addr, |_| {}).await;
         let idle_client = connect_to_proxy(proxy_addr).await;
         shutdown.cancel();
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        assert!(tokio::net::TcpStream::connect(proxy_addr).await.is_err());
+        wait_for_listener_close(proxy_addr).await;
         drop(idle_client);
         task.await.expect("proxy task").expect("proxy run");
     }
@@ -2674,20 +2691,7 @@ mod tests {
         client.write_all(b"ping").await.expect("client write");
         request_rx.await.expect("upstream request");
         shutdown.cancel();
-        let close_deadline = tokio::time::Instant::now() + Duration::from_secs(1);
-        loop {
-            match TcpStream::connect(proxy_addr).await {
-                Err(_) => break,
-                Ok(stream) if tokio::time::Instant::now() < close_deadline => {
-                    drop(stream);
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-                Ok(stream) => {
-                    drop(stream);
-                    panic!("TCP listener remained open during drain");
-                }
-            }
-        }
+        wait_for_listener_close(proxy_addr).await;
         release_tx.send(()).expect("release upstream");
         let mut response = [0_u8; 4];
         client
