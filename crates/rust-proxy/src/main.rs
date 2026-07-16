@@ -69,6 +69,9 @@ enum CertificateCommand {
     Inspect {
         #[arg(long)]
         state_dir: PathBuf,
+        /// Optional age identity reference for offline key recovery verification.
+        #[arg(long)]
+        identity: Option<String>,
         id: String,
     },
 }
@@ -153,8 +156,21 @@ fn run_certificate_command(command: CertificateCommand) -> Result<(), BoxError> 
                 )?;
             }
         }
-        CertificateCommand::Inspect { state_dir, id } => {
-            write_certificate(&aegisproxy_tls::inspect_certificate(&state_dir, &id)?)?;
+        CertificateCommand::Inspect {
+            state_dir,
+            identity,
+            id,
+        } => {
+            let certificate = match identity {
+                Some(identity) => {
+                    let certificate =
+                        aegisproxy_tls::verify_stored_certificate(&state_dir, &id, &identity)?;
+                    writeln!(io::stdout().lock(), "private_key_verified = true")?;
+                    certificate
+                }
+                None => aegisproxy_tls::inspect_certificate(&state_dir, &id)?,
+            };
+            write_certificate(&certificate)?;
         }
     }
     Ok(())

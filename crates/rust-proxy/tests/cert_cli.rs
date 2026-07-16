@@ -98,6 +98,20 @@ fn imports_lists_and_inspects_encrypted_certificate() {
     let identity_text = identity.to_string();
     let identity_path = root.join("identity.txt");
     private_file(&identity_path, identity_text.expose_secret().as_bytes());
+    let verified = Command::new(binary)
+        .args([
+            "cert",
+            "inspect",
+            "--state-dir",
+            root.to_str().expect("root path"),
+            "--identity",
+            &format!("file://{}", identity_path.display()),
+            "site",
+        ])
+        .output()
+        .expect("run recovery verification");
+    assert!(verified.status.success(), "{:?}", verified.stderr);
+    assert!(String::from_utf8_lossy(&verified.stdout).contains("private_key_verified = true"));
     let stored = aegisproxy_tls::inspect_certificate(&root, "site").expect("stored metadata");
     let generation = root
         .join("certificates")

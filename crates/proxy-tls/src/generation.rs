@@ -192,6 +192,30 @@ pub fn inspect_certificate(state_dir: &Path, id: &str) -> Result<StoredCertifica
     Ok(metadata)
 }
 
+/// Decrypt and revalidate the active private key for an offline recovery drill.
+pub fn verify_stored_certificate(
+    state_dir: &Path,
+    id: &str,
+    identity: &str,
+) -> Result<StoredCertificate, TlsError> {
+    let metadata = inspect_certificate(state_dir, id)?;
+    let generation_dir = fs::canonicalize(
+        state_dir
+            .join("certificates")
+            .join(id)
+            .join("generations")
+            .join(&metadata.generation),
+    )?;
+    crate::load_identity(
+        id.to_owned(),
+        metadata.hosts.clone(),
+        &file_reference(&generation_dir.join("chain.pem")),
+        &file_reference(&generation_dir.join("key.age")),
+        identity,
+    )?;
+    Ok(metadata)
+}
+
 /// Return active certificates expiring at or before `now + warning_window`.
 pub fn scan_expiring_certificates(
     state_dir: &Path,
