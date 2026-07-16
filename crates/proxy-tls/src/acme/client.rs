@@ -37,7 +37,7 @@ impl AcmeClient {
         credentials_json: &[u8],
         ca_bundle: Option<&Path>,
     ) -> Result<Self, AcmeClientError> {
-        let credentials = parse_credentials(credentials_json)?;
+        let credentials = validate_credentials(credentials_json)?;
         let builder = match ca_bundle {
             Some(path) => Account::builder_with_root(path),
             None => Account::builder(),
@@ -57,7 +57,7 @@ impl AcmeClient {
     }
 }
 
-fn parse_credentials(bytes: &[u8]) -> Result<AccountCredentials, AcmeClientError> {
+pub(super) fn validate_credentials(bytes: &[u8]) -> Result<AccountCredentials, AcmeClientError> {
     if bytes.is_empty() || bytes.len() > MAX_ACCOUNT_CREDENTIAL_BYTES {
         return Err(AcmeClientError::Credentials);
     }
@@ -75,12 +75,12 @@ mod tests {
             "key_pkcs8":"AQID",
             "directory":"https://acme.test/directory"
         }"#;
-        assert!(parse_credentials(valid_shape).is_ok());
+        assert!(validate_credentials(valid_shape).is_ok());
         assert!(matches!(
-            parse_credentials(&vec![b'x'; MAX_ACCOUNT_CREDENTIAL_BYTES + 1]),
+            validate_credentials(&vec![b'x'; MAX_ACCOUNT_CREDENTIAL_BYTES + 1]),
             Err(AcmeClientError::Credentials)
         ));
-        let error = parse_credentials(b"private-canary")
+        let error = validate_credentials(b"private-canary")
             .err()
             .expect("malformed credentials must fail");
         assert_eq!(error.to_string(), "invalid ACME account credentials");
