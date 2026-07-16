@@ -18,7 +18,9 @@ use crate::{Config, MAX_CONFIG_BYTES, validate};
 
 const MAX_REVISIONS: usize = 1_000;
 const MAX_METADATA_BYTES: usize = 64 * 1024;
+const MAX_STATE_BYTES: usize = 64 * 1024;
 const MAX_SOURCE_BYTES: usize = 128;
+const STATE_SCHEMA_VERSION: u32 = 1;
 
 static OWNED_STATE_DIRS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
 
@@ -51,6 +53,62 @@ pub struct RevisionMetadata {
     pub source: String,
 }
 
+/// Integrity-bound reference to an immutable revision.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RevisionTarget {
+    /// Immutable revision identifier.
+    pub id: String,
+    /// Revision sequence copied from metadata.
+    pub sequence: u64,
+    /// Revision content hash copied from metadata.
+    pub hash: String,
+}
+
+/// Durable current and immediately previous revision pointer.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActivePointer {
+    /// Pointer format version.
+    pub schema_version: u32,
+    /// Revision selected for startup and request handling.
+    pub active: RevisionTarget,
+    /// Last committed revision retained for rollback.
+    pub previous: Option<RevisionTarget>,
+}
+
+/// Durable activation state used for crash recovery.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivationPhase {
+    /// Intent is durable; pointer may or may not have switched.
+    Intent,
+    /// Runtime was published and is undergoing structural probation.
+    Probation,
+    /// Candidate completed probation.
+    Committed,
+    /// Previous revision was durably restored.
+    RolledBack,
+}
+
+/// Single-writer activation journal.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActivationJournal {
+    /// Journal format version.
+    pub schema_version: u32,
+    /// Candidate under activation.
+    pub candidate: RevisionTarget,
+    /// Revision to restore after an incomplete activation.
+    pub previous: Option<RevisionTarget>,
+    /// Current durable phase.
+    pub phase: ActivationPhase,
+    /// Journal creation time as Unix seconds.
+    pub created_unix_secs: u64,
+    /// Last durable transition time as Unix seconds.
+    pub updated_unix_secs: u64,
+}
+
 /// Revision persistence failure.
 #[derive(Debug, Error)]
 pub enum RevisionError {
@@ -72,6 +130,9 @@ pub enum RevisionError {
     /// Revision retention bound was reached.
     #[error("revision count reached the hard limit of {MAX_REVISIONS}")]
     Limit,
+    /// Compare-and-swap or journal state did not match.
+    #[error("revision activation conflict")]
+    Conflict,
 }
 
 /// Exclusive owner of one file-backed revision state directory.
@@ -81,6 +142,7 @@ pub struct RevisionStore {
     _registration: StateRegistration,
     _lock: File,
     next_sequence: Mutex<u64>,
+    mutation: Mutex<()>,
 }
 
 impl RevisionStore {
@@ -114,6 +176,7 @@ impl RevisionStore {
             _registration: registration,
             _lock: lock,
             next_sequence: Mutex::new(next_sequence),
+            mutation: Mutex::new(()),
         })
     }
 
@@ -123,6 +186,10 @@ impl RevisionStore {
         config: &Config,
         source: &str,
     ) -> Result<RevisionMetadata, RevisionError> {
+        let _guard = self
+            .mutation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         validate(config).map_err(|error| RevisionError::InvalidConfig(error.to_string()))?;
         validate_source(source)?;
         let canonical = toml::to_string_pretty(config)
@@ -229,6 +296,118 @@ impl RevisionStore {
         Ok(revisions)
     }
 
+    /// Load and verify the active pointer and every referenced revision.
+    pub fn active(&self) -> Result<Option<ActivePointer>, RevisionError> {
+        let path = self.config_dir.join("active.json");
+        let Some(pointer) = read_optional_json::<ActivePointer>(&path)? else {
+            return Ok(None);
+        };
+        self.validate_pointer(&pointer)?;
+        Ok(Some(pointer))
+    }
+
+    /// Durably record activation intent and switch the active pointer.
+    ///
+    /// `expected_active` is an exact compare-and-swap precondition. `None` means
+    /// that no active revision may exist.
+    pub fn begin_activation(
+        &self,
+        candidate_id: &str,
+        expected_active: Option<&str>,
+    ) -> Result<ActivationJournal, RevisionError> {
+        let _guard = self
+            .mutation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let candidate = self.revision_target(candidate_id)?;
+        let current = self.active()?;
+        if current.as_ref().map(|pointer| pointer.active.id.as_str()) != expected_active {
+            return Err(RevisionError::Conflict);
+        }
+        let now = unix_time()?;
+        let journal = ActivationJournal {
+            schema_version: STATE_SCHEMA_VERSION,
+            candidate: candidate.clone(),
+            previous: current.as_ref().map(|pointer| pointer.active.clone()),
+            phase: ActivationPhase::Intent,
+            created_unix_secs: now,
+            updated_unix_secs: now,
+        };
+        self.write_journal(&journal)?;
+        self.write_pointer(&ActivePointer {
+            schema_version: STATE_SCHEMA_VERSION,
+            active: candidate,
+            previous: journal.previous.clone(),
+        })?;
+        Ok(journal)
+    }
+
+    /// Mark a published candidate as undergoing structural probation.
+    pub fn mark_probation(&self, candidate_id: &str) -> Result<(), RevisionError> {
+        let _guard = self
+            .mutation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.transition_journal(
+            candidate_id,
+            ActivationPhase::Intent,
+            ActivationPhase::Probation,
+        )
+    }
+
+    /// Mark a candidate as committed after structural probation succeeds.
+    pub fn commit_activation(&self, candidate_id: &str) -> Result<(), RevisionError> {
+        let _guard = self
+            .mutation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.transition_journal(
+            candidate_id,
+            ActivationPhase::Probation,
+            ActivationPhase::Committed,
+        )
+    }
+
+    /// Restore the previous revision and mark the activation rolled back.
+    pub fn rollback_activation(
+        &self,
+        candidate_id: &str,
+    ) -> Result<Option<ActivePointer>, RevisionError> {
+        let _guard = self
+            .mutation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let journal = self.load_journal()?.ok_or(RevisionError::Conflict)?;
+        if journal.candidate.id != candidate_id
+            || !matches!(
+                journal.phase,
+                ActivationPhase::Intent | ActivationPhase::Probation
+            )
+        {
+            return Err(RevisionError::Conflict);
+        }
+        self.restore_previous(&journal)?;
+        let mut rolled_back = journal;
+        rolled_back.phase = ActivationPhase::RolledBack;
+        rolled_back.updated_unix_secs = unix_time()?;
+        self.write_journal(&rolled_back)?;
+        self.active()
+    }
+
+    /// Recover an incomplete activation before serving startup traffic.
+    pub fn recover_incomplete(&self) -> Result<Option<ActivePointer>, RevisionError> {
+        let Some(journal) = self.load_journal()? else {
+            return self.active();
+        };
+        if matches!(
+            journal.phase,
+            ActivationPhase::Intent | ActivationPhase::Probation
+        ) {
+            return self.rollback_activation(&journal.candidate.id);
+        }
+        self.active()
+    }
+
     fn load_metadata(&self, id: &str) -> Result<RevisionMetadata, RevisionError> {
         let bytes = read_bounded(
             &self.config_dir.join("metadata").join(format!("{id}.json")),
@@ -250,6 +429,101 @@ impl RevisionStore {
         }
         validate_source(&metadata.source)?;
         Ok(metadata)
+    }
+
+    fn revision_target(&self, id: &str) -> Result<RevisionTarget, RevisionError> {
+        validate_revision_id(id)?;
+        let metadata = self.load_metadata(id)?;
+        self.load(id)?;
+        Ok(RevisionTarget {
+            id: metadata.id,
+            sequence: metadata.sequence,
+            hash: metadata.hash,
+        })
+    }
+
+    fn validate_pointer(&self, pointer: &ActivePointer) -> Result<(), RevisionError> {
+        if pointer.schema_version != STATE_SCHEMA_VERSION
+            || pointer.previous.as_ref() == Some(&pointer.active)
+        {
+            return Err(RevisionError::InvalidStored(
+                "active pointer schema or references are invalid".into(),
+            ));
+        }
+        self.validate_target(&pointer.active)?;
+        if let Some(previous) = &pointer.previous {
+            self.validate_target(previous)?;
+        }
+        Ok(())
+    }
+
+    fn validate_target(&self, target: &RevisionTarget) -> Result<(), RevisionError> {
+        let expected = self.revision_target(&target.id)?;
+        if expected != *target {
+            return Err(RevisionError::InvalidStored(
+                "revision target does not match immutable metadata".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn load_journal(&self) -> Result<Option<ActivationJournal>, RevisionError> {
+        let journal =
+            read_optional_json::<ActivationJournal>(&self.config_dir.join("activation.json"))?;
+        if let Some(journal) = &journal {
+            if journal.schema_version != STATE_SCHEMA_VERSION
+                || journal.updated_unix_secs < journal.created_unix_secs
+                || journal.previous.as_ref() == Some(&journal.candidate)
+            {
+                return Err(RevisionError::InvalidStored(
+                    "activation journal schema or references are invalid".into(),
+                ));
+            }
+            self.validate_target(&journal.candidate)?;
+            if let Some(previous) = &journal.previous {
+                self.validate_target(previous)?;
+            }
+        }
+        Ok(journal)
+    }
+
+    fn transition_journal(
+        &self,
+        candidate_id: &str,
+        from: ActivationPhase,
+        to: ActivationPhase,
+    ) -> Result<(), RevisionError> {
+        let mut journal = self.load_journal()?.ok_or(RevisionError::Conflict)?;
+        if journal.candidate.id != candidate_id || journal.phase != from {
+            return Err(RevisionError::Conflict);
+        }
+        let pointer = self.active()?.ok_or(RevisionError::Conflict)?;
+        if pointer.active != journal.candidate {
+            return Err(RevisionError::Conflict);
+        }
+        journal.phase = to;
+        journal.updated_unix_secs = unix_time()?;
+        self.write_journal(&journal)
+    }
+
+    fn restore_previous(&self, journal: &ActivationJournal) -> Result<(), RevisionError> {
+        match &journal.previous {
+            Some(previous) => self.write_pointer(&ActivePointer {
+                schema_version: STATE_SCHEMA_VERSION,
+                active: previous.clone(),
+                previous: None,
+            }),
+            None => remove_synced(&self.config_dir.join("active.json")),
+        }
+    }
+
+    fn write_pointer(&self, pointer: &ActivePointer) -> Result<(), RevisionError> {
+        self.validate_pointer(pointer)?;
+        write_json_atomic(&self.config_dir.join("active.json"), pointer)
+    }
+
+    fn write_journal(&self, journal: &ActivationJournal) -> Result<(), RevisionError> {
+        write_json_atomic(&self.config_dir.join("activation.json"), journal)
     }
 }
 
@@ -334,6 +608,70 @@ fn read_bounded(path: &Path, maximum: usize) -> Result<Vec<u8>, RevisionError> {
     Ok(bytes)
 }
 
+fn read_optional_json<T: serde::de::DeserializeOwned>(
+    path: &Path,
+) -> Result<Option<T>, RevisionError> {
+    let bytes = match read_bounded(path, MAX_STATE_BYTES) {
+        Ok(bytes) => bytes,
+        Err(RevisionError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
+    };
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|error| RevisionError::InvalidStored(error.to_string()))
+}
+
+fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), RevisionError> {
+    let bytes = serde_json::to_vec_pretty(value)
+        .map_err(|error| RevisionError::Serialization(error.to_string()))?;
+    if bytes.len() > MAX_STATE_BYTES {
+        return Err(RevisionError::Serialization(
+            "durable state exceeds its size bound".into(),
+        ));
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| RevisionError::InvalidStored("state path has no parent".into()))?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| RevisionError::InvalidStored("state path is not UTF-8".into()))?;
+    let temporary = parent.join(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| RevisionError::InvalidStored("system clock predates Unix epoch".into()))?
+            .as_nanos()
+    ));
+    write_new_synced(&temporary, &bytes)?;
+    if let Err(error) = fs::rename(&temporary, path) {
+        let _ = fs::remove_file(&temporary);
+        return Err(RevisionError::Io(error));
+    }
+    sync_directory(parent)
+}
+
+fn remove_synced(path: &Path) -> Result<(), RevisionError> {
+    match fs::remove_file(path) {
+        Ok(()) => sync_directory(
+            path.parent()
+                .ok_or_else(|| RevisionError::InvalidStored("state path has no parent".into()))?,
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(RevisionError::Io(error)),
+    }
+}
+
+fn unix_time() -> Result<u64, RevisionError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|_| RevisionError::InvalidStored("system clock predates Unix epoch".into()))
+}
+
 fn create_private_dir(path: &Path) -> Result<(), RevisionError> {
     fs::create_dir_all(path)?;
     #[cfg(unix)]
@@ -369,6 +707,7 @@ fn sync_directory(_path: &Path) -> Result<(), RevisionError> {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::Arc;
 
     use super::*;
     use crate::{
@@ -376,13 +715,19 @@ mod tests {
     };
 
     fn config() -> Config {
+        config_on(8080)
+    }
+
+    fn config_on(port: u16) -> Config {
         Config {
             schema_version: 1,
             runtime: RuntimeConfig::default(),
             limits: LimitsConfig::default(),
             listeners: vec![ListenerConfig {
                 id: "http".into(),
-                bind: "127.0.0.1:8080".parse().expect("listener address"),
+                bind: format!("127.0.0.1:{port}")
+                    .parse()
+                    .expect("listener address"),
                 protocol: "http".into(),
                 certificates: vec![],
             }],
@@ -448,6 +793,111 @@ mod tests {
             Err(RevisionError::InvalidStored(_))
         ));
         assert!(store.create_candidate(&config(), "bad\nsource").is_err());
+        drop(store);
+        fs::remove_dir_all(state).expect("cleanup");
+    }
+
+    #[test]
+    fn activation_is_compare_and_swap_and_rollback_restores_previous() {
+        let state = temporary_state();
+        let store = RevisionStore::open(&state).expect("store");
+        let first = store
+            .create_candidate(&config_on(8080), "first")
+            .expect("first");
+        store
+            .begin_activation(&first.id, None)
+            .expect("first intent");
+        store.mark_probation(&first.id).expect("first probation");
+        store.commit_activation(&first.id).expect("first commit");
+
+        let second = store
+            .create_candidate(&config_on(8081), "second")
+            .expect("second");
+        store
+            .begin_activation(&second.id, Some(&first.id))
+            .expect("second intent");
+        assert!(matches!(
+            store.begin_activation(&first.id, Some(&first.id)),
+            Err(RevisionError::Conflict)
+        ));
+        store.mark_probation(&second.id).expect("second probation");
+        let restored = store
+            .rollback_activation(&second.id)
+            .expect("rollback")
+            .expect("active pointer");
+        assert_eq!(restored.active.id, first.id);
+        assert_eq!(
+            store
+                .load_journal()
+                .expect("journal")
+                .expect("journal")
+                .phase,
+            ActivationPhase::RolledBack
+        );
+        drop(store);
+        fs::remove_dir_all(state).expect("cleanup");
+    }
+
+    #[test]
+    fn restart_recovers_incomplete_probation() {
+        let state = temporary_state();
+        let store = RevisionStore::open(&state).expect("store");
+        let first = store
+            .create_candidate(&config_on(8080), "first")
+            .expect("first");
+        store
+            .begin_activation(&first.id, None)
+            .expect("first intent");
+        store.mark_probation(&first.id).expect("first probation");
+        store.commit_activation(&first.id).expect("first commit");
+        let second = store
+            .create_candidate(&config_on(8081), "second")
+            .expect("second");
+        store
+            .begin_activation(&second.id, Some(&first.id))
+            .expect("second intent");
+        store.mark_probation(&second.id).expect("second probation");
+        drop(store);
+
+        let reopened = RevisionStore::open(&state).expect("reopen");
+        let recovered = reopened
+            .recover_incomplete()
+            .expect("recovery")
+            .expect("active pointer");
+        assert_eq!(recovered.active.id, first.id);
+        assert_eq!(
+            reopened
+                .load_journal()
+                .expect("journal")
+                .expect("journal")
+                .phase,
+            ActivationPhase::RolledBack
+        );
+        drop(reopened);
+        fs::remove_dir_all(state).expect("cleanup");
+    }
+
+    #[test]
+    fn concurrent_identical_candidates_deduplicate() {
+        let state = temporary_state();
+        let store = Arc::new(RevisionStore::open(&state).expect("store"));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let store = Arc::clone(&store);
+                std::thread::spawn(move || {
+                    store
+                        .create_candidate(&config(), "concurrent")
+                        .expect("candidate")
+                        .id
+                })
+            })
+            .collect();
+        let ids: Vec<_> = threads
+            .into_iter()
+            .map(|thread| thread.join().expect("thread"))
+            .collect();
+        assert!(ids.iter().all(|id| id == &ids[0]));
+        assert_eq!(store.list().expect("list").len(), 1);
         drop(store);
         fs::remove_dir_all(state).expect("cleanup");
     }
