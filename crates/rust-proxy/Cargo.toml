@@ -16,3 +16,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+
+[dev-dependencies]
+age = { version = "0.11.2", default-features = false }
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "crypto", "pem"] }
