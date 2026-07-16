@@ -1,0 +1,8 @@
+.git
+.agents
+target
+state
+*.pem
+*.key
+.env*
+
