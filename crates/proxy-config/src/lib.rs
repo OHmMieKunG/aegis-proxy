@@ -137,6 +137,8 @@ pub struct TlsConfig {
     pub max_handshakes: usize,
     /// Handshake timeout in seconds.
     pub handshake_timeout_secs: u64,
+    /// Secret reference containing one or more age X25519 decryption identities.
+    pub identity: Option<String>,
 }
 
 impl Default for TlsConfig {
@@ -145,6 +147,7 @@ impl Default for TlsConfig {
             minimum_version: "1.2".into(),
             max_handshakes: 256,
             handshake_timeout_secs: 10,
+            identity: None,
         }
     }
 }
@@ -159,7 +162,7 @@ pub struct CertificateConfig {
     pub hosts: Vec<String>,
     /// PEM certificate-chain secret reference.
     pub certificate_chain: String,
-    /// PEM private-key secret reference.
+    /// Age-encrypted PEM private-key envelope reference.
     pub private_key: String,
 }
 
@@ -344,6 +347,11 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             "TLS handshake limits are outside safe bounds".into(),
         ));
     }
+    if let Some(identity) = config.tls.identity.as_deref() {
+        SecretRef::parse(identity).map_err(|_| {
+            ConfigError::Invalid("tls.identity has an invalid secret reference".into())
+        })?;
+    }
     if config.certificates.len() > 1024 {
         return Err(ConfigError::Invalid(
             "certificate count exceeds 1024".into(),
@@ -385,6 +393,11 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                 certificate.id
             ))
         })?;
+    }
+    if !config.certificates.is_empty() && config.tls.identity.is_none() {
+        return Err(ConfigError::Invalid(
+            "tls.identity is required for encrypted private keys".into(),
+        ));
     }
     if config.limits.max_connections == 0 || config.limits.max_connections > 1_000_000 {
         return Err(ConfigError::Invalid(

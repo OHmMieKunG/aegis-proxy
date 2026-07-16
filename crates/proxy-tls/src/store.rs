@@ -1,6 +1,6 @@
 use std::{io::Cursor, sync::Arc};
 
-use aegisproxy_secrets::SecretRef;
+use aegisproxy_secrets::{SecretRef, decrypt_age};
 use rustls::{
     crypto::{CryptoProvider, aws_lc_rs},
     pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime},
@@ -13,6 +13,8 @@ use crate::TlsError;
 
 const MAX_CERTIFICATE_PEM_BYTES: usize = 1024 * 1024;
 const MAX_PRIVATE_KEY_PEM_BYTES: usize = 256 * 1024;
+const MAX_PRIVATE_KEY_ENVELOPE_BYTES: usize = 512 * 1024;
+const MAX_IDENTITY_BYTES: usize = 16 * 1024;
 const MAX_CHAIN_CERTIFICATES: usize = 16;
 
 /// A validated certificate identity ready for SNI selection.
@@ -50,11 +52,19 @@ pub fn load_identity(
     hosts: Vec<String>,
     certificate_chain: &str,
     private_key: &str,
+    identity: &str,
 ) -> Result<Identity, TlsError> {
     let certificate_chain = SecretRef::parse(certificate_chain)?;
     let private_key = SecretRef::parse(private_key)?;
+    let identity = SecretRef::parse(identity)?;
     let certificate_chain = certificate_chain.resolve(MAX_CERTIFICATE_PEM_BYTES)?;
-    let private_key = private_key.resolve(MAX_PRIVATE_KEY_PEM_BYTES)?;
+    let private_key = private_key.resolve(MAX_PRIVATE_KEY_ENVELOPE_BYTES)?;
+    let identity = identity.resolve(MAX_IDENTITY_BYTES)?;
+    let private_key = decrypt_age(
+        private_key.as_ref(),
+        identity.as_ref(),
+        MAX_PRIVATE_KEY_PEM_BYTES,
+    )?;
     identity_from_pem(id, hosts, certificate_chain.as_ref(), private_key.as_ref())
 }
 

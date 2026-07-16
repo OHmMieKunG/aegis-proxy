@@ -2,6 +2,10 @@
 #![warn(missing_debug_implementations, missing_docs)]
 //! Secret references. Values are resolved only at explicit activation time.
 
+mod envelope;
+
+pub use envelope::{decrypt_age, encrypt_age};
+
 use std::{
     fmt,
     fs::{File, Metadata},
@@ -45,10 +49,19 @@ pub enum SecretError {
     /// File permissions allow access outside the owner.
     #[error("secret file permissions are too broad")]
     InsecurePermissions,
+    /// Authenticated envelope encryption or decryption failed.
+    #[error("secret envelope operation failed")]
+    Envelope,
 }
 
 /// Secret bytes that zero memory on drop and never reveal their value in formatting.
 pub struct SecretBytes(Zeroizing<Vec<u8>>);
+
+impl SecretBytes {
+    pub(crate) fn new(bytes: Vec<u8>) -> Self {
+        Self(Zeroizing::new(bytes))
+    }
+}
 
 impl fmt::Debug for SecretBytes {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -94,7 +107,7 @@ impl SecretRef {
         if bytes.len() > max_bytes {
             return Err(SecretError::TooLarge(max_bytes));
         }
-        Ok(SecretBytes(Zeroizing::new(bytes)))
+        Ok(SecretBytes::new(bytes))
     }
 }
 

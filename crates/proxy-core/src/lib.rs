@@ -98,12 +98,18 @@ pub async fn run(config: Arc<Config>, shutdown: CancellationToken) -> Result<(),
 
 fn prepare_tls(config: &Config) -> Result<HashMap<String, TlsAcceptor>, ProxyError> {
     let mut identities = HashMap::new();
+    let decryption_identity = config.tls.identity.as_deref();
     for certificate in &config.certificates {
         let identity = load_identity(
             certificate.id.clone(),
             certificate.hosts.clone(),
             &certificate.certificate_chain,
             &certificate.private_key,
+            decryption_identity.ok_or_else(|| {
+                ProxyError::Preparation(
+                    "tls.identity is required for encrypted private keys".into(),
+                )
+            })?,
         )?;
         identities.insert(certificate.id.as_str(), identity);
     }
@@ -850,6 +856,7 @@ mod tests {
     }
 
     async fn tls_request(http2: bool, authority: &str) -> (Vec<u8>, StatusCode, bytes::Bytes) {
+        use age::secrecy::ExposeSecret;
         use rustls::{ClientConfig, RootCertStore, crypto::aws_lc_rs, pki_types::ServerName};
         use std::{
             fs,
@@ -860,14 +867,25 @@ mod tests {
         static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
         let generated = rcgen::generate_simple_self_signed(vec!["example.test".into()])
             .expect("generate test identity");
+        let age_identity = age::x25519::Identity::generate();
+        let encrypted_private_key = age::encrypt(
+            &age_identity.to_public(),
+            generated.signing_key.serialize_pem().as_bytes(),
+        )
+        .expect("encrypt private key");
         let sequence = NEXT_FILE.fetch_add(1, Ordering::Relaxed);
         let base =
             std::env::temp_dir().join(format!("aegisproxy-tls-{}-{sequence}", std::process::id()));
         let certificate_path = base.with_extension("cert.pem");
-        let private_key_path = base.with_extension("key.pem");
+        let private_key_path = base.with_extension("key.age");
+        let identity_path = base.with_extension("identity.txt");
         fs::write(&certificate_path, generated.cert.pem()).expect("write certificate");
-        fs::write(&private_key_path, generated.signing_key.serialize_pem())
-            .expect("write private key");
+        fs::write(&private_key_path, encrypted_private_key).expect("write private-key envelope");
+        fs::write(
+            &identity_path,
+            age_identity.to_string().expose_secret().as_bytes(),
+        )
+        .expect("write age identity");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -875,6 +893,8 @@ mod tests {
                 .expect("secure certificate");
             fs::set_permissions(&private_key_path, fs::Permissions::from_mode(0o600))
                 .expect("secure private key");
+            fs::set_permissions(&identity_path, fs::Permissions::from_mode(0o600))
+                .expect("secure identity");
         }
 
         let upstream = TcpListener::bind("127.0.0.1:0")
@@ -898,6 +918,7 @@ mod tests {
         let (proxy_addr, shutdown, proxy_task) = start_test_proxy(upstream_addr, |config| {
             config.listeners[0].protocol = "https".into();
             config.listeners[0].certificates = vec!["site".into()];
+            config.tls.identity = Some(format!("file://{}", identity_path.display()));
             config.certificates.push(CertificateConfig {
                 id: "site".into(),
                 hosts: vec!["example.test".into()],
@@ -991,6 +1012,7 @@ mod tests {
         }
         fs::remove_file(certificate_path).expect("remove certificate");
         fs::remove_file(private_key_path).expect("remove private key");
+        fs::remove_file(identity_path).expect("remove age identity");
         (negotiated, status, body)
     }
 

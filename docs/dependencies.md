@@ -15,6 +15,7 @@ Phase 0 inventory; versions are locked in `Cargo.lock` and must be re-reviewed o
 | rustls-webpki | Certificate metadata, path, validity, and name validation | `aws-lc-rs`, `std` | ISC | AWS-LC native build | Rustls verifier internals | Review with Rustls |
 | rcgen (dev) | Ephemeral TLS test certificates | `aws_lc_rs`, `crypto`, `pem` | MIT/Apache-2.0 | AWS-LC native build | checked-in private fixtures | Test-only, review with Rustls |
 | zeroize | Clear owned secret buffers on drop | `std` | Apache-2.0/MIT | Safe API; compiler optimization limits documented | manual volatile clearing | Review with secret-boundary changes |
+| age | X25519 encrypted private-key envelopes | no optional features | Apache-2.0/MIT | Pure-Rust cryptography with audited unsafe/transitive surface | custom AEAD envelope | Pin lockfile; restore and interoperability tests |
 | axum | Private admin REST API | Phase 8 | MIT | Safe first-party policy | raw hyper | Add only Phase 8 |
 | tracing/tracing-subscriber | Structured logs | JSON/env filter | MIT | None expected | log | Keep exporter bounded |
 | clap | CLI parsing | derive | MIT/Apache-2.0 | None expected | std::env | Stable CLI contract |
