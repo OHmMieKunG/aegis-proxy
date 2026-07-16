@@ -26,6 +26,7 @@ const MAX_LISTENERS: usize = 128;
 const MAX_ROUTES: usize = 4_096;
 const MAX_UPSTREAM_GROUPS: usize = 1_024;
 const MAX_ENDPOINTS_PER_GROUP: usize = 256;
+const MAX_TOTAL_ENDPOINTS: usize = 4_096;
 const MAX_MIDDLEWARES: usize = 1_024;
 const MAX_TRUSTED_PROXY_CIDRS: usize = 256;
 const MAX_ROUTE_LISTENERS: usize = 32;
@@ -112,6 +113,8 @@ pub struct LimitsConfig {
     pub max_request_target: usize,
     /// Maximum concurrent HTTP/2 streams per connection.
     pub max_http2_streams: u32,
+    /// Maximum concurrent active upstream health probes.
+    pub max_health_checks: usize,
     /// Maximum request body bytes.
     pub max_request_body: usize,
     /// Request header timeout seconds.
@@ -128,6 +131,7 @@ impl Default for LimitsConfig {
             max_headers: 100,
             max_request_target: 8 * 1024,
             max_http2_streams: 128,
+            max_health_checks: 64,
             max_request_body: 32 * 1024 * 1024,
             request_header_timeout_secs: 10,
             response_header_timeout_secs: 30,
@@ -711,6 +715,11 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             "limits.max_http2_streams is outside 1..=10000".into(),
         ));
     }
+    if config.limits.max_health_checks == 0 || config.limits.max_health_checks > 4_096 {
+        return Err(ConfigError::Invalid(
+            "limits.max_health_checks is outside 1..=4096".into(),
+        ));
+    }
     if config.limits.max_request_body == 0 || config.limits.max_request_body > 1024 * 1024 * 1024 {
         return Err(ConfigError::Invalid(
             "limits.max_request_body is outside 1..=1073741824".into(),
@@ -780,6 +789,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         }
     }
     let mut groups = HashSet::new();
+    let mut total_endpoints = 0_usize;
     for (group_index, group) in config.upstream_groups.iter().enumerate() {
         valid_id(&group.id)?;
         if !groups.insert(group.id.as_str()) {
@@ -797,6 +807,12 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         if group.endpoints.len() > MAX_ENDPOINTS_PER_GROUP {
             return Err(ConfigError::Invalid(format!(
                 "upstream_groups[{group_index}].endpoints exceeds {MAX_ENDPOINTS_PER_GROUP} entries"
+            )));
+        }
+        total_endpoints += group.endpoints.len();
+        if total_endpoints > MAX_TOTAL_ENDPOINTS {
+            return Err(ConfigError::Invalid(format!(
+                "total upstream endpoint count exceeds {MAX_TOTAL_ENDPOINTS}"
             )));
         }
         if group.allowed_cidrs.len() > 256 {
@@ -833,9 +849,10 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             }
             if !matches!(endpoint.url.scheme(), "http" | "https")
                 || endpoint.url.host_str().is_none()
+                || endpoint.url.port().is_none()
             {
                 return Err(ConfigError::Invalid(format!(
-                    "endpoint {} URL must be absolute http(s)",
+                    "endpoint {} URL must be absolute http(s) with an explicit port",
                     endpoint.id
                 )));
             }
@@ -1089,12 +1106,16 @@ fn validate_upstream_policy(
                     )));
                 }
             }
-            HealthCheckKind::Tcp => {}
+            HealthCheckKind::Tcp => {
+                if health.method != "GET" || health.path != "/" || health.expected_statuses != [200]
+                {
+                    return Err(ConfigError::Invalid(format!(
+                        "{} TCP probes cannot configure HTTP fields",
+                        field("health")
+                    )));
+                }
+            }
         }
-        return Err(ConfigError::Invalid(format!(
-            "{} is not activated until the Phase 4 health supervisor is installed",
-            field("health")
-        )));
     }
     if let Some(circuit) = &group.circuit_breaker {
         if circuit.sample_size == 0
@@ -1712,12 +1733,7 @@ mod tests {
         group.retry = RetryConfig::default();
 
         group.health = Some(HealthCheckConfig::default());
-        assert!(
-            validate_upstream_policy(0, &group)
-                .expect_err("inactive health checks must fail")
-                .to_string()
-                .contains("not activated")
-        );
+        validate_upstream_policy(0, &group).expect("active health checks must validate");
         group.health.as_mut().expect("health").timeout_secs = 10;
         assert!(
             validate_upstream_policy(0, &group)

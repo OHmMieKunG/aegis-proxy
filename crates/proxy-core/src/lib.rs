@@ -10,7 +10,9 @@ use std::{
     pin::Pin, sync::Arc, time::Duration,
 };
 
-use aegisproxy_config::{Config, ConfigError, LimitsConfig};
+use aegisproxy_config::{
+    Config, ConfigError, EndpointConfig, HealthCheckConfig, HealthCheckKind, LimitsConfig,
+};
 use aegisproxy_tls::{CertificateResolver, Identity, TlsAcceptor, load_identity, tls_acceptor};
 use http_body_util::{BodyExt, Full, Limited, combinators::BoxBody};
 use hyper::service::Service;
@@ -120,7 +122,10 @@ pub async fn run(config: Arc<Config>, shutdown: CancellationToken) -> Result<(),
             "no HTTP or HTTPS listeners configured",
         )));
     }
+    let health_tasks =
+        start_active_health_checks(&config, &upstream_clients, &upstream_pools, &shutdown)?;
     while tasks.join_next().await.is_some() {}
+    health_tasks.wait().await;
     Ok(())
 }
 
@@ -184,6 +189,146 @@ fn build_upstream_pools(config: &Config) -> Result<UpstreamPools, ProxyError> {
 
 fn endpoint_key(group_id: &str, endpoint_id: &str) -> String {
     format!("{group_id}/{endpoint_id}")
+}
+
+fn start_active_health_checks(
+    config: &Config,
+    clients: &UpstreamClients,
+    pools: &UpstreamPools,
+    shutdown: &CancellationToken,
+) -> Result<TaskTracker, ProxyError> {
+    let tracker = TaskTracker::new();
+    let permits = Arc::new(Semaphore::new(config.limits.max_health_checks));
+    for group in &config.upstream_groups {
+        let Some(policy) = &group.health else {
+            continue;
+        };
+        let pool = pools.get(&group.id).ok_or_else(|| {
+            ProxyError::Preparation(format!("health pool {} is missing", group.id))
+        })?;
+        for endpoint in pool.endpoints() {
+            let client = clients
+                .get(&endpoint_key(&group.id, &endpoint.config().id))
+                .cloned()
+                .ok_or_else(|| {
+                    ProxyError::Preparation(format!(
+                        "health client {}/{} is missing",
+                        group.id,
+                        endpoint.config().id
+                    ))
+                })?;
+            let endpoint = Arc::clone(endpoint);
+            let policy = policy.clone();
+            let permits = Arc::clone(&permits);
+            let shutdown = shutdown.clone();
+            tracker.spawn(async move {
+                loop {
+                    let permit = tokio::select! {
+                        _ = shutdown.cancelled() => break,
+                        result = permits.clone().acquire_owned() => match result {
+                            Ok(permit) => permit,
+                            Err(_) => break,
+                        },
+                    };
+                    let healthy = active_health_probe(&client, endpoint.config(), &policy).await;
+                    drop(permit);
+                    if healthy {
+                        endpoint
+                            .health()
+                            .record_active_success(policy.healthy_threshold);
+                    } else {
+                        endpoint
+                            .health()
+                            .record_active_failure(policy.unhealthy_threshold);
+                    }
+                    tokio::select! {
+                        _ = shutdown.cancelled() => break,
+                        () = tokio::time::sleep(health_interval(&endpoint.config().id, &policy)) => {}
+                    }
+                }
+            });
+        }
+    }
+    tracker.close();
+    Ok(tracker)
+}
+
+async fn active_health_probe(
+    client: &UpstreamClient,
+    endpoint: &EndpointConfig,
+    policy: &HealthCheckConfig,
+) -> bool {
+    match policy.kind {
+        HealthCheckKind::Tcp => {
+            let Some(address) = endpoint_socket_addr(endpoint) else {
+                return false;
+            };
+            matches!(
+                tokio::time::timeout(
+                    Duration::from_secs(policy.timeout_secs),
+                    TcpStream::connect(address)
+                )
+                .await,
+                Ok(Ok(_))
+            )
+        }
+        HealthCheckKind::Http => {
+            let Ok(method) = hyper::Method::from_bytes(policy.method.as_bytes()) else {
+                return false;
+            };
+            let mut target = endpoint.url.clone();
+            target.set_path(&policy.path);
+            target.set_query(None);
+            let Ok(uri) = target.as_str().parse::<Uri>() else {
+                return false;
+            };
+            let Ok(mut request) = Request::builder()
+                .method(method)
+                .uri(uri)
+                .body(full_body(b""))
+            else {
+                return false;
+            };
+            let Some(authority) = endpoint_authority(endpoint) else {
+                return false;
+            };
+            request.headers_mut().insert(HOST, authority);
+            matches!(
+                tokio::time::timeout(
+                    Duration::from_secs(policy.timeout_secs),
+                    client.request(request)
+                )
+                .await,
+                Ok(Ok(response)) if policy.expected_statuses.contains(&response.status().as_u16())
+            )
+        }
+    }
+}
+
+fn endpoint_socket_addr(endpoint: &EndpointConfig) -> Option<SocketAddr> {
+    Some(SocketAddr::new(
+        endpoint.url.host_str()?.parse().ok()?,
+        endpoint.url.port()?,
+    ))
+}
+
+fn endpoint_authority(endpoint: &EndpointConfig) -> Option<HeaderValue> {
+    let host = endpoint.url.host_str()?;
+    let port = endpoint.url.port()?;
+    let authority = if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    };
+    HeaderValue::from_str(&authority).ok()
+}
+
+fn health_interval(endpoint_id: &str, policy: &HealthCheckConfig) -> Duration {
+    let hash = endpoint_id.bytes().fold(2_166_136_261_u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(16_777_619)
+    });
+    let percent = 90 + hash % 21;
+    Duration::from_millis(policy.interval_secs * 1_000 * percent / 100)
 }
 
 fn prepare_tls(config: &Config) -> Result<HashMap<String, TlsAcceptor>, ProxyError> {
@@ -593,19 +738,8 @@ impl ProxyService {
         ] {
             parts.headers.remove(name);
         }
-        if let Some(host) = endpoint.url.host_str() {
-            let mut authority = if host.contains(':') {
-                format!("[{host}]")
-            } else {
-                host.to_owned()
-            };
-            if let Some(port) = endpoint.url.port() {
-                authority.push(':');
-                authority.push_str(&port.to_string());
-            }
-            if let Ok(value) = HeaderValue::from_str(&authority) {
-                parts.headers.insert(HOST, value);
-            }
+        if let Some(authority) = endpoint_authority(endpoint) {
+            parts.headers.insert(HOST, authority);
         }
         let request = Request::from_parts(
             parts,
@@ -910,6 +1044,22 @@ mod tests {
                 Err(error) => panic!("proxy did not become ready: {error}"),
             }
         }
+    }
+
+    async fn proxy_get(address: SocketAddr) -> Vec<u8> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let mut client = connect_to_proxy(address).await;
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("write request");
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("read response");
+        response
     }
 
     async fn identified_upstream(body: &'static [u8]) -> (SocketAddr, tokio::task::JoinHandle<()>) {
@@ -1531,8 +1681,6 @@ mod tests {
 
     #[tokio::test]
     async fn balances_real_requests_across_weighted_endpoints() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
         let (first_addr, first_task) = identified_upstream(b"first").await;
         let (second_addr, second_task) = identified_upstream(b"second").await;
         let (proxy_addr, shutdown, proxy_task) = start_test_proxy(first_addr, |config| {
@@ -1553,16 +1701,7 @@ mod tests {
 
         let mut counts = [0_usize; 2];
         for _ in 0..6 {
-            let mut client = connect_to_proxy(proxy_addr).await;
-            client
-                .write_all(b"GET / HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n")
-                .await
-                .expect("write request");
-            let mut response = Vec::new();
-            client
-                .read_to_end(&mut response)
-                .await
-                .expect("read response");
+            let response = proxy_get(proxy_addr).await;
             if response.ends_with(b"first") {
                 counts[0] += 1;
             } else if response.ends_with(b"second") {
@@ -1577,6 +1716,87 @@ mod tests {
         proxy_task.await.expect("proxy task").expect("proxy result");
         first_task.abort();
         second_task.abort();
+    }
+
+    #[tokio::test]
+    async fn active_http_health_excludes_failed_endpoint() {
+        let reserved = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("reserve failed endpoint");
+        let failed_addr = reserved.local_addr().expect("failed endpoint address");
+        drop(reserved);
+        let (healthy_addr, healthy_task) = identified_upstream(b"healthy").await;
+        let (proxy_addr, shutdown, proxy_task) = start_test_proxy(failed_addr, |config| {
+            let group = &mut config.upstream_groups[0];
+            group.health = Some(aegisproxy_config::HealthCheckConfig {
+                interval_secs: 2,
+                timeout_secs: 1,
+                unhealthy_threshold: 1,
+                healthy_threshold: 1,
+                ..aegisproxy_config::HealthCheckConfig::default()
+            });
+            group.endpoints.push(EndpointConfig {
+                id: "app-2".into(),
+                url: format!("http://{healthy_addr}")
+                    .parse()
+                    .expect("endpoint URL"),
+                weight: 1,
+                server_name: None,
+                ca_bundle: None,
+            });
+        })
+        .await;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        let mut consecutive_healthy = 0;
+        while consecutive_healthy < 4 && tokio::time::Instant::now() < deadline {
+            if proxy_get(proxy_addr).await.ends_with(b"healthy") {
+                consecutive_healthy += 1;
+            } else {
+                consecutive_healthy = 0;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(consecutive_healthy, 4);
+        shutdown.cancel();
+        proxy_task.await.expect("proxy task").expect("proxy result");
+        healthy_task.abort();
+    }
+
+    #[tokio::test]
+    async fn active_tcp_probe_observes_listener_state() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("upstream bind");
+        let address = listener.local_addr().expect("upstream address");
+        let mut config = config(RouteConfig {
+            id: "test".into(),
+            listeners: vec!["public".into()],
+            hosts: vec!["example.test".into()],
+            paths: vec![],
+            path_prefixes: vec!["/".into()],
+            methods: vec![],
+            headers: vec![],
+            default: false,
+            priority: 0,
+            middlewares: vec![],
+            upstream_group: Some("app".into()),
+        });
+        config.upstream_groups[0].endpoints[0].url =
+            format!("http://{address}").parse().expect("endpoint URL");
+        let clients = build_upstream_clients(&config).expect("upstream clients");
+        let client = clients.get("app/app-1").expect("upstream client");
+        let policy = aegisproxy_config::HealthCheckConfig {
+            kind: HealthCheckKind::Tcp,
+            ..aegisproxy_config::HealthCheckConfig::default()
+        };
+        assert!(
+            active_health_probe(client, &config.upstream_groups[0].endpoints[0], &policy).await
+        );
+        drop(listener);
+        assert!(
+            !active_health_probe(client, &config.upstream_groups[0].endpoints[0], &policy).await
+        );
     }
 
     #[tokio::test]

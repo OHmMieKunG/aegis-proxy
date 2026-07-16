@@ -53,12 +53,17 @@ impl EndpointRuntime {
     pub(crate) fn active(&self) -> usize {
         self.active.load(Ordering::Relaxed)
     }
+
+    pub(crate) fn health(&self) -> &EndpointHealth {
+        &self.health
+    }
 }
 
 #[derive(Debug)]
 pub(crate) struct SelectedEndpoint {
     endpoint: Arc<EndpointRuntime>,
     passive_health: Arc<PassiveHealthConfig>,
+    active_health: bool,
 }
 
 impl SelectedEndpoint {
@@ -69,7 +74,7 @@ impl SelectedEndpoint {
     pub(crate) fn record_success(&self) {
         self.endpoint
             .health
-            .record_passive_success(self.passive_health.healthy_threshold);
+            .record_passive_success(self.passive_health.healthy_threshold, self.active_health);
     }
 
     pub(crate) fn record_failure(&self) {
@@ -175,7 +180,12 @@ impl UpstreamPool {
         Ok(SelectedEndpoint {
             endpoint,
             passive_health: Arc::clone(&self.passive_health),
+            active_health: self.active_health,
         })
+    }
+
+    pub(crate) fn endpoints(&self) -> &[Arc<EndpointRuntime>] {
+        &self.endpoints
     }
 
     fn eligible_indices(&self) -> Vec<usize> {

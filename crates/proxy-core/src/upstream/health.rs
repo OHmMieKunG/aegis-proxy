@@ -32,8 +32,9 @@ impl EndpointState {
 #[derive(Debug)]
 pub(crate) struct EndpointHealth {
     state: AtomicU8,
-    consecutive_successes: AtomicU32,
-    consecutive_failures: AtomicU32,
+    active_successes: AtomicU32,
+    active_failures: AtomicU32,
+    passive_successes: AtomicU32,
     passive_failures: Mutex<VecDeque<Instant>>,
 }
 
@@ -41,8 +42,9 @@ impl EndpointHealth {
     pub(crate) fn new(state: EndpointState) -> Self {
         Self {
             state: AtomicU8::new(state as u8),
-            consecutive_successes: AtomicU32::new(0),
-            consecutive_failures: AtomicU32::new(0),
+            active_successes: AtomicU32::new(0),
+            active_failures: AtomicU32::new(0),
+            passive_successes: AtomicU32::new(0),
             passive_failures: Mutex::new(VecDeque::new()),
         }
     }
@@ -72,8 +74,9 @@ impl EndpointHealth {
             return state;
         }
         failures.clear();
-        self.consecutive_failures.store(0, Ordering::Release);
-        self.consecutive_successes.store(0, Ordering::Release);
+        self.active_failures.store(0, Ordering::Release);
+        self.active_successes.store(0, Ordering::Release);
+        self.passive_successes.store(0, Ordering::Release);
         drop(failures);
         self.mark_healthy();
         self.state()
@@ -93,9 +96,9 @@ impl EndpointHealth {
     }
 
     pub(crate) fn record_active_success(&self, healthy_threshold: u32) {
-        self.consecutive_failures.store(0, Ordering::Release);
+        self.active_failures.store(0, Ordering::Release);
         let successes = self
-            .consecutive_successes
+            .active_successes
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 Some(current.saturating_add(1))
             })
@@ -103,14 +106,17 @@ impl EndpointHealth {
             .saturating_add(1);
         if successes >= healthy_threshold {
             self.mark_healthy();
+            self.passive_failures
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clear();
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn record_active_failure(&self, unhealthy_threshold: u32) {
-        self.consecutive_successes.store(0, Ordering::Release);
+        self.active_successes.store(0, Ordering::Release);
         let failures = self
-            .consecutive_failures
+            .active_failures
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 Some(current.saturating_add(1))
             })
@@ -121,9 +127,21 @@ impl EndpointHealth {
         }
     }
 
-    pub(crate) fn record_passive_success(&self, healthy_threshold: u32) {
+    pub(crate) fn record_passive_success(&self, healthy_threshold: u32, active_health: bool) {
+        if active_health {
+            return;
+        }
         let was_unhealthy = self.state() == EndpointState::Unhealthy;
-        self.record_active_success(healthy_threshold);
+        let successes = self
+            .passive_successes
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                Some(current.saturating_add(1))
+            })
+            .unwrap_or_else(|current| current)
+            .saturating_add(1);
+        if successes >= healthy_threshold {
+            self.mark_healthy();
+        }
         if was_unhealthy && self.state() == EndpointState::Healthy {
             self.passive_failures
                 .lock()
@@ -133,7 +151,7 @@ impl EndpointHealth {
     }
 
     pub(crate) fn record_passive_failure(&self, now: Instant, policy: &PassiveHealthConfig) {
-        self.consecutive_successes.store(0, Ordering::Release);
+        self.passive_successes.store(0, Ordering::Release);
         let cutoff = now
             .checked_sub(Duration::from_secs(policy.window_secs))
             .unwrap_or(now);
@@ -205,9 +223,9 @@ mod tests {
                 .len(),
             2
         );
-        health.record_passive_success(2);
+        health.record_passive_success(2, false);
         assert_eq!(health.state(), EndpointState::Unhealthy);
-        health.record_passive_success(2);
+        health.record_passive_success(2, false);
         assert_eq!(health.state(), EndpointState::Healthy);
         assert!(
             health
@@ -224,8 +242,15 @@ mod tests {
         health.mark_draining();
         health.record_active_success(1);
         health.record_active_failure(1);
-        health.record_passive_success(1);
+        health.record_passive_success(1, false);
         assert_eq!(health.state(), EndpointState::Draining);
+    }
+
+    #[test]
+    fn passive_success_cannot_recover_active_health() {
+        let health = EndpointHealth::new(EndpointState::Unhealthy);
+        health.record_passive_success(1, true);
+        assert_eq!(health.state(), EndpointState::Unhealthy);
     }
 
     #[test]
