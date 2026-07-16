@@ -82,3 +82,41 @@ fn last_known_good_requires_explicit_state_directory() {
     let error = String::from_utf8(output.stderr).expect("stderr UTF-8");
     assert!(error.contains("--state-dir"));
 }
+
+#[test]
+fn revisions_lists_offline_active_state() {
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let state = std::env::temp_dir().join(format!(
+        "aegisproxy-cli-revisions-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("test clock")
+            .as_nanos()
+    ));
+    let store = aegisproxy_config::revision::RevisionStore::open(&state).expect("revision store");
+    let config = aegisproxy_config::load_file(workspace_file("config/examples/minimal.toml"))
+        .expect("example config");
+    let revision = store
+        .create_candidate(&config, "cli-test")
+        .expect("candidate");
+    store
+        .begin_activation(&revision.id, None)
+        .expect("activation intent");
+    store.mark_probation(&revision.id).expect("probation");
+    store.commit_activation(&revision.id).expect("commit");
+    drop(store);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rust-proxy"))
+        .args(["config", "revisions", "--state-dir"])
+        .arg(&state)
+        .output()
+        .expect("run revisions");
+    assert!(output.status.success());
+    let output = String::from_utf8(output.stdout).expect("stdout UTF-8");
+    assert!(output.contains(&revision.id));
+    assert!(output.contains("\tcli-test\tactive"));
+    fs::remove_dir_all(state).expect("cleanup");
+}

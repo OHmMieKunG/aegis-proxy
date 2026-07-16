@@ -46,10 +46,24 @@ enum Command {
         #[arg(long, requires = "resume_last_known_good")]
         state_dir: Option<PathBuf>,
     },
+    /// Inspect durable configuration state while the daemon is stopped.
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
     /// Manage encrypted certificate generations offline.
     Cert {
         #[command(subcommand)]
         command: CertificateCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ConfigCommand {
+    /// List immutable revisions and active/previous status.
+    Revisions {
+        #[arg(long)]
+        state_dir: PathBuf,
     },
 }
 
@@ -138,10 +152,45 @@ async fn main() -> Result<(), BoxError> {
                 aegisproxy_core::run_managed(config, cancel).await?;
             }
         }
+        Command::Config { command } => {
+            tokio::task::spawn_blocking(move || run_config_command(command))
+                .await
+                .map_err(|error| -> BoxError { Box::new(error) })??;
+        }
         Command::Cert { command } => {
             tokio::task::spawn_blocking(move || run_certificate_command(command))
                 .await
                 .map_err(|error| -> BoxError { Box::new(error) })??;
+        }
+    }
+    Ok(())
+}
+
+fn run_config_command(command: ConfigCommand) -> Result<(), BoxError> {
+    match command {
+        ConfigCommand::Revisions { state_dir } => {
+            let store = aegisproxy_config::revision::RevisionStore::open(state_dir)?;
+            let active = store.active()?;
+            let active_id = active.as_ref().map(|pointer| pointer.active.id.as_str());
+            let previous_id = active
+                .as_ref()
+                .and_then(|pointer| pointer.previous.as_ref())
+                .map(|previous| previous.id.as_str());
+            let mut output = io::stdout().lock();
+            for revision in store.list()? {
+                let status = if Some(revision.id.as_str()) == active_id {
+                    "active"
+                } else if Some(revision.id.as_str()) == previous_id {
+                    "previous"
+                } else {
+                    "retained"
+                };
+                writeln!(
+                    output,
+                    "{}\t{}\t{}\t{}\t{}",
+                    revision.id, revision.hash, revision.created_unix_secs, revision.source, status
+                )?;
+            }
         }
     }
     Ok(())
