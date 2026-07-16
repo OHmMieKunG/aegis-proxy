@@ -1115,6 +1115,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stops_accepting_when_drain_begins() {
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("upstream bind");
+        let upstream_addr = upstream.local_addr().expect("upstream address");
+        let (proxy_addr, shutdown, task) = start_test_proxy(upstream_addr, |_| {}).await;
+        let idle_client = connect_to_proxy(proxy_addr).await;
+        shutdown.cancel();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(tokio::net::TcpStream::connect(proxy_addr).await.is_err());
+        drop(idle_client);
+        task.await.expect("proxy task").expect("proxy run");
+    }
+
+    #[tokio::test]
     async fn rejects_oversized_body_before_upstream() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
