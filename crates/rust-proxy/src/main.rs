@@ -39,6 +39,12 @@ enum Command {
     Run {
         #[arg(long)]
         config: PathBuf,
+        /// Explicitly ignore an invalid configured file and resume durable active state.
+        #[arg(long, requires = "state_dir")]
+        resume_last_known_good: bool,
+        /// Durable state directory required for explicit recovery.
+        #[arg(long, requires = "resume_last_known_good")]
+        state_dir: Option<PathBuf>,
     },
     /// Manage encrypted certificate generations offline.
     Cert {
@@ -112,14 +118,25 @@ async fn main() -> Result<(), BoxError> {
             let config = load_config(config).await?;
             writeln!(io::stdout().lock(), "{}", toml::to_string_pretty(&config)?)?;
         }
-        Command::Run { config } => {
+        Command::Run {
+            config,
+            resume_last_known_good,
+            state_dir,
+        } => {
             let cancel = CancellationToken::new();
             let signal = cancel.clone();
             tokio::spawn(async move {
                 let _ = tokio::signal::ctrl_c().await;
                 signal.cancel();
             });
-            aegisproxy_core::run_managed(config, cancel).await?;
+            if resume_last_known_good {
+                let state_dir = state_dir.ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "--state-dir is required")
+                })?;
+                aegisproxy_core::run_last_known_good(config, state_dir, cancel).await?;
+            } else {
+                aegisproxy_core::run_managed(config, cancel).await?;
+            }
         }
         Command::Cert { command } => {
             tokio::task::spawn_blocking(move || run_certificate_command(command))

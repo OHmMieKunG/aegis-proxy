@@ -116,9 +116,7 @@ pub async fn run_managed(
             .await
             .map_err(|error| ProxyError::Preparation(error.to_string()))??
     };
-    let snapshot =
-        RuntimeSnapshot::prepare(Arc::new(config), candidate.id.clone(), &shutdown).await?;
-    let listeners = bind_listeners(&snapshot.config).await?;
+    let (snapshot, listeners) = prepare_bound(config, candidate.id.clone(), &shutdown).await?;
     if recovered.as_ref().map(|pointer| pointer.active.id.as_str()) != Some(&candidate.id) {
         let revisions = Arc::clone(&revisions);
         let candidate_id = candidate.id.clone();
@@ -131,6 +129,61 @@ pub async fn run_managed(
         .await
         .map_err(|error| ProxyError::Preparation(error.to_string()))??;
     }
+    serve_managed(config_path, revisions, snapshot, listeners, shutdown).await
+}
+
+/// Explicitly start from the durable last-known-good revision.
+///
+/// Bootstrap does not load or overwrite the configured file. The watcher is
+/// enabled after startup so a later valid edit can activate normally.
+pub async fn run_last_known_good(
+    config_path: PathBuf,
+    state_dir: PathBuf,
+    shutdown: CancellationToken,
+) -> Result<(), ProxyError> {
+    let revisions = Arc::new(
+        tokio::task::spawn_blocking(move || RevisionStore::open(state_dir))
+            .await
+            .map_err(|error| ProxyError::Preparation(error.to_string()))??,
+    );
+    let active = {
+        let revisions = Arc::clone(&revisions);
+        tokio::task::spawn_blocking(move || revisions.recover_incomplete())
+            .await
+            .map_err(|error| ProxyError::Preparation(error.to_string()))??
+            .ok_or_else(|| {
+                ProxyError::Preparation("no last-known-good revision is available".into())
+            })?
+    };
+    let config = {
+        let revisions = Arc::clone(&revisions);
+        let revision = active.active.id.clone();
+        tokio::task::spawn_blocking(move || revisions.load(&revision))
+            .await
+            .map_err(|error| ProxyError::Preparation(error.to_string()))??
+    };
+    tracing::warn!(revision = %active.active.id, "explicit last-known-good recovery selected");
+    let (snapshot, listeners) = prepare_bound(config, active.active.id, &shutdown).await?;
+    serve_managed(config_path, revisions, snapshot, listeners, shutdown).await
+}
+
+async fn prepare_bound(
+    config: Config,
+    revision: String,
+    shutdown: &CancellationToken,
+) -> Result<(Arc<RuntimeSnapshot>, Vec<(ListenerConfig, TcpListener)>), ProxyError> {
+    let snapshot = RuntimeSnapshot::prepare(Arc::new(config), revision, shutdown).await?;
+    let listeners = bind_listeners(&snapshot.config).await?;
+    Ok((snapshot, listeners))
+}
+
+async fn serve_managed(
+    config_path: PathBuf,
+    revisions: Arc<RevisionStore>,
+    snapshot: Arc<RuntimeSnapshot>,
+    listeners: Vec<(ListenerConfig, TcpListener)>,
+    shutdown: CancellationToken,
+) -> Result<(), ProxyError> {
     let runtime = RuntimeHandle::new(Arc::clone(&snapshot));
     let coordinator = Arc::new(ActivationCoordinator::new(
         Arc::clone(&revisions),
@@ -1628,6 +1681,19 @@ mod tests {
         assert!(proxy_get(proxy_addr).await.ends_with(b"second"));
         shutdown.cancel();
         proxy_task.await.expect("proxy task").expect("proxy run");
+
+        let recovery_shutdown = CancellationToken::new();
+        let recovery_task = tokio::spawn(run_last_known_good(
+            config_path.clone(),
+            root.join("state"),
+            recovery_shutdown.clone(),
+        ));
+        assert!(proxy_get(proxy_addr).await.ends_with(b"second"));
+        recovery_shutdown.cancel();
+        recovery_task
+            .await
+            .expect("recovery task")
+            .expect("last-known-good run");
         first_task.abort();
         second_task.abort();
         fs::remove_dir_all(root).expect("cleanup");
