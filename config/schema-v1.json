@@ -79,6 +79,9 @@
         "max_http2_streams": { "type": "integer", "minimum": 1, "maximum": 10000, "default": 128 },
         "max_health_checks": { "type": "integer", "minimum": 1, "maximum": 4096, "default": 64 },
         "max_dns_lookups": { "type": "integer", "minimum": 1, "maximum": 4096, "default": 32 },
+        "tcp_connect_timeout_secs": { "type": "integer", "minimum": 1, "maximum": 300, "default": 5 },
+        "tcp_idle_timeout_secs": { "type": "integer", "minimum": 1, "maximum": 86400, "default": 300 },
+        "tcp_connection_lifetime_secs": { "type": "integer", "minimum": 1, "maximum": 604800, "default": 86400 },
         "max_request_body": { "type": "integer", "minimum": 1, "maximum": 1073741824, "default": 33554432 },
         "request_header_timeout_secs": { "type": "integer", "minimum": 1, "maximum": 300, "default": 10 },
         "response_header_timeout_secs": { "type": "integer", "minimum": 1, "maximum": 3600, "default": 30 }
@@ -91,7 +94,7 @@
       "properties": {
         "id": { "$ref": "#/$defs/id" },
         "bind": { "type": "string", "minLength": 3, "maxLength": 128 },
-        "protocol": { "enum": ["http", "https", "tcp"] },
+        "protocol": { "enum": ["http", "https", "tcp", "tls_passthrough"] },
         "certificates": {
           "type": "array",
           "maxItems": 64,
@@ -147,7 +150,7 @@
       "required": ["id", "url"],
       "properties": {
         "id": { "$ref": "#/$defs/id" },
-        "url": { "type": "string", "format": "uri", "maxLength": 2048, "pattern": "^https?://" },
+        "url": { "type": "string", "format": "uri", "maxLength": 2048, "pattern": "^(https?|tcp)://" },
         "weight": { "type": "integer", "minimum": 1, "maximum": 10000, "default": 1 },
         "server_name": { "$ref": "#/$defs/dnsName" },
         "ca_bundle": { "$ref": "#/$defs/secretRef" }

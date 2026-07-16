@@ -1,0 +1,44 @@
+schema_version = 1
+
+[limits]
+tcp_connect_timeout_secs = 5
+tcp_idle_timeout_secs = 300
+tcp_connection_lifetime_secs = 86400
+
+[[listeners]]
+id = "database"
+bind = "127.0.0.1:15432"
+protocol = "tcp"
+
+[[listeners]]
+id = "tls-services"
+bind = "127.0.0.1:18443"
+protocol = "tls_passthrough"
+
+[[upstream_groups]]
+id = "database"
+allowed_cidrs = ["127.0.0.1/32"]
+
+[[upstream_groups.endpoints]]
+id = "database-1"
+url = "tcp://127.0.0.1:5432"
+
+[[upstream_groups]]
+id = "tls-app"
+allowed_cidrs = ["127.0.0.1/32"]
+
+[[upstream_groups.endpoints]]
+id = "tls-app-1"
+url = "tcp://127.0.0.1:9443"
+
+[[routes]]
+id = "database"
+listeners = ["database"]
+default = true
+upstream_group = "database"
+
+[[routes]]
+id = "tls-app"
+listeners = ["tls-services"]
+hosts = ["app.example.test"]
+upstream_group = "tls-app"

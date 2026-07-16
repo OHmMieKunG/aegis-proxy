@@ -3,6 +3,7 @@
 //! Data-plane HTTP forwarding primitives.
 
 mod route;
+mod tcp;
 mod upstream;
 
 use std::{
@@ -41,6 +42,7 @@ use upstream::{
 
 pub use route::RouteIndex;
 use route::{PathError, canonical_host, canonicalize_request_path, request_host};
+use tcp::{TcpListenerContext, accept_loop as tcp_accept_loop};
 
 /// Boxed body error.
 pub type BoxError = Box<dyn Error + Send + Sync>;
@@ -68,7 +70,7 @@ pub enum ProxyError {
     Preparation(String),
 }
 
-/// Run configured HTTP and HTTPS listeners until cancellation.
+/// Run configured public listeners until cancellation.
 pub async fn run(config: Arc<Config>, shutdown: CancellationToken) -> Result<(), ProxyError> {
     aegisproxy_config::validate(&config)?;
     let route_index = Arc::new(RouteIndex::compile(&config));
@@ -93,11 +95,7 @@ pub async fn run(config: Arc<Config>, shutdown: CancellationToken) -> Result<(),
     .map_err(|error| ProxyError::Preparation(error.to_string()))?;
     let handshake_permits = Arc::new(Semaphore::new(config.tls.max_handshakes));
     let mut tasks = tokio::task::JoinSet::new();
-    for listener in config
-        .listeners
-        .iter()
-        .filter(|listener| matches!(listener.protocol.as_str(), "http" | "https"))
-    {
+    for listener in &config.listeners {
         let tcp = TcpListener::bind(listener.bind).await?;
         let listener_id = listener.id.clone();
         let tls_acceptor = tls_acceptors.remove(&listener_id);
@@ -108,29 +106,51 @@ pub async fn run(config: Arc<Config>, shutdown: CancellationToken) -> Result<(),
         let upstream_clients = Arc::clone(&upstream_clients);
         let upstream_pools = Arc::clone(&upstream_pools);
         let route_index = Arc::clone(&route_index);
+        let dns_endpoints = Arc::clone(&dns_endpoints);
         tracing::info!(listener = %listener_id, bind = %listener.bind, protocol = %listener.protocol, "listener started");
-        tasks.spawn(async move {
-            accept_loop(
-                tcp,
-                ListenerContext {
-                    listener_id,
-                    config,
-                    route_index,
-                    limits,
-                    tls_acceptor,
-                    handshake_permits,
-                    upstream_clients,
-                    upstream_pools,
-                    shutdown,
-                },
-            )
-            .await
-        });
+        if matches!(listener.protocol.as_str(), "tcp" | "tls_passthrough") {
+            let tls_passthrough = listener.protocol == "tls_passthrough";
+            tasks.spawn(async move {
+                tcp_accept_loop(
+                    tcp,
+                    TcpListenerContext {
+                        listener_id,
+                        tls_passthrough,
+                        config,
+                        route_index,
+                        limits,
+                        handshake_permits,
+                        upstream_pools,
+                        dns_endpoints,
+                        shutdown,
+                    },
+                )
+                .await
+            });
+        } else {
+            tasks.spawn(async move {
+                accept_loop(
+                    tcp,
+                    ListenerContext {
+                        listener_id,
+                        config,
+                        route_index,
+                        limits,
+                        tls_acceptor,
+                        handshake_permits,
+                        upstream_clients,
+                        upstream_pools,
+                        shutdown,
+                    },
+                )
+                .await
+            });
+        }
     }
     if tasks.is_empty() {
         return Err(ProxyError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            "no HTTP or HTTPS listeners configured",
+            "no public listeners configured",
         )));
     }
     let health_tasks = start_active_health_checks(
@@ -157,6 +177,23 @@ fn build_upstream_clients(config: &Config) -> Result<(UpstreamClients, DnsEndpoi
     let mut dns_endpoints = HashMap::new();
     for group in &config.upstream_groups {
         for endpoint in &group.endpoints {
+            let dns_endpoint = Arc::new(
+                DnsEndpoint::new(endpoint, group)
+                    .map_err(|error| ProxyError::Preparation(error.to_string()))?,
+            );
+            let key = endpoint_key(&group.id, &endpoint.id);
+            if dns_endpoints
+                .insert(key.clone(), Arc::clone(&dns_endpoint))
+                .is_some()
+            {
+                return Err(ProxyError::Preparation(format!(
+                    "duplicate DNS endpoint {}/{}",
+                    group.id, endpoint.id
+                )));
+            }
+            if endpoint.url.scheme() == "tcp" {
+                continue;
+            }
             let server_name = endpoint
                 .server_name
                 .as_deref()
@@ -170,10 +207,6 @@ fn build_upstream_clients(config: &Config) -> Result<(UpstreamClients, DnsEndpoi
                 })
                 .transpose()?;
             let tls_config = aegisproxy_tls::client_config(endpoint.ca_bundle.as_deref())?;
-            let dns_endpoint = Arc::new(
-                DnsEndpoint::new(endpoint, group)
-                    .map_err(|error| ProxyError::Preparation(error.to_string()))?,
-            );
             let mut http = HttpConnector::new_with_resolver(dns_endpoint.resolver());
             http.enforce_http(false);
             let connector = HttpsConnectorBuilder::new()
@@ -190,17 +223,9 @@ fn build_upstream_clients(config: &Config) -> Result<(UpstreamClients, DnsEndpoi
                 .enable_http2()
                 .wrap_connector(http);
             let client = Client::builder(TokioExecutor::new()).build(connector);
-            let key = endpoint_key(&group.id, &endpoint.id);
             if clients.insert(key, client).is_some() {
                 return Err(ProxyError::Preparation(format!(
                     "duplicate upstream endpoint {}/{}",
-                    group.id, endpoint.id
-                )));
-            }
-            let key = endpoint_key(&group.id, &endpoint.id);
-            if dns_endpoints.insert(key, dns_endpoint).is_some() {
-                return Err(ProxyError::Preparation(format!(
-                    "duplicate DNS endpoint {}/{}",
                     group.id, endpoint.id
                 )));
             }
@@ -245,16 +270,22 @@ fn start_active_health_checks(
             ProxyError::Preparation(format!("health pool {} is missing", group.id))
         })?;
         for endpoint in pool.endpoints() {
-            let client = clients
-                .get(&endpoint_key(&group.id, &endpoint.config().id))
-                .cloned()
-                .ok_or_else(|| {
-                    ProxyError::Preparation(format!(
-                        "health client {}/{} is missing",
-                        group.id,
-                        endpoint.config().id
-                    ))
-                })?;
+            let client = if policy.kind == HealthCheckKind::Http {
+                Some(
+                    clients
+                        .get(&endpoint_key(&group.id, &endpoint.config().id))
+                        .cloned()
+                        .ok_or_else(|| {
+                            ProxyError::Preparation(format!(
+                                "health client {}/{} is missing",
+                                group.id,
+                                endpoint.config().id
+                            ))
+                        })?,
+                )
+            } else {
+                None
+            };
             let dns_endpoint = dns_endpoints
                 .get(&endpoint_key(&group.id, &endpoint.config().id))
                 .cloned()
@@ -279,7 +310,7 @@ fn start_active_health_checks(
                         },
                     };
                     let healthy = active_health_probe(
-                        &client,
+                        client.as_ref(),
                         &dns_endpoint,
                         endpoint.config(),
                         &policy,
@@ -308,7 +339,7 @@ fn start_active_health_checks(
 }
 
 async fn active_health_probe(
-    client: &UpstreamClient,
+    client: Option<&UpstreamClient>,
     dns_endpoint: &DnsEndpoint,
     endpoint: &EndpointConfig,
     policy: &HealthCheckConfig,
@@ -334,6 +365,9 @@ async fn active_health_probe(
             false
         }
         HealthCheckKind::Http => {
+            let Some(client) = client else {
+                return false;
+            };
             let Ok(method) = hyper::Method::from_bytes(policy.method.as_bytes()) else {
                 return false;
             };
@@ -1187,6 +1221,52 @@ mod tests {
         (proxy_addr, shutdown, task)
     }
 
+    async fn start_tcp_test_proxy(
+        upstream_addr: SocketAddr,
+        tls_passthrough: bool,
+    ) -> (
+        SocketAddr,
+        CancellationToken,
+        tokio::task::JoinHandle<Result<(), ProxyError>>,
+    ) {
+        start_test_proxy(upstream_addr, |config| {
+            config.listeners[0].protocol = if tls_passthrough {
+                "tls_passthrough".into()
+            } else {
+                "tcp".into()
+            };
+            config.upstream_groups[0].endpoints[0].url = format!("tcp://{upstream_addr}")
+                .parse()
+                .expect("TCP endpoint URL");
+            config.routes[0].paths.clear();
+            config.routes[0].path_prefixes.clear();
+            config.routes[0].methods.clear();
+            config.routes[0].headers.clear();
+            config.routes[0].default = !tls_passthrough;
+            if !tls_passthrough {
+                config.routes[0].hosts.clear();
+            }
+        })
+        .await
+    }
+
+    fn client_hello(server_name: &str) -> Vec<u8> {
+        use rustls::{ClientConfig, ClientConnection, RootCertStore, crypto::aws_lc_rs};
+
+        let config = ClientConfig::builder_with_provider(Arc::new(aws_lc_rs::default_provider()))
+            .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
+            .expect("TLS versions")
+            .with_root_certificates(RootCertStore::empty())
+            .with_no_client_auth();
+        let name = rustls::pki_types::ServerName::try_from(server_name.to_owned())
+            .expect("test server name");
+        let mut connection =
+            ClientConnection::new(Arc::new(config), name).expect("client connection");
+        let mut output = Vec::new();
+        connection.write_tls(&mut output).expect("ClientHello");
+        output
+    }
+
     async fn connect_to_proxy(address: SocketAddr) -> tokio::net::TcpStream {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
         loop {
@@ -1953,7 +2033,7 @@ mod tests {
         };
         assert!(
             active_health_probe(
-                client,
+                Some(client),
                 dns_endpoint,
                 &config.upstream_groups[0].endpoints[0],
                 &policy,
@@ -1963,7 +2043,7 @@ mod tests {
         drop(listener);
         assert!(
             !active_health_probe(
-                client,
+                Some(client),
                 dns_endpoint,
                 &config.upstream_groups[0].endpoints[0],
                 &policy,
@@ -2532,6 +2612,206 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         assert!(tokio::net::TcpStream::connect(proxy_addr).await.is_err());
         drop(idle_client);
+        task.await.expect("proxy task").expect("proxy run");
+    }
+
+    #[tokio::test]
+    async fn proxies_plain_tcp_bidirectionally() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("upstream bind");
+        let upstream_addr = upstream.local_addr().expect("upstream address");
+        let upstream_task = tokio::spawn(async move {
+            let (mut stream, _) = upstream.accept().await.expect("upstream accept");
+            let mut request = [0_u8; 4];
+            stream
+                .read_exact(&mut request)
+                .await
+                .expect("upstream read");
+            assert_eq!(&request, b"ping");
+            stream.write_all(b"pong").await.expect("upstream write");
+        });
+        let (proxy_addr, shutdown, task) = start_tcp_test_proxy(upstream_addr, false).await;
+        let mut client = connect_to_proxy(proxy_addr).await;
+        client.write_all(b"ping").await.expect("client write");
+        let mut response = [0_u8; 4];
+        client.read_exact(&mut response).await.expect("client read");
+        assert_eq!(&response, b"pong");
+        drop(client);
+        upstream_task.await.expect("upstream task");
+        shutdown.cancel();
+        task.await.expect("proxy task").expect("proxy run");
+    }
+
+    #[tokio::test]
+    async fn drains_existing_tcp_connection_after_listener_shutdown() {
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            sync::oneshot,
+        };
+
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("upstream bind");
+        let upstream_addr = upstream.local_addr().expect("upstream address");
+        let (request_tx, request_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let upstream_task = tokio::spawn(async move {
+            let (mut stream, _) = upstream.accept().await.expect("upstream accept");
+            let mut request = [0_u8; 4];
+            stream
+                .read_exact(&mut request)
+                .await
+                .expect("upstream read");
+            request_tx.send(()).expect("request signal");
+            release_rx.await.expect("release signal");
+            stream.write_all(b"pong").await.expect("upstream write");
+        });
+        let (proxy_addr, shutdown, task) = start_tcp_test_proxy(upstream_addr, false).await;
+        let mut client = connect_to_proxy(proxy_addr).await;
+        client.write_all(b"ping").await.expect("client write");
+        request_rx.await.expect("upstream request");
+        shutdown.cancel();
+        let close_deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        loop {
+            match TcpStream::connect(proxy_addr).await {
+                Err(_) => break,
+                Ok(stream) if tokio::time::Instant::now() < close_deadline => {
+                    drop(stream);
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Ok(stream) => {
+                    drop(stream);
+                    panic!("TCP listener remained open during drain");
+                }
+            }
+        }
+        release_tx.send(()).expect("release upstream");
+        let mut response = [0_u8; 4];
+        client
+            .read_exact(&mut response)
+            .await
+            .expect("drained response");
+        assert_eq!(&response, b"pong");
+        drop(client);
+        upstream_task.await.expect("upstream task");
+        task.await.expect("proxy task").expect("proxy run");
+    }
+
+    #[tokio::test]
+    async fn tls_passthrough_routes_fragmented_sni_and_preserves_prefix() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let hello = client_hello("example.test");
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("upstream bind");
+        let upstream_addr = upstream.local_addr().expect("upstream address");
+        let expected = hello.clone();
+        let upstream_task = tokio::spawn(async move {
+            let (mut stream, _) = upstream.accept().await.expect("upstream accept");
+            let mut received = vec![0_u8; expected.len()];
+            stream
+                .read_exact(&mut received)
+                .await
+                .expect("forwarded ClientHello");
+            assert_eq!(received, expected);
+            stream.write_all(b"routed").await.expect("upstream write");
+        });
+        let (proxy_addr, shutdown, task) = start_tcp_test_proxy(upstream_addr, true).await;
+        let mut client = connect_to_proxy(proxy_addr).await;
+        client.write_all(&hello[..3]).await.expect("first fragment");
+        tokio::task::yield_now().await;
+        client
+            .write_all(&hello[3..])
+            .await
+            .expect("second fragment");
+        let mut response = [0_u8; 6];
+        client
+            .read_exact(&mut response)
+            .await
+            .expect("routed response");
+        assert_eq!(&response, b"routed");
+        drop(client);
+        upstream_task.await.expect("upstream task");
+        shutdown.cancel();
+        task.await.expect("proxy task").expect("proxy run");
+    }
+
+    #[tokio::test]
+    async fn tls_passthrough_rejects_unknown_sni_without_upstream_dial() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("upstream bind");
+        let upstream_addr = upstream.local_addr().expect("upstream address");
+        let (proxy_addr, shutdown, task) = start_tcp_test_proxy(upstream_addr, true).await;
+        let mut client = connect_to_proxy(proxy_addr).await;
+        client
+            .write_all(&client_hello("unknown.test"))
+            .await
+            .expect("ClientHello write");
+        let mut byte = [0_u8; 1];
+        let count = tokio::time::timeout(Duration::from_secs(1), client.read(&mut byte))
+            .await
+            .expect("unknown SNI connection remained open")
+            .expect("client read");
+        assert_eq!(count, 0);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), upstream.accept())
+                .await
+                .is_err()
+        );
+        shutdown.cancel();
+        task.await.expect("proxy task").expect("proxy run");
+    }
+
+    #[tokio::test]
+    async fn tls_passthrough_bounds_malformed_oversized_and_slow_client_hello() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        async fn rejected(address: SocketAddr, input: &[u8]) {
+            let mut client = connect_to_proxy(address).await;
+            client.write_all(input).await.expect("untrusted TLS input");
+            let mut byte = [0_u8; 1];
+            let count = tokio::time::timeout(Duration::from_secs(2), client.read(&mut byte))
+                .await
+                .expect("TLS input was not bounded")
+                .expect("client read");
+            assert_eq!(count, 0);
+        }
+
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("upstream bind");
+        let upstream_addr = upstream.local_addr().expect("upstream address");
+        let (proxy_addr, shutdown, task) = start_test_proxy(upstream_addr, |config| {
+            config.listeners[0].protocol = "tls_passthrough".into();
+            config.upstream_groups[0].endpoints[0].url = format!("tcp://{upstream_addr}")
+                .parse()
+                .expect("TCP endpoint URL");
+            config.routes[0].paths.clear();
+            config.routes[0].path_prefixes.clear();
+            config.routes[0].methods.clear();
+            config.routes[0].headers.clear();
+            config.tls.handshake_timeout_secs = 1;
+        })
+        .await;
+
+        rejected(proxy_addr, b"not tls").await;
+        let mut oversized = vec![0_u8; 16 * 1024];
+        oversized[..5].copy_from_slice(&[22, 3, 3, 0x40, 0]);
+        rejected(proxy_addr, &oversized).await;
+        rejected(proxy_addr, &[22, 3, 3, 0, 100]).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), upstream.accept())
+                .await
+                .is_err()
+        );
+        shutdown.cancel();
         task.await.expect("proxy task").expect("proxy run");
     }
 

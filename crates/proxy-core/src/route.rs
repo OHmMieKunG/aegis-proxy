@@ -76,6 +76,35 @@ impl RouteIndex {
             })
             .map(|(_, route)| route)
     }
+
+    pub(crate) fn select_sni<'a>(
+        &self,
+        config: &'a Config,
+        listener: &str,
+        server_name: Option<&str>,
+    ) -> Option<&'a RouteConfig> {
+        let canonical = server_name.map(canonical_host).transpose().ok()?;
+        self.by_listener
+            .get(listener)?
+            .iter()
+            .filter_map(|index| {
+                let route = &config.routes[*index];
+                if route.default {
+                    Some(((0_u8, 0_usize), route))
+                } else {
+                    canonical
+                        .as_deref()
+                        .and_then(|host| host_match_score(&route.hosts, host))
+                        .map(|score| (score, route))
+                }
+            })
+            .max_by(|(left_score, left), (right_score, right)| {
+                left_score
+                    .cmp(right_score)
+                    .then_with(|| right.id.cmp(&left.id))
+            })
+            .map(|(_, route)| route)
+    }
 }
 
 type RouteMatchScore = (bool, i32, u8, usize, u8, usize, bool, usize, usize, usize);
@@ -438,6 +467,37 @@ mod tests {
             middlewares: vec![],
             upstream_group: Some("app".into()),
         }
+    }
+
+    #[test]
+    fn sni_selection_prefers_exact_then_wildcard_then_default() {
+        let exact = route("exact");
+        let mut wildcard = route("wildcard");
+        wildcard.hosts = vec!["*.example.test".into()];
+        let mut default = route("default");
+        default.hosts.clear();
+        default.path_prefixes.clear();
+        default.default = true;
+        let config = config(vec![default, wildcard, exact]);
+        let index = RouteIndex::compile(&config);
+        assert_eq!(
+            index
+                .select_sni(&config, "public", Some("example.test"))
+                .map(|route| route.id.as_str()),
+            Some("exact")
+        );
+        assert_eq!(
+            index
+                .select_sni(&config, "public", Some("api.example.test"))
+                .map(|route| route.id.as_str()),
+            Some("wildcard")
+        );
+        assert_eq!(
+            index
+                .select_sni(&config, "public", None)
+                .map(|route| route.id.as_str()),
+            Some("default")
+        );
     }
 
     fn config(routes: Vec<RouteConfig>) -> Config {

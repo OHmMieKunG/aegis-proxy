@@ -18,6 +18,9 @@
 - Precedence is numeric priority, exact/wildcard/catch-all host, exact/prefix/catch-all path and length, then method/header specificity. Declaration order is never a tie-breaker.
 - Catch-all behavior requires `default = true`, empty matchers, and zero priority. One default route is allowed per listener.
 - Query and regex matching are not part of v1.
+- `tcp` listeners require exactly one explicit default route. `tls_passthrough` listeners route by exact or single-label wildcard `hosts`, interpreted as SNI, with exact matches preferred. Missing or unknown SNI closes the flow unless an explicit default route exists.
+- TCP-family routes use only `tcp://host:port` endpoints and reject HTTP matchers, middleware, priority, retry configuration, TLS client options, and mixed HTTP/TCP endpoint groups.
+- Raw tunnels use bounded connect, idle, and total-lifetime timeouts. TLS passthrough additionally bounds ClientHello capture to 16 KiB and uses the global TLS handshake timeout.
 
 ## Current activation gates
 
@@ -31,6 +34,7 @@ Configured egress denies override allows. Literal addresses are checked during v
 rust-proxy validate --config config/examples/minimal.toml
 rust-proxy preview --config config/examples/tls.toml
 rust-proxy fmt --config config/examples/minimal.toml
+rust-proxy validate --config config/examples/tcp.toml
 ```
 
 The preview output is deliberately not re-applicable because secret references are replaced. Formatting does not resolve or print secret values, but it preserves configured environment names and file paths and should be handled as operational configuration.

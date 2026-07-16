@@ -6,7 +6,7 @@ mod conflict;
 mod redact;
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
     net::{IpAddr, SocketAddr},
     path::Path,
@@ -117,6 +117,12 @@ pub struct LimitsConfig {
     pub max_health_checks: usize,
     /// Maximum concurrent upstream DNS lookups.
     pub max_dns_lookups: usize,
+    /// Maximum raw upstream TCP connect time in seconds.
+    pub tcp_connect_timeout_secs: u64,
+    /// Maximum raw TCP inactivity in seconds.
+    pub tcp_idle_timeout_secs: u64,
+    /// Maximum raw TCP connection lifetime in seconds.
+    pub tcp_connection_lifetime_secs: u64,
     /// Maximum request body bytes.
     pub max_request_body: usize,
     /// Request header timeout seconds.
@@ -135,6 +141,9 @@ impl Default for LimitsConfig {
             max_http2_streams: 128,
             max_health_checks: 64,
             max_dns_lookups: 32,
+            tcp_connect_timeout_secs: 5,
+            tcp_idle_timeout_secs: 300,
+            tcp_connection_lifetime_secs: 86_400,
             max_request_body: 32 * 1024 * 1024,
             request_header_timeout_secs: 10,
             response_header_timeout_secs: 30,
@@ -150,7 +159,7 @@ pub struct ListenerConfig {
     pub id: String,
     /// Bind address.
     pub bind: SocketAddr,
-    /// `http`, `https`, or `tcp`.
+    /// `http`, `https`, `tcp`, or `tls_passthrough`.
     pub protocol: String,
     /// Certificate identities available on an HTTPS listener.
     #[serde(default)]
@@ -437,7 +446,7 @@ fn default_drain_timeout_secs() -> u64 {
 pub struct EndpointConfig {
     /// Stable identifier.
     pub id: String,
-    /// Absolute HTTP URL.
+    /// Absolute HTTP(S) or raw TCP URL.
     pub url: Url,
     /// Relative selection weight.
     #[serde(default = "default_weight")]
@@ -728,6 +737,18 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             "limits.max_dns_lookups is outside 1..=4096".into(),
         ));
     }
+    if config.limits.tcp_connect_timeout_secs == 0
+        || config.limits.tcp_connect_timeout_secs > 300
+        || config.limits.tcp_idle_timeout_secs == 0
+        || config.limits.tcp_idle_timeout_secs > 86_400
+        || config.limits.tcp_connection_lifetime_secs == 0
+        || config.limits.tcp_connection_lifetime_secs > 604_800
+        || config.limits.tcp_idle_timeout_secs > config.limits.tcp_connection_lifetime_secs
+    {
+        return Err(ConfigError::Invalid(
+            "configured TCP timeouts are outside safe bounds".into(),
+        ));
+    }
     if config.limits.max_request_body == 0 || config.limits.max_request_body > 1024 * 1024 * 1024 {
         return Err(ConfigError::Invalid(
             "limits.max_request_body is outside 1..=1073741824".into(),
@@ -758,15 +779,13 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                 listener.bind
             )));
         }
-        if !matches!(listener.protocol.as_str(), "http" | "https" | "tcp") {
+        if !matches!(
+            listener.protocol.as_str(),
+            "http" | "https" | "tcp" | "tls_passthrough"
+        ) {
             return Err(ConfigError::Invalid(format!(
                 "unsupported listener protocol {}",
                 listener.protocol
-            )));
-        }
-        if listener.protocol == "tcp" {
-            return Err(ConfigError::Invalid(format!(
-                "listeners[{listener_index}].protocol requests TCP before the Phase 4 passthrough gate"
             )));
         }
         if listener.protocol == "https" {
@@ -797,6 +816,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         }
     }
     let mut groups = HashSet::new();
+    let mut group_is_tcp = HashMap::new();
     let mut total_endpoints = 0_usize;
     for (group_index, group) in config.upstream_groups.iter().enumerate() {
         valid_id(&group.id)?;
@@ -855,12 +875,12 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                     "upstream_groups[{group_index}] total endpoint weight exceeds 1000000"
                 )));
             }
-            if !matches!(endpoint.url.scheme(), "http" | "https")
+            if !matches!(endpoint.url.scheme(), "http" | "https" | "tcp")
                 || endpoint.url.host_str().is_none()
                 || endpoint.url.port().is_none()
             {
                 return Err(ConfigError::Invalid(format!(
-                    "endpoint {} URL must be absolute http(s) with an explicit port",
+                    "endpoint {} URL must be absolute http(s) or tcp with an explicit port",
                     endpoint.id
                 )));
             }
@@ -890,6 +910,12 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                         endpoint.id
                     )));
                 }
+                ("tcp", Some(_)) => {
+                    return Err(ConfigError::Invalid(format!(
+                        "TCP endpoint {} cannot set server_name",
+                        endpoint.id
+                    )));
+                }
                 _ => {}
             }
             match (endpoint.url.scheme(), endpoint.ca_bundle.as_deref()) {
@@ -904,6 +930,12 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                 ("http", Some(_)) => {
                     return Err(ConfigError::Invalid(format!(
                         "HTTP endpoint {} cannot set ca_bundle",
+                        endpoint.id
+                    )));
+                }
+                ("tcp", Some(_)) => {
+                    return Err(ConfigError::Invalid(format!(
+                        "TCP endpoint {} cannot set ca_bundle",
                         endpoint.id
                     )));
                 }
@@ -928,8 +960,42 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                 })?;
             }
         }
+        let is_tcp = group
+            .endpoints
+            .first()
+            .is_some_and(|endpoint| endpoint.url.scheme() == "tcp");
+        if group
+            .endpoints
+            .iter()
+            .any(|endpoint| (endpoint.url.scheme() == "tcp") != is_tcp)
+        {
+            return Err(ConfigError::Invalid(format!(
+                "upstream_groups[{group_index}] mixes HTTP-family and TCP endpoints"
+            )));
+        }
+        if is_tcp
+            && group
+                .health
+                .as_ref()
+                .is_some_and(|health| health.kind == HealthCheckKind::Http)
+        {
+            return Err(ConfigError::Invalid(format!(
+                "upstream_groups[{group_index}].health must use kind = \"tcp\" for TCP endpoints"
+            )));
+        }
+        if is_tcp && group.retry != RetryConfig::default() {
+            return Err(ConfigError::Invalid(format!(
+                "upstream_groups[{group_index}].retry is unsupported for raw TCP endpoints"
+            )));
+        }
+        group_is_tcp.insert(group.id.as_str(), is_tcp);
     }
     let listener_ids: HashSet<&str> = config.listeners.iter().map(|l| l.id.as_str()).collect();
+    let listener_protocols: HashMap<&str, &str> = config
+        .listeners
+        .iter()
+        .map(|listener| (listener.id.as_str(), listener.protocol.as_str()))
+        .collect();
     let group_ids: HashSet<&str> = config
         .upstream_groups
         .iter()
@@ -982,6 +1048,47 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                 )));
             }
         }
+        let mut route_protocol = None;
+        for listener in &route.listeners {
+            let protocol = listener_protocols
+                .get(listener.as_str())
+                .copied()
+                .unwrap_or_default();
+            let family = match protocol {
+                "http" | "https" => "http",
+                "tcp" => "tcp",
+                "tls_passthrough" => "tls_passthrough",
+                _ => unreachable!("listener protocol was validated"),
+            };
+            if route_protocol.is_some_and(|selected| selected != family) {
+                return Err(ConfigError::Invalid(format!(
+                    "route {} mixes incompatible listener protocols",
+                    route.id
+                )));
+            }
+            route_protocol = Some(family);
+        }
+        let upstream_is_tcp = group_is_tcp
+            .get(route.upstream_group.as_deref().unwrap_or_default())
+            .copied()
+            .unwrap_or(false);
+        match route_protocol {
+            Some("http") if upstream_is_tcp => {
+                return Err(ConfigError::Invalid(format!(
+                    "route {} uses a TCP upstream on an HTTP-family listener",
+                    route.id
+                )));
+            }
+            Some("tcp") | Some("tls_passthrough") if !upstream_is_tcp => {
+                return Err(ConfigError::Invalid(format!(
+                    "route {} uses an HTTP-family upstream on a TCP-family listener",
+                    route.id
+                )));
+            }
+            Some("tcp") => validate_tcp_route(route, false)?,
+            Some("tls_passthrough") => validate_tcp_route(route, true)?,
+            _ => {}
+        }
         validate_unique_strings(&route.id, "middleware", &route.middlewares)?;
         for middleware in &route.middlewares {
             if !config.middlewares.contains_key(middleware) {
@@ -993,6 +1100,57 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         }
     }
     conflict::validate_route_conflicts(&config.routes)?;
+    for listener in &config.listeners {
+        let route_count = config
+            .routes
+            .iter()
+            .filter(|route| route.listeners.contains(&listener.id))
+            .count();
+        match listener.protocol.as_str() {
+            "tcp" if route_count != 1 => {
+                return Err(ConfigError::Invalid(format!(
+                    "plain TCP listener {} requires exactly one default route",
+                    listener.id
+                )));
+            }
+            "tls_passthrough" if route_count == 0 => {
+                return Err(ConfigError::Invalid(format!(
+                    "TLS passthrough listener {} requires at least one SNI or default route",
+                    listener.id
+                )));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_tcp_route(route: &RouteConfig, tls_passthrough: bool) -> Result<(), ConfigError> {
+    if !route.paths.is_empty()
+        || !route.path_prefixes.is_empty()
+        || !route.methods.is_empty()
+        || !route.headers.is_empty()
+        || !route.middlewares.is_empty()
+        || route.priority != 0
+    {
+        return Err(ConfigError::Invalid(format!(
+            "TCP-family route {} cannot use HTTP matchers, middleware, or priority",
+            route.id
+        )));
+    }
+    if tls_passthrough {
+        if !route.default && route.hosts.is_empty() {
+            return Err(ConfigError::Invalid(format!(
+                "TLS passthrough route {} requires an SNI host or default = true",
+                route.id
+            )));
+        }
+    } else if !route.default || !route.hosts.is_empty() {
+        return Err(ConfigError::Invalid(format!(
+            "plain TCP route {} must be an explicit default route",
+            route.id
+        )));
+    }
     Ok(())
 }
 
@@ -1456,6 +1614,9 @@ mod tests {
         config.limits.max_request_target = LimitsConfig::default().max_request_target;
         config.limits.max_dns_lookups = 0;
         assert!(validate(&config).is_err());
+        config.limits.max_dns_lookups = LimitsConfig::default().max_dns_lookups;
+        config.limits.tcp_idle_timeout_secs = config.limits.tcp_connection_lifetime_secs + 1;
+        assert!(validate(&config).is_err());
     }
 
     #[test]
@@ -1677,6 +1838,25 @@ mod tests {
         });
     }
 
+    fn add_tcp_upstream(config: &mut Config) {
+        config.upstream_groups.push(UpstreamGroupConfig {
+            id: "tcp-app".into(),
+            allowed_cidrs: vec!["127.0.0.1/32".parse().expect("CIDR")],
+            health: Some(HealthCheckConfig {
+                kind: HealthCheckKind::Tcp,
+                ..HealthCheckConfig::default()
+            }),
+            endpoints: vec![EndpointConfig {
+                id: "tcp-app-1".into(),
+                url: "tcp://127.0.0.1:9000".parse().expect("URL"),
+                weight: 1,
+                server_name: None,
+                ca_bundle: None,
+            }],
+            ..UpstreamGroupConfig::default()
+        });
+    }
+
     #[test]
     fn reference_errors_include_exact_field_paths() {
         let mut config = base_config();
@@ -1691,10 +1871,6 @@ mod tests {
     #[test]
     fn refuses_configured_features_before_runtime_support() {
         let mut config = base_config();
-        config.listeners[0].protocol = "tcp".into();
-        assert!(validate(&config).is_err());
-
-        let mut config = base_config();
         config.trusted_proxies.cidrs = vec!["127.0.0.1/32".parse().expect("CIDR")];
         config.trusted_proxies.trusted_hops = 1;
         assert!(validate(&config).is_err());
@@ -1707,6 +1883,82 @@ mod tests {
                 content_security_policy: None,
             },
         );
+        assert!(validate(&config).is_err());
+    }
+
+    #[test]
+    fn validates_plain_tcp_and_tls_passthrough_routes() {
+        let mut config = base_config();
+        config.listeners[0].protocol = "tcp".into();
+        add_tcp_upstream(&mut config);
+        config.routes.push(RouteConfig {
+            id: "tcp-default".into(),
+            listeners: vec!["public".into()],
+            hosts: vec![],
+            paths: vec![],
+            path_prefixes: vec![],
+            methods: vec![],
+            headers: vec![],
+            default: true,
+            priority: 0,
+            middlewares: vec![],
+            upstream_group: Some("tcp-app".into()),
+        });
+        validate(&config).expect("plain TCP route");
+        config.upstream_groups[0].retry.max_attempts = 2;
+        assert!(validate(&config).is_err());
+        config.upstream_groups[0].retry = RetryConfig::default();
+
+        config.listeners[0].protocol = "tls_passthrough".into();
+        config.routes[0].default = false;
+        config.routes[0].hosts = vec!["example.test".into(), "*.example.test".into()];
+        validate(&config).expect("TLS passthrough SNI route");
+    }
+
+    #[test]
+    fn rejects_tcp_cross_protocol_and_http_matchers() {
+        let mut config = base_config();
+        config.listeners[0].protocol = "tcp".into();
+        add_http_upstream(&mut config);
+        let mut route = RouteConfig {
+            id: "tcp-default".into(),
+            listeners: vec!["public".into()],
+            hosts: vec![],
+            paths: vec![],
+            path_prefixes: vec![],
+            methods: vec![],
+            headers: vec![],
+            default: true,
+            priority: 0,
+            middlewares: vec![],
+            upstream_group: Some("app".into()),
+        };
+        config.routes.push(route.clone());
+        assert!(validate(&config).is_err());
+
+        config.upstream_groups.clear();
+        add_tcp_upstream(&mut config);
+        route.upstream_group = Some("tcp-app".into());
+        route.paths = vec!["/http-only".into()];
+        config.routes[0] = route;
+        assert!(validate(&config).is_err());
+    }
+
+    #[test]
+    fn rejects_tcp_endpoint_tls_options_and_mixed_group() {
+        let mut config = base_config();
+        add_tcp_upstream(&mut config);
+        config.upstream_groups[0].endpoints[0].server_name = Some("example.test".into());
+        assert!(validate(&config).is_err());
+
+        config.upstream_groups[0].endpoints[0].server_name = None;
+        config.upstream_groups[0].endpoints.push(EndpointConfig {
+            id: "http-app".into(),
+            url: "http://127.0.0.1:9001".parse().expect("URL"),
+            weight: 1,
+            server_name: None,
+            ca_bundle: None,
+        });
         assert!(validate(&config).is_err());
     }
 

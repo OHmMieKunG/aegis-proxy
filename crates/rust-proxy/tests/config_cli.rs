@@ -44,6 +44,7 @@ fn shipped_valid_and_invalid_corpus_has_expected_result() {
         "config/examples/minimal.toml",
         "config/examples/tls.toml",
         "config/examples/default-route.toml",
+        "config/examples/tcp.toml",
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_rust-proxy"))
             .args(["validate", "--config"])
