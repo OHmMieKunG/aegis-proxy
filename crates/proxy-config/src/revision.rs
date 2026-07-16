@@ -878,6 +878,68 @@ mod tests {
     }
 
     #[test]
+    fn restart_recovers_intent_written_before_pointer_switch() {
+        let state = temporary_state();
+        let store = RevisionStore::open(&state).expect("store");
+        let first = store
+            .create_candidate(&config_on(8080), "first")
+            .expect("first");
+        store
+            .begin_activation(&first.id, None)
+            .expect("first intent");
+        store.mark_probation(&first.id).expect("first probation");
+        store.commit_activation(&first.id).expect("first commit");
+        let second = store
+            .create_candidate(&config_on(8081), "second")
+            .expect("second");
+        let now = unix_time().expect("time");
+        store
+            .write_journal(&ActivationJournal {
+                schema_version: STATE_SCHEMA_VERSION,
+                candidate: store.revision_target(&second.id).expect("second target"),
+                previous: Some(store.revision_target(&first.id).expect("first target")),
+                phase: ActivationPhase::Intent,
+                created_unix_secs: now,
+                updated_unix_secs: now,
+            })
+            .expect("intent journal");
+        drop(store);
+
+        let reopened = RevisionStore::open(&state).expect("reopen");
+        let recovered = reopened
+            .recover_incomplete()
+            .expect("recovery")
+            .expect("active");
+        assert_eq!(recovered.active.id, first.id);
+        drop(reopened);
+        fs::remove_dir_all(state).expect("cleanup");
+    }
+
+    #[test]
+    fn restart_keeps_fully_committed_pointer() {
+        let state = temporary_state();
+        let store = RevisionStore::open(&state).expect("store");
+        let first = store
+            .create_candidate(&config_on(8080), "first")
+            .expect("first");
+        store
+            .begin_activation(&first.id, None)
+            .expect("first intent");
+        store.mark_probation(&first.id).expect("first probation");
+        store.commit_activation(&first.id).expect("first commit");
+        drop(store);
+
+        let reopened = RevisionStore::open(&state).expect("reopen");
+        let recovered = reopened
+            .recover_incomplete()
+            .expect("recovery")
+            .expect("active");
+        assert_eq!(recovered.active.id, first.id);
+        drop(reopened);
+        fs::remove_dir_all(state).expect("cleanup");
+    }
+
+    #[test]
     fn concurrent_identical_candidates_deduplicate() {
         let state = temporary_state();
         let store = Arc::new(RevisionStore::open(&state).expect("store"));
