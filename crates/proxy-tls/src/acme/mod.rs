@@ -16,7 +16,8 @@ pub use client::{
     AcmeAccountCreateRequest, AcmeClient, AcmeClientError, AcmeExternalAccountBinding,
 };
 pub use order::{
-    AcmeChallengeKind, AcmeChallengeMaterial, AcmeOrder, AcmeOrderError, AcmeOrderRequest,
+    AcmeChallengeKind, AcmeChallengeMaterial, AcmeIssuedCertificate, AcmeOrder, AcmeOrderError,
+    AcmeOrderRequest,
 };
 pub use scheduler::{
     RenewalSchedule, RenewalScheduleError, expiry_alert_days, fallback_renewal_schedule,

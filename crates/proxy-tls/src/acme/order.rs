@@ -4,15 +4,21 @@ use instant_acme::{
     AuthorizationStatus, ChallengeStatus, ChallengeType, Identifier, NewOrder, Order, OrderStatus,
     RetryPolicy,
 };
+use rcgen::{CertificateParams, DistinguishedName, KeyPair};
 use thiserror::Error;
+use zeroize::Zeroizing;
 
 use super::AcmeClient;
+use crate::store::identity_from_pem;
 
 const MAX_ORDER_IDENTIFIERS: usize = 64;
 const MAX_IDENTIFIER_BYTES: usize = 253;
 const MAX_PROFILE_BYTES: usize = 64;
 const MAX_CHALLENGE_TOKEN_BYTES: usize = 512;
 const MAX_KEY_AUTHORIZATION_BYTES: usize = 2 * 1024;
+const MAX_CSR_BYTES: usize = 64 * 1024;
+const MAX_ISSUED_CHAIN_BYTES: usize = 1024 * 1024;
+const MAX_ISSUED_PRIVATE_KEY_BYTES: usize = 256 * 1024;
 const MIN_POLL_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_POLL_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
@@ -53,6 +59,39 @@ pub struct AcmeChallengeMaterial {
     identifier: String,
     token: String,
     response: AcmeChallengeResponse,
+}
+
+/// Validated issued chain and matching private key ready for encrypted generation storage.
+pub struct AcmeIssuedCertificate {
+    certificate_chain_pem: Vec<u8>,
+    private_key_pem: Zeroizing<Vec<u8>>,
+}
+
+impl fmt::Debug for AcmeIssuedCertificate {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AcmeIssuedCertificate")
+            .field(
+                "certificate_chain_pem_bytes",
+                &self.certificate_chain_pem.len(),
+            )
+            .field("private_key_pem", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl AcmeIssuedCertificate {
+    /// PEM certificate chain, leaf first.
+    #[must_use]
+    pub fn certificate_chain_pem(&self) -> &[u8] {
+        &self.certificate_chain_pem
+    }
+
+    /// Matching PEM private key. Callers must encrypt it before persistence.
+    #[must_use]
+    pub fn private_key_pem(&self) -> &[u8] {
+        self.private_key_pem.as_slice()
+    }
 }
 
 enum AcmeChallengeResponse {
@@ -136,6 +175,9 @@ enum AcmeOrderStage {
     ChallengesPrepared,
     ChallengesNotified,
     Ready,
+    CsrPrepared,
+    Finalized,
+    Issued,
 }
 
 /// Stateful order adapter enforcing prepare, provision, notify, and poll sequencing.
@@ -144,6 +186,8 @@ pub struct AcmeOrder {
     identifiers: BTreeSet<String>,
     challenge: AcmeChallengeKind,
     stage: AcmeOrderStage,
+    pending_csr: Option<Vec<u8>>,
+    pending_private_key: Option<Zeroizing<Vec<u8>>>,
 }
 
 impl fmt::Debug for AcmeOrder {
@@ -184,6 +228,8 @@ impl AcmeClient {
             identifiers,
             challenge: request.challenge,
             stage: AcmeOrderStage::Created,
+            pending_csr: None,
+            pending_private_key: None,
         })
     }
 }
@@ -316,6 +362,113 @@ impl AcmeOrder {
             Err(_) => Err(AcmeOrderError::Transport),
         }
     }
+
+    /// Generate one CSR off the Tokio worker pool and finalize using the same key on retries.
+    pub async fn finalize(&mut self) -> Result<(), AcmeOrderError> {
+        if self.stage == AcmeOrderStage::Ready {
+            let identifiers = self.identifiers.iter().cloned().collect::<Vec<_>>();
+            let (csr, private_key) =
+                tokio::task::spawn_blocking(move || generate_csr_material(identifiers))
+                    .await
+                    .map_err(|_| AcmeOrderError::Protocol)??;
+            self.pending_csr = Some(csr);
+            self.pending_private_key = Some(private_key);
+            self.stage = AcmeOrderStage::CsrPrepared;
+        }
+        if self.stage != AcmeOrderStage::CsrPrepared {
+            return Err(AcmeOrderError::State);
+        }
+        let csr = self.pending_csr.as_deref().ok_or(AcmeOrderError::State)?;
+        match self.inner.finalize_csr(csr).await {
+            Ok(()) => {
+                self.pending_csr = None;
+                self.stage = AcmeOrderStage::Finalized;
+                Ok(())
+            }
+            Err(_) => match self.inner.refresh().await {
+                Ok(state)
+                    if matches!(state.status, OrderStatus::Processing | OrderStatus::Valid) =>
+                {
+                    self.pending_csr = None;
+                    self.stage = AcmeOrderStage::Finalized;
+                    Ok(())
+                }
+                Ok(state) if state.status == OrderStatus::Ready => Err(AcmeOrderError::Transport),
+                Ok(_) => Err(AcmeOrderError::Protocol),
+                Err(_) => Err(AcmeOrderError::Transport),
+            },
+        }
+    }
+
+    /// Poll for, bound, and verify the issued chain before releasing its private key.
+    pub async fn poll_certificate(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<AcmeIssuedCertificate, AcmeOrderError> {
+        if self.stage != AcmeOrderStage::Finalized
+            || !(MIN_POLL_TIMEOUT..=MAX_POLL_TIMEOUT).contains(&timeout)
+        {
+            return Err(AcmeOrderError::State);
+        }
+        let retries = RetryPolicy::new()
+            .initial_delay(Duration::from_millis(250))
+            .backoff(2.0)
+            .timeout(timeout);
+        let certificate_chain = self
+            .inner
+            .poll_certificate(&retries)
+            .await
+            .map_err(|_| AcmeOrderError::Transport)?
+            .into_bytes();
+        if certificate_chain.is_empty() || certificate_chain.len() > MAX_ISSUED_CHAIN_BYTES {
+            return Err(AcmeOrderError::Protocol);
+        }
+        let private_key = self
+            .pending_private_key
+            .as_ref()
+            .ok_or(AcmeOrderError::State)?;
+        identity_from_pem(
+            "acme-candidate".into(),
+            self.identifiers.iter().cloned().collect(),
+            &certificate_chain,
+            private_key.as_slice(),
+        )
+        .map_err(|_| AcmeOrderError::Protocol)?;
+        let private_key = self
+            .pending_private_key
+            .take()
+            .ok_or(AcmeOrderError::State)?;
+        self.stage = AcmeOrderStage::Issued;
+        Ok(AcmeIssuedCertificate {
+            certificate_chain_pem: certificate_chain,
+            private_key_pem: private_key,
+        })
+    }
+}
+
+fn generate_csr_material(
+    identifiers: Vec<String>,
+) -> Result<(Vec<u8>, Zeroizing<Vec<u8>>), AcmeOrderError> {
+    if identifiers.is_empty() || identifiers.len() > MAX_ORDER_IDENTIFIERS {
+        return Err(AcmeOrderError::Input);
+    }
+    let mut parameters =
+        CertificateParams::new(identifiers).map_err(|_| AcmeOrderError::Protocol)?;
+    parameters.distinguished_name = DistinguishedName::new();
+    let private_key = KeyPair::generate().map_err(|_| AcmeOrderError::Protocol)?;
+    let csr = parameters
+        .serialize_request(&private_key)
+        .map_err(|_| AcmeOrderError::Protocol)?;
+    let csr = csr.der().to_vec();
+    let private_key = Zeroizing::new(private_key.serialize_pem().into_bytes());
+    if csr.is_empty()
+        || csr.len() > MAX_CSR_BYTES
+        || private_key.is_empty()
+        || private_key.len() > MAX_ISSUED_PRIVATE_KEY_BYTES
+    {
+        return Err(AcmeOrderError::Protocol);
+    }
+    Ok((csr, private_key))
 }
 
 fn validate_order_request(
@@ -434,5 +587,20 @@ mod tests {
         assert!(!debug.contains("key-auth-canary"));
         assert_eq!(material.http_key_authorization(), Some("key-auth-canary"));
         assert_eq!(material.dns_value(), None);
+    }
+
+    #[test]
+    fn generates_bounded_csr_and_redacts_issued_key() {
+        let (csr, key) = generate_csr_material(vec!["example.test".into()]).expect("CSR material");
+        assert!(!csr.is_empty());
+        assert!(key.starts_with(b"-----BEGIN PRIVATE KEY-----"));
+
+        let issued = AcmeIssuedCertificate {
+            certificate_chain_pem: b"public-certificate".to_vec(),
+            private_key_pem: Zeroizing::new(b"private-key-canary".to_vec()),
+        };
+        let debug = format!("{issued:?}");
+        assert!(!debug.contains("private-key-canary"));
+        assert_eq!(issued.private_key_pem(), b"private-key-canary");
     }
 }

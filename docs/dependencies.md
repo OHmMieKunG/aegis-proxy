@@ -22,7 +22,7 @@ Phase 0 inventory; versions are locked in `Cargo.lock` and must be re-reviewed o
 | webpki-roots | Mozilla-derived default upstream trust anchors | default | MPL-2.0 | Static data; no native code | OS trust store | Review root updates with Rustls releases |
 | rustls-webpki | Certificate metadata, path, validity, and name validation | `aws-lc-rs`, `std` | ISC | AWS-LC native build | Rustls verifier internals | Review with Rustls |
 | x509-parser | Bounded certificate issuer/validity metadata | no optional features | MIT/Apache-2.0 | Crate forbids unsafe; untrusted ASN.1 parser | custom DER parser | Pin; retain parser/fuzz review on upgrade |
-| rcgen (dev) | Ephemeral TLS test certificates | `aws_lc_rs`, `crypto`, `pem` | MIT/Apache-2.0 | AWS-LC native build | checked-in private fixtures | Test-only, review with Rustls |
+| rcgen | ACME CSRs plus ephemeral TLS test certificates | `aws_lc_rs`, `crypto`, `pem` | MIT/Apache-2.0 | AWS-LC native build; private-key generation runs off Tokio workers | instant-acme `rcgen` feature, custom PKCS#10 | Review with Rustls; retain CSR/key-match and Pebble tests |
 | futures-util (dev) | Multi-frame gRPC test bodies | default | MIT/Apache-2.0 | No project unsafe; transitive review | custom Body fixture | Test-only, track with futures |
 | proptest (dev) | Shrinking property tests for route determinism and canonicalization | `std`; fork/timeout/bit-set disabled | MIT/Apache-2.0 | Test-only transitive surface; no runtime code | hand-written case matrices | Pin lockfile; keep bounded case counts and inputs |
 | zeroize | Clear owned secret buffers on drop | `std` | Apache-2.0/MIT | Safe API; compiler optimization limits documented | manual volatile clearing | Review with secret-boundary changes |
