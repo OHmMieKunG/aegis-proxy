@@ -92,8 +92,10 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio-rustls",
  "toml 0.8.23",
+ "url",
  "webpki-roots",
  "x509-parser",
+ "zeroize",
 ]
 
 [[package]]

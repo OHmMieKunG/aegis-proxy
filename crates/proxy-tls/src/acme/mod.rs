@@ -10,7 +10,9 @@ pub use account::{
     encrypt_account_credentials, load_account_generation, persist_account_generation,
 };
 pub use challenge::{HttpChallengeError, HttpChallengeLease, HttpChallengeRegistry};
-pub use client::{AcmeClient, AcmeClientError};
+pub use client::{
+    AcmeAccountCreateRequest, AcmeClient, AcmeClientError, AcmeExternalAccountBinding,
+};
 pub use scheduler::{
     RenewalSchedule, RenewalScheduleError, expiry_alert_days, fallback_renewal_schedule,
     retry_delay,
