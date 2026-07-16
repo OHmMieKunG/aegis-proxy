@@ -3,6 +3,7 @@
 //! Data-plane HTTP forwarding primitives.
 
 mod route;
+mod upstream;
 
 use std::{
     collections::HashMap, convert::Infallible, error::Error, future::Future, net::SocketAddr,
@@ -32,6 +33,8 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
+use upstream::{GuardedBody, UpstreamPool};
+
 pub use route::RouteIndex;
 use route::{PathError, canonical_host, canonicalize_request_path, request_host};
 
@@ -41,6 +44,7 @@ pub type BoxError = Box<dyn Error + Send + Sync>;
 pub type ResponseBody = BoxBody<bytes::Bytes, BoxError>;
 type UpstreamClient = Client<HttpsConnector<HttpConnector>, ResponseBody>;
 type UpstreamClients = Arc<HashMap<String, UpstreamClient>>;
+type UpstreamPools = Arc<HashMap<String, Arc<UpstreamPool>>>;
 
 /// Proxy runtime error.
 #[derive(Debug, Error)]
@@ -64,14 +68,16 @@ pub async fn run(config: Arc<Config>, shutdown: CancellationToken) -> Result<(),
     aegisproxy_config::validate(&config)?;
     let route_index = Arc::new(RouteIndex::compile(&config));
     let preparation_config = Arc::clone(&config);
-    let (mut tls_acceptors, upstream_clients) = tokio::task::spawn_blocking(move || {
-        Ok::<_, ProxyError>((
-            prepare_tls(&preparation_config)?,
-            build_upstream_clients(&preparation_config)?,
-        ))
-    })
-    .await
-    .map_err(|error| ProxyError::Preparation(error.to_string()))??;
+    let (mut tls_acceptors, upstream_clients, upstream_pools) =
+        tokio::task::spawn_blocking(move || {
+            Ok::<_, ProxyError>((
+                prepare_tls(&preparation_config)?,
+                build_upstream_clients(&preparation_config)?,
+                build_upstream_pools(&preparation_config)?,
+            ))
+        })
+        .await
+        .map_err(|error| ProxyError::Preparation(error.to_string()))??;
     let handshake_permits = Arc::new(Semaphore::new(config.tls.max_handshakes));
     let mut tasks = tokio::task::JoinSet::new();
     for listener in config
@@ -87,6 +93,7 @@ pub async fn run(config: Arc<Config>, shutdown: CancellationToken) -> Result<(),
         let limits = config.limits.clone();
         let handshake_permits = Arc::clone(&handshake_permits);
         let upstream_clients = Arc::clone(&upstream_clients);
+        let upstream_pools = Arc::clone(&upstream_pools);
         let route_index = Arc::clone(&route_index);
         tracing::info!(listener = %listener_id, bind = %listener.bind, protocol = %listener.protocol, "listener started");
         tasks.spawn(async move {
@@ -100,6 +107,7 @@ pub async fn run(config: Arc<Config>, shutdown: CancellationToken) -> Result<(),
                     tls_acceptor,
                     handshake_permits,
                     upstream_clients,
+                    upstream_pools,
                     shutdown,
                 },
             )
@@ -118,46 +126,64 @@ pub async fn run(config: Arc<Config>, shutdown: CancellationToken) -> Result<(),
 
 fn build_upstream_clients(config: &Config) -> Result<UpstreamClients, ProxyError> {
     let mut clients = HashMap::new();
-    for endpoint in config
-        .upstream_groups
-        .iter()
-        .flat_map(|group| group.endpoints.iter())
-    {
-        let server_name = endpoint
-            .server_name
-            .as_deref()
-            .map(|server_name| {
-                rustls::pki_types::ServerName::try_from(server_name.to_owned()).map_err(|_| {
-                    ProxyError::Preparation(format!(
-                        "endpoint {} has invalid server_name",
-                        endpoint.id
-                    ))
+    for group in &config.upstream_groups {
+        for endpoint in &group.endpoints {
+            let server_name = endpoint
+                .server_name
+                .as_deref()
+                .map(|server_name| {
+                    rustls::pki_types::ServerName::try_from(server_name.to_owned()).map_err(|_| {
+                        ProxyError::Preparation(format!(
+                            "endpoint {} has invalid server_name",
+                            endpoint.id
+                        ))
+                    })
                 })
-            })
-            .transpose()?;
-        let tls_config = aegisproxy_tls::client_config(endpoint.ca_bundle.as_deref())?;
-        let connector = HttpsConnectorBuilder::new()
-            .with_tls_config(tls_config)
-            .https_or_http()
-            .with_server_name_resolver(move |uri: &Uri| {
-                server_name.clone().map(Ok).unwrap_or_else(|| {
-                    rustls::pki_types::ServerName::try_from(
-                        uri.host().unwrap_or_default().to_owned(),
-                    )
+                .transpose()?;
+            let tls_config = aegisproxy_tls::client_config(endpoint.ca_bundle.as_deref())?;
+            let connector = HttpsConnectorBuilder::new()
+                .with_tls_config(tls_config)
+                .https_or_http()
+                .with_server_name_resolver(move |uri: &Uri| {
+                    server_name.clone().map(Ok).unwrap_or_else(|| {
+                        rustls::pki_types::ServerName::try_from(
+                            uri.host().unwrap_or_default().to_owned(),
+                        )
+                    })
                 })
-            })
-            .enable_http1()
-            .enable_http2()
-            .build();
-        let client = Client::builder(TokioExecutor::new()).build(connector);
-        if clients.insert(endpoint.id.clone(), client).is_some() {
-            return Err(ProxyError::Preparation(format!(
-                "duplicate upstream endpoint {}",
-                endpoint.id
-            )));
+                .enable_http1()
+                .enable_http2()
+                .build();
+            let client = Client::builder(TokioExecutor::new()).build(connector);
+            let key = endpoint_key(&group.id, &endpoint.id);
+            if clients.insert(key, client).is_some() {
+                return Err(ProxyError::Preparation(format!(
+                    "duplicate upstream endpoint {}/{}",
+                    group.id, endpoint.id
+                )));
+            }
         }
     }
     Ok(Arc::new(clients))
+}
+
+fn build_upstream_pools(config: &Config) -> Result<UpstreamPools, ProxyError> {
+    let mut pools = HashMap::new();
+    for group in &config.upstream_groups {
+        let pool = UpstreamPool::new(group)
+            .map_err(|error| ProxyError::Preparation(format!("group {}: {error}", group.id)))?;
+        if pools.insert(group.id.clone(), Arc::new(pool)).is_some() {
+            return Err(ProxyError::Preparation(format!(
+                "duplicate upstream group {}",
+                group.id
+            )));
+        }
+    }
+    Ok(Arc::new(pools))
+}
+
+fn endpoint_key(group_id: &str, endpoint_id: &str) -> String {
+    format!("{group_id}/{endpoint_id}")
 }
 
 fn prepare_tls(config: &Config) -> Result<HashMap<String, TlsAcceptor>, ProxyError> {
@@ -213,6 +239,7 @@ struct ListenerContext {
     tls_acceptor: Option<TlsAcceptor>,
     handshake_permits: Arc<Semaphore>,
     upstream_clients: UpstreamClients,
+    upstream_pools: UpstreamPools,
     shutdown: CancellationToken,
 }
 
@@ -225,6 +252,7 @@ async fn accept_loop(listener: TcpListener, context: ListenerContext) {
         tls_acceptor,
         handshake_permits,
         upstream_clients,
+        upstream_pools,
         shutdown,
     } = context;
     let permits = Arc::new(Semaphore::new(limits.max_connections));
@@ -265,6 +293,7 @@ async fn accept_loop(listener: TcpListener, context: ListenerContext) {
         let listener_id = listener_id.clone();
         let tls_acceptor = tls_acceptor.clone();
         let upstream_clients = Arc::clone(&upstream_clients);
+        let upstream_pools = Arc::clone(&upstream_pools);
         let upgrade_tasks = upgrade_tasks.clone();
         connections.spawn(async move {
             let _permit = permit;
@@ -277,6 +306,7 @@ async fn accept_loop(listener: TcpListener, context: ListenerContext) {
                 shutdown,
                 upgrade_tasks,
                 upstream_clients,
+                upstream_pools,
                 tls_server_name: None,
             };
             let result = match tls_acceptor {
@@ -332,6 +362,7 @@ struct ConnectionContext {
     shutdown: CancellationToken,
     upgrade_tasks: TaskTracker,
     upstream_clients: UpstreamClients,
+    upstream_pools: UpstreamPools,
     tls_server_name: Option<String>,
 }
 
@@ -368,6 +399,7 @@ where
         listener_id: context.listener_id,
         limits: context.limits,
         clients: context.upstream_clients,
+        pools: context.upstream_pools,
         shutdown: context.shutdown.clone(),
         upgrade_tasks: context.upgrade_tasks,
         tls_server_name: context.tls_server_name,
@@ -405,6 +437,7 @@ where
         listener_id: context.listener_id,
         limits: context.limits,
         clients: context.upstream_clients,
+        pools: context.upstream_pools,
         shutdown: context.shutdown.clone(),
         upgrade_tasks: context.upgrade_tasks,
         tls_server_name: context.tls_server_name,
@@ -431,6 +464,7 @@ struct ProxyService {
     listener_id: String,
     limits: LimitsConfig,
     clients: UpstreamClients,
+    pools: UpstreamPools,
     shutdown: CancellationToken,
     upgrade_tasks: TaskTracker,
     tls_server_name: Option<String>,
@@ -509,18 +543,15 @@ impl ProxyService {
         let Some(group_id) = route.upstream_group.as_deref() else {
             return error_response(StatusCode::BAD_GATEWAY, "route has no upstream\n");
         };
-        let Some(group) = self
-            .config
-            .upstream_groups
-            .iter()
-            .find(|group| group.id == group_id)
-        else {
+        let Some(pool) = self.pools.get(group_id) else {
             return error_response(StatusCode::BAD_GATEWAY, "upstream group missing\n");
         };
-        let Some(endpoint) = group.endpoints.first() else {
-            return error_response(StatusCode::BAD_GATEWAY, "upstream unavailable\n");
+        let Ok(selected) = pool.select() else {
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, "upstream unavailable\n");
         };
-        let Some(client) = self.clients.get(&endpoint.id) else {
+        let endpoint = selected.config();
+        let key = endpoint_key(group_id, &endpoint.id);
+        let Some(client) = self.clients.get(&key) else {
             return error_response(StatusCode::BAD_GATEWAY, "upstream client missing\n");
         };
         if request
@@ -588,6 +619,7 @@ impl ProxyService {
         {
             Ok(result) => result,
             Err(_) => {
+                selected.record_failure();
                 return error_response(
                     StatusCode::GATEWAY_TIMEOUT,
                     "upstream response timed out\n",
@@ -596,16 +628,19 @@ impl ProxyService {
         };
         match result {
             Ok(mut response) => {
-                if response.status() == StatusCode::SWITCHING_PROTOCOLS {
+                let body_guard = if response.status() == StatusCode::SWITCHING_PROTOCOLS {
                     let Some(client_upgrade) = client_upgrade else {
+                        selected.record_failure();
                         return error_response(
                             StatusCode::BAD_GATEWAY,
                             "unexpected upstream upgrade\n",
                         );
                     };
+                    selected.record_success();
                     let upstream_upgrade = hyper::upgrade::on(&mut response);
                     let shutdown = self.shutdown.clone();
                     self.upgrade_tasks.spawn(async move {
+                        let _selected = selected;
                         let Ok((client, upstream)) =
                             tokio::try_join!(client_upgrade, upstream_upgrade)
                         else {
@@ -619,12 +654,28 @@ impl ProxyService {
                         }
                     });
                     strip_hop_by_hop_headers(response.headers_mut(), true, false);
+                    None
                 } else {
+                    if response.status().is_server_error() {
+                        selected.record_failure();
+                    } else {
+                        selected.record_success();
+                    }
                     strip_hop_by_hop_headers(response.headers_mut(), false, false);
-                }
-                response.map(|body| body.map_err(|error| Box::new(error) as BoxError).boxed())
+                    Some(selected)
+                };
+                response.map(|body| {
+                    let body = body.map_err(|error| Box::new(error) as BoxError);
+                    match body_guard {
+                        Some(endpoint) => GuardedBody::new(body, endpoint).boxed(),
+                        None => body.boxed(),
+                    }
+                })
             }
             Err(error) => {
+                if error.is_connect() {
+                    selected.record_failure();
+                }
                 tracing::debug!(peer = %self.peer, %error, "upstream request failed");
                 error_response(StatusCode::BAD_GATEWAY, "upstream request failed\n")
             }
@@ -755,8 +806,8 @@ fn full_body(bytes: &[u8]) -> ResponseBody {
 mod tests {
     use super::*;
     use aegisproxy_config::{
-        AdminConfig, CertificateConfig, Config, EndpointConfig, LimitsConfig, ListenerConfig,
-        RouteConfig, RuntimeConfig, TrustedProxyConfig, UpstreamGroupConfig,
+        AdminConfig, BalancingAlgorithm, CertificateConfig, Config, EndpointConfig, LimitsConfig,
+        ListenerConfig, RouteConfig, RuntimeConfig, TrustedProxyConfig, UpstreamGroupConfig,
     };
     use http_body_util::Empty;
     use std::collections::BTreeMap;
@@ -859,6 +910,31 @@ mod tests {
                 Err(error) => panic!("proxy did not become ready: {error}"),
             }
         }
+    }
+
+    async fn identified_upstream(body: &'static [u8]) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("upstream bind");
+        let address = listener.local_addr().expect("upstream address");
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    let service = hyper::service::service_fn(move |_| async move {
+                        Ok::<_, Infallible>(Response::new(Full::new(bytes::Bytes::from_static(
+                            body,
+                        ))))
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(TokioIo::new(stream), service)
+                        .await;
+                });
+            }
+        });
+        (address, task)
     }
 
     async fn https_h2_upstream_response(server_name: &str) -> Vec<u8> {
@@ -1451,6 +1527,56 @@ mod tests {
         assert!(response.ends_with(b"ok"));
         task.await.expect("proxy task").expect("proxy run");
         upstream_task.await.expect("upstream task");
+    }
+
+    #[tokio::test]
+    async fn balances_real_requests_across_weighted_endpoints() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (first_addr, first_task) = identified_upstream(b"first").await;
+        let (second_addr, second_task) = identified_upstream(b"second").await;
+        let (proxy_addr, shutdown, proxy_task) = start_test_proxy(first_addr, |config| {
+            let group = &mut config.upstream_groups[0];
+            group.algorithm = BalancingAlgorithm::SmoothWeightedRoundRobin;
+            group.endpoints[0].weight = 2;
+            group.endpoints.push(EndpointConfig {
+                id: "app-2".into(),
+                url: format!("http://{second_addr}")
+                    .parse()
+                    .expect("endpoint URL"),
+                weight: 1,
+                server_name: None,
+                ca_bundle: None,
+            });
+        })
+        .await;
+
+        let mut counts = [0_usize; 2];
+        for _ in 0..6 {
+            let mut client = connect_to_proxy(proxy_addr).await;
+            client
+                .write_all(b"GET / HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n")
+                .await
+                .expect("write request");
+            let mut response = Vec::new();
+            client
+                .read_to_end(&mut response)
+                .await
+                .expect("read response");
+            if response.ends_with(b"first") {
+                counts[0] += 1;
+            } else if response.ends_with(b"second") {
+                counts[1] += 1;
+            } else {
+                panic!("unexpected upstream response");
+            }
+        }
+
+        assert_eq!(counts, [4, 2]);
+        shutdown.cancel();
+        proxy_task.await.expect("proxy task").expect("proxy result");
+        first_task.abort();
+        second_task.abort();
     }
 
     #[tokio::test]

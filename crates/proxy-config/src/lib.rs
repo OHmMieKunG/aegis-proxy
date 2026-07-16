@@ -270,7 +270,7 @@ pub enum BalancingAlgorithm {
 }
 
 /// DNS bounds for configured endpoint names.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DnsConfig {
     /// Maximum accepted A/AAAA or SRV answers per lookup.
@@ -298,7 +298,7 @@ impl Default for DnsConfig {
 }
 
 /// Active upstream health-check policy.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct HealthCheckConfig {
     /// Probe protocol.
@@ -346,7 +346,7 @@ pub enum HealthCheckKind {
 }
 
 /// Passive endpoint-health policy.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PassiveHealthConfig {
     /// Classified failures required inside the rolling window.
@@ -371,7 +371,7 @@ impl Default for PassiveHealthConfig {
 }
 
 /// Upstream retry budget.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RetryConfig {
     /// Total attempts, including the first request.
@@ -393,7 +393,7 @@ impl Default for RetryConfig {
 }
 
 /// Group circuit-breaker policy.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct CircuitBreakerConfig {
     /// Bounded rolling sample count.
@@ -799,11 +799,6 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                 "upstream_groups[{group_index}].endpoints exceeds {MAX_ENDPOINTS_PER_GROUP} entries"
             )));
         }
-        if group.endpoints.len() != 1 {
-            return Err(ConfigError::Invalid(format!(
-                "upstream_groups[{group_index}].endpoints must contain exactly one endpoint until Phase 4 balancing"
-            )));
-        }
         if group.allowed_cidrs.len() > 256 {
             return Err(ConfigError::Invalid(format!(
                 "upstream_groups[{group_index}].allowed_cidrs exceeds 256 entries"
@@ -815,12 +810,8 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             )));
         }
         validate_upstream_policy(group_index, group)?;
-        if group.algorithm != BalancingAlgorithm::RoundRobin {
-            return Err(ConfigError::Invalid(format!(
-                "upstream_groups[{group_index}].algorithm is not activated until Phase 4 pool selection"
-            )));
-        }
         let mut endpoint_ids = HashSet::new();
+        let mut total_weight = 0_u64;
         for (endpoint_index, endpoint) in group.endpoints.iter().enumerate() {
             valid_id(&endpoint.id)?;
             if !endpoint_ids.insert(endpoint.id.as_str()) {
@@ -829,9 +820,15 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                     endpoint.id, group.id
                 )));
             }
-            if endpoint.weight != 1 {
+            if endpoint.weight == 0 || endpoint.weight > 10_000 {
                 return Err(ConfigError::Invalid(format!(
-                    "upstream_groups[{group_index}].endpoints[{endpoint_index}].weight must be 1 until Phase 4 balancing"
+                    "upstream_groups[{group_index}].endpoints[{endpoint_index}].weight is outside 1..=10000"
+                )));
+            }
+            total_weight += u64::from(endpoint.weight);
+            if total_weight > 1_000_000 {
+                return Err(ConfigError::Invalid(format!(
+                    "upstream_groups[{group_index}] total endpoint weight exceeds 1000000"
                 )));
             }
             if !matches!(endpoint.url.scheme(), "http" | "https")
@@ -990,9 +987,21 @@ fn validate_upstream_policy(
             field("dns")
         )));
     }
+    if group.dns != DnsConfig::default() {
+        return Err(ConfigError::Invalid(format!(
+            "{} is not activated until the Phase 4 DNS refresh task is installed",
+            field("dns")
+        )));
+    }
     if group.drain_timeout_secs == 0 || group.drain_timeout_secs > 3_600 {
         return Err(ConfigError::Invalid(format!(
             "{} is outside 1..=3600",
+            field("drain_timeout_secs")
+        )));
+    }
+    if group.drain_timeout_secs != default_drain_timeout_secs() {
+        return Err(ConfigError::Invalid(format!(
+            "{} is not activated until the Phase 4 drain coordinator is installed",
             field("drain_timeout_secs")
         )));
     }
@@ -1633,12 +1642,22 @@ mod tests {
             },
         );
         assert!(validate(&config).is_err());
+    }
 
+    #[test]
+    fn accepts_multiple_weighted_endpoints_after_pool_activation() {
         let mut config = base_config();
         add_http_upstream(&mut config);
-        let endpoint = config.upstream_groups[0].endpoints[0].clone();
-        config.upstream_groups[0].endpoints.push(endpoint);
-        assert!(validate(&config).is_err());
+        config.upstream_groups[0].algorithm = BalancingAlgorithm::SmoothWeightedRoundRobin;
+        config.upstream_groups[0].endpoints[0].weight = 2;
+        config.upstream_groups[0].endpoints.push(EndpointConfig {
+            id: "app-2".into(),
+            url: "http://127.0.0.1:9001".parse().expect("URL"),
+            weight: 1,
+            server_name: None,
+            ca_bundle: None,
+        });
+        assert!(validate(&config).is_ok());
     }
 
     #[test]
@@ -1657,6 +1676,24 @@ mod tests {
                 .contains("upstream_groups[0].dns")
         );
         group.dns = DnsConfig::default();
+
+        group.dns.max_answers = 8;
+        assert!(
+            validate_upstream_policy(0, &group)
+                .expect_err("inactive DNS policy must fail")
+                .to_string()
+                .contains("not activated")
+        );
+        group.dns = DnsConfig::default();
+
+        group.drain_timeout_secs = 10;
+        assert!(
+            validate_upstream_policy(0, &group)
+                .expect_err("inactive drain policy must fail")
+                .to_string()
+                .contains("not activated")
+        );
+        group.drain_timeout_secs = default_drain_timeout_secs();
 
         group.retry.max_attempts = 6;
         assert!(
