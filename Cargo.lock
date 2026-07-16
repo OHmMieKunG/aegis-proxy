@@ -83,6 +83,7 @@ dependencies = [
  "age",
  "arc-swap",
  "bytes",
+ "fs2",
  "http",
  "http-body",
  "http-body-util",

@@ -1,6 +1,16 @@
-use std::time::Duration;
+use std::{
+    collections::HashSet,
+    fmt,
+    fs::{self, File, OpenOptions},
+    path::{Path, PathBuf},
+    sync::{Mutex, OnceLock},
+    time::Duration,
+};
 
+use fs2::FileExt;
 use thiserror::Error;
+
+use crate::generation::{create_private_dir, validate_id};
 
 const DAY_SECS: u64 = 24 * 60 * 60;
 const RETRY_BASE_SECS: u64 = 60;
@@ -22,6 +32,123 @@ pub enum RenewalScheduleError {
     /// Certificate validity timestamps or renewal window were invalid.
     #[error("invalid certificate renewal timing")]
     Invalid,
+}
+
+/// Failure to acquire the durable single-flight lock for one managed certificate.
+#[derive(Clone, Debug, Error, Eq, PartialEq)]
+pub enum CertificateOrderLockError {
+    /// State path or certificate ID was invalid.
+    #[error("invalid certificate order lock input")]
+    Input,
+    /// Another issuance or renewal owns the certificate lock.
+    #[error("certificate order is already in progress")]
+    Busy,
+    /// Lock storage or the blocking worker was unavailable.
+    #[error("certificate order lock is unavailable")]
+    Unavailable,
+}
+
+/// Owned OS file lock that releases when dropped and leaves a stable lock inode behind.
+pub struct CertificateOrderLock {
+    certificate_id: String,
+    lock_path: PathBuf,
+    _file: File,
+}
+
+impl fmt::Debug for CertificateOrderLock {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CertificateOrderLock")
+            .field("certificate_id", &self.certificate_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for CertificateOrderLock {
+    fn drop(&mut self) {
+        if FileExt::unlock(&self._file).is_ok()
+            && let Ok(mut held) = process_locks().lock()
+        {
+            held.remove(&self.lock_path);
+        }
+    }
+}
+
+impl CertificateOrderLock {
+    /// Try to acquire one cross-task/process certificate lock off Tokio workers.
+    pub async fn acquire(
+        state_dir: &Path,
+        certificate_id: &str,
+    ) -> Result<Self, CertificateOrderLockError> {
+        if !state_dir.is_absolute() || validate_id(certificate_id).is_err() {
+            return Err(CertificateOrderLockError::Input);
+        }
+        let state_dir = state_dir.to_owned();
+        let certificate_id = certificate_id.to_owned();
+        tokio::task::spawn_blocking(move || acquire_lock(state_dir, certificate_id))
+            .await
+            .map_err(|_| CertificateOrderLockError::Unavailable)?
+    }
+}
+
+fn acquire_lock(
+    state_dir: PathBuf,
+    certificate_id: String,
+) -> Result<CertificateOrderLock, CertificateOrderLockError> {
+    let lock_dir = state_dir.join("acme").join("locks");
+    create_private_dir(&lock_dir).map_err(|_| CertificateOrderLockError::Unavailable)?;
+    let path = lock_dir.join(format!("{certificate_id}.lock"));
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options
+        .open(&path)
+        .map_err(|_| CertificateOrderLockError::Unavailable)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|_| CertificateOrderLockError::Unavailable)?;
+    }
+    let lock_path = fs::canonicalize(&path).map_err(|_| CertificateOrderLockError::Unavailable)?;
+    {
+        let mut held = process_locks()
+            .lock()
+            .map_err(|_| CertificateOrderLockError::Unavailable)?;
+        if !held.insert(lock_path.clone()) {
+            return Err(CertificateOrderLockError::Busy);
+        }
+    }
+    match file.try_lock_exclusive() {
+        Ok(()) => Ok(CertificateOrderLock {
+            certificate_id,
+            lock_path,
+            _file: file,
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+            release_process_lock(&lock_path);
+            Err(CertificateOrderLockError::Busy)
+        }
+        Err(_) => {
+            release_process_lock(&lock_path);
+            Err(CertificateOrderLockError::Unavailable)
+        }
+    }
+}
+
+fn process_locks() -> &'static Mutex<HashSet<PathBuf>> {
+    static LOCKS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+    LOCKS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn release_process_lock(path: &Path) {
+    if let Ok(mut held) = process_locks().lock() {
+        held.remove(path);
+    }
 }
 
 /// Schedule fallback renewal with stable jitter when ACME ARI is unavailable.
@@ -100,6 +227,8 @@ fn stable_hash(value: &str) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
 
     #[test]
@@ -144,5 +273,34 @@ mod tests {
         assert_eq!(expiry_alert_days((now + 5 * DAY_SECS) as i64, now), Some(7));
         assert_eq!(expiry_alert_days((now + DAY_SECS) as i64, now), Some(1));
         assert_eq!(expiry_alert_days(now as i64, now), Some(0));
+    }
+
+    #[test]
+    fn certificate_order_lock_is_cross_handle_single_flight() {
+        let root = std::env::temp_dir().join(format!(
+            "aegisproxy-acme-lock-{}-{}",
+            std::process::id(),
+            stable_hash("certificate-order-lock")
+        ));
+        if root.exists() {
+            fs::remove_dir_all(&root).expect("remove stale test root");
+        }
+        fs::create_dir(&root).expect("create test root");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("test runtime");
+        let first = runtime
+            .block_on(CertificateOrderLock::acquire(&root, "site"))
+            .expect("first lock");
+        assert!(matches!(
+            runtime.block_on(CertificateOrderLock::acquire(&root, "site")),
+            Err(CertificateOrderLockError::Busy)
+        ));
+        drop(first);
+        runtime
+            .block_on(CertificateOrderLock::acquire(&root, "site"))
+            .expect("lock after release");
+        assert!(root.join("acme/locks/site.lock").is_file());
+        fs::remove_dir_all(root).expect("remove test root");
     }
 }
