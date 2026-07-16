@@ -17,7 +17,7 @@ Age-encrypted files; OS keyring only; plaintext PEM; external vault required.
 
 ## Decision
 
-Use age-encrypted generation files with externally supplied decryption identity and an atomic, versioned `current.json` pointer containing current and optional previous generation IDs. Phase 2 imports activate a new certificate ID by atomically renaming its complete staged directory and reject replacement. Phase 6 readers retain compatibility with the legacy plain `current` pointer; the next successful rotation writes `current.json`, retains old generations, and becomes the migration boundary.
+Use age-encrypted generation files with externally supplied decryption identity and an atomic, versioned `current.json` pointer containing current and optional previous generation IDs. Phase 2 imports activate a new certificate ID by atomically renaming its complete staged directory and reject replacement. Phase 6 readers retain compatibility with the legacy plain `current` pointer; the next successful rotation writes `current.json`, retains old generations, and becomes the migration boundary. Managed generations record explicit issuer, profile, and staging/production provenance. Staging may replace only staging, absolute expiry must advance, and lifetime may not shrink by more than one day.
 
 ## Rationale
 
@@ -29,7 +29,7 @@ Keys exist in process memory while TLS is active; memory compromise remains key 
 
 ## Security implications
 
-Modes, core-dump policy, zeroizing wrappers, canary tests, and separate recovery identity are required.
+Modes, core-dump policy, zeroizing wrappers, canary tests, and separate recovery identity are required. Certificate chain, validity, domain coverage, key match, managed provenance, expiry extension, and lifetime policy are checked before encryption or pointer publication.
 
 ## Reliability implications
 

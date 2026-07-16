@@ -12,8 +12,9 @@ mod store;
 pub use acceptor::{server_config, tls_acceptor};
 pub use client::client_config;
 pub use generation::{
-    CertificateImport, StoredCertificate, import_certificate, inspect_certificate,
-    list_certificates, scan_expiring_certificates, verify_stored_certificate,
+    CertificateImport, ManagedCertificateEnvironment, ManagedCertificateProvenance,
+    StoredCertificate, import_certificate, inspect_certificate, list_certificates,
+    persist_managed_certificate, scan_expiring_certificates, verify_stored_certificate,
 };
 pub use selector::CertificateResolver;
 pub use store::{Identity, load_identity};

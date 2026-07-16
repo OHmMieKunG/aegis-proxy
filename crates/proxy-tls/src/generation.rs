@@ -46,6 +46,31 @@ pub struct StoredCertificate {
     pub not_after_unix_secs: i64,
     /// Import time as a Unix timestamp.
     pub imported_unix_secs: u64,
+    /// Managed-certificate provenance; absent for manually imported identities.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed: Option<ManagedCertificateProvenance>,
+}
+
+/// Operator-classified ACME environment recorded with a managed generation.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedCertificateEnvironment {
+    /// Test CA material that cannot replace production or manual material.
+    Staging,
+    /// Production CA material.
+    Production,
+}
+
+/// Non-secret source metadata for a managed certificate generation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedCertificateProvenance {
+    /// Stable configured ACME issuer ID.
+    pub issuer_id: String,
+    /// Explicit staging or production classification.
+    pub environment: ManagedCertificateEnvironment,
+    /// Optional CA profile used for the order.
+    pub profile: Option<String>,
 }
 
 /// Result of a successful import, including safe configuration references.
@@ -99,6 +124,7 @@ pub fn import_certificate(
             .duration_since(UNIX_EPOCH)
             .map_err(|_| TlsError::StoreFormat("system clock predates Unix epoch".into()))?
             .as_secs(),
+        managed: None,
     };
     let encrypted_key = encrypt_age(private_key_pem.as_ref(), recipients)?;
     let root = state_dir.join("certificates");
@@ -129,6 +155,94 @@ pub fn import_certificate(
         certificate_chain: file_reference(&generation_dir.join("chain.pem")),
         private_key: file_reference(&generation_dir.join("key.age")),
     })
+}
+
+/// Validate, encrypt, and atomically activate one ACME-managed certificate generation.
+pub fn persist_managed_certificate(
+    state_dir: &Path,
+    id: &str,
+    hosts: Vec<String>,
+    certificate_pem: &[u8],
+    private_key_pem: &[u8],
+    provenance: ManagedCertificateProvenance,
+    recipients: &[String],
+) -> Result<CertificateImport, TlsError> {
+    validate_id(id)?;
+    validate_hosts(&hosts)?;
+    validate_managed_provenance(&provenance)?;
+    if certificate_pem.is_empty()
+        || certificate_pem.len() > MAX_CERTIFICATE_BYTES
+        || private_key_pem.is_empty()
+        || private_key_pem.len() > MAX_PRIVATE_KEY_BYTES
+    {
+        return Err(TlsError::StoreFormat(
+            "managed certificate material exceeds its bound".into(),
+        ));
+    }
+    identity_from_pem(
+        id.to_owned(),
+        hosts.clone(),
+        certificate_pem,
+        private_key_pem,
+    )?;
+    let (issuer, not_before_unix_secs, not_after_unix_secs) =
+        parse_public_metadata(certificate_pem)?;
+    let metadata = StoredCertificate {
+        id: id.to_owned(),
+        hosts,
+        generation: generation_id()?,
+        issuer,
+        not_before_unix_secs,
+        not_after_unix_secs,
+        imported_unix_secs: unix_now()?,
+        managed: Some(provenance),
+    };
+    let root = state_dir.join("certificates");
+    create_private_dir(&root)?;
+    let certificate_dir = root.join(id);
+    if !certificate_dir.exists() {
+        let encrypted_key = encrypt_age(private_key_pem, recipients)?;
+        return persist_new_managed_certificate(
+            &root,
+            &certificate_dir,
+            &metadata,
+            certificate_pem,
+            &encrypted_key,
+        );
+    }
+
+    let active = inspect_certificate(state_dir, id)?;
+    validate_managed_replacement(&active, &metadata)?;
+    let encrypted_key = encrypt_age(private_key_pem, recipients)?;
+    let previous_pointer = read_certificate_pointer(&certificate_dir)?;
+    let generations_dir = certificate_dir.join("generations");
+    create_private_dir(&generations_dir)?;
+    let staging = generations_dir.join(format!(
+        ".managed-{}-{}",
+        std::process::id(),
+        metadata.generation
+    ));
+    create_private_dir(&staging)?;
+    let written = write_generation_payload(&staging, &metadata, certificate_pem, &encrypted_key)
+        .and_then(|()| {
+            fs::rename(&staging, generations_dir.join(&metadata.generation)).map_err(TlsError::from)
+        })
+        .and_then(|()| sync_directory(&generations_dir));
+    if written.is_err() {
+        let _ = fs::remove_dir_all(&staging);
+    }
+    written?;
+
+    let prepared_import = certificate_import(&certificate_dir, metadata.clone())?;
+    write_certificate_pointer(
+        &certificate_dir.join("current.json"),
+        &CertificatePointer {
+            schema_version: 1,
+            current: metadata.generation.clone(),
+            previous: Some(previous_pointer.current),
+        },
+    )?;
+    Ok(prepared_import)
 }
 
 /// List all complete imported certificate IDs in stable order.
@@ -184,6 +298,10 @@ fn inspect_generation(
         return Err(TlsError::StoreFormat(
             "metadata does not match the active generation".into(),
         ));
+    }
+    validate_hosts(&metadata.hosts)?;
+    if let Some(provenance) = metadata.managed.as_ref() {
+        validate_managed_provenance(provenance)?;
     }
     let chain = read_bounded(&generation_dir.join("chain.pem"), MAX_CERTIFICATE_BYTES)?;
     let encrypted_key = read_bounded(&generation_dir.join("key.age"), MAX_ENCRYPTED_KEY_BYTES)?;
@@ -259,12 +377,7 @@ fn write_generation(
     create_private_dir(&generations)?;
     let generation = generations.join(&metadata.generation);
     create_private_dir(&generation)?;
-    write_private_file(&generation.join("chain.pem"), certificate_pem)?;
-    write_private_file(&generation.join("key.age"), encrypted_key)?;
-    let metadata_toml =
-        toml::to_string(metadata).map_err(|error| TlsError::StoreFormat(error.to_string()))?;
-    write_private_file(&generation.join("metadata.toml"), metadata_toml.as_bytes())?;
-    sync_directory(&generation)?;
+    write_generation_payload(&generation, metadata, certificate_pem, encrypted_key)?;
     sync_directory(&generations)?;
     write_certificate_pointer(
         &staging.join("current.json"),
@@ -275,6 +388,138 @@ fn write_generation(
         },
     )?;
     Ok(())
+}
+
+fn write_generation_payload(
+    generation: &Path,
+    metadata: &StoredCertificate,
+    certificate_pem: &[u8],
+    encrypted_key: &[u8],
+) -> Result<(), TlsError> {
+    write_private_file(&generation.join("chain.pem"), certificate_pem)?;
+    write_private_file(&generation.join("key.age"), encrypted_key)?;
+    let metadata_toml =
+        toml::to_string(metadata).map_err(|error| TlsError::StoreFormat(error.to_string()))?;
+    write_private_file(&generation.join("metadata.toml"), metadata_toml.as_bytes())?;
+    sync_directory(generation)?;
+    Ok(())
+}
+
+fn persist_new_managed_certificate(
+    root: &Path,
+    certificate_dir: &Path,
+    metadata: &StoredCertificate,
+    certificate_pem: &[u8],
+    encrypted_key: &[u8],
+) -> Result<CertificateImport, TlsError> {
+    let staging = root.join(format!(
+        ".managed-{}-{}-{}",
+        metadata.id,
+        std::process::id(),
+        metadata.generation
+    ));
+    create_private_dir(&staging)?;
+    let written = write_generation(&staging, metadata, certificate_pem, encrypted_key)
+        .and_then(|()| fs::rename(&staging, certificate_dir).map_err(TlsError::from))
+        .and_then(|()| sync_directory(root));
+    if written.is_err() {
+        let _ = fs::remove_dir_all(&staging);
+    }
+    written?;
+    certificate_import(certificate_dir, metadata.clone())
+}
+
+fn certificate_import(
+    certificate_dir: &Path,
+    metadata: StoredCertificate,
+) -> Result<CertificateImport, TlsError> {
+    let generation_dir = fs::canonicalize(
+        certificate_dir
+            .join("generations")
+            .join(&metadata.generation),
+    )?;
+    Ok(CertificateImport {
+        certificate: metadata,
+        certificate_chain: file_reference(&generation_dir.join("chain.pem")),
+        private_key: file_reference(&generation_dir.join("key.age")),
+    })
+}
+
+fn validate_managed_replacement(
+    active: &StoredCertificate,
+    candidate: &StoredCertificate,
+) -> Result<(), TlsError> {
+    let candidate_provenance = candidate
+        .managed
+        .as_ref()
+        .ok_or_else(|| TlsError::StoreFormat("managed provenance is missing".into()))?;
+    if candidate_provenance.environment == ManagedCertificateEnvironment::Staging
+        && !active.managed.as_ref().is_some_and(|provenance| {
+            provenance.environment == ManagedCertificateEnvironment::Staging
+        })
+    {
+        return Err(TlsError::StoreFormat(
+            "staging certificate cannot replace active non-staging material".into(),
+        ));
+    }
+    if candidate.not_after_unix_secs <= active.not_after_unix_secs {
+        return Err(TlsError::StoreFormat(
+            "managed certificate does not extend active expiry".into(),
+        ));
+    }
+    let active_lifetime = active
+        .not_after_unix_secs
+        .checked_sub(active.not_before_unix_secs)
+        .ok_or_else(|| TlsError::StoreFormat("active certificate lifetime is invalid".into()))?;
+    let candidate_lifetime = candidate
+        .not_after_unix_secs
+        .checked_sub(candidate.not_before_unix_secs)
+        .ok_or_else(|| TlsError::StoreFormat("candidate certificate lifetime is invalid".into()))?;
+    const LIFETIME_TOLERANCE_SECS: i64 = 24 * 60 * 60;
+    if candidate_lifetime
+        .checked_add(LIFETIME_TOLERANCE_SECS)
+        .is_none_or(|with_tolerance| with_tolerance < active_lifetime)
+    {
+        return Err(TlsError::StoreFormat(
+            "managed certificate lifetime is unexpectedly shorter".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_managed_provenance(provenance: &ManagedCertificateProvenance) -> Result<(), TlsError> {
+    validate_id(&provenance.issuer_id)?;
+    if let Some(profile) = provenance.profile.as_deref()
+        && (profile.is_empty()
+            || profile.len() > 64
+            || !profile
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')))
+    {
+        return Err(TlsError::StoreFormat(
+            "managed certificate profile is invalid".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_hosts(hosts: &[String]) -> Result<(), TlsError> {
+    if hosts.is_empty() || hosts.len() > 128 {
+        return Err(TlsError::StoreFormat(
+            "certificate hosts must contain 1 to 128 names".into(),
+        ));
+    }
+    for host in hosts {
+        validate_host(host)?;
+    }
+    Ok(())
+}
+
+fn unix_now() -> Result<u64, TlsError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| TlsError::StoreFormat("system clock predates Unix epoch".into()))
+        .map(|duration| duration.as_secs())
 }
 
 fn read_certificate_pointer(certificate_dir: &Path) -> Result<CertificatePointer, TlsError> {
@@ -561,5 +806,120 @@ mod tests {
         private_file(&generation_dir.join("chain.pem"), b"tampered");
         assert!(inspect_certificate(&root, "site").is_err());
         fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn managed_rotation_retains_previous_and_rejects_unsafe_replacements() {
+        let root = std::env::temp_dir().join(format!(
+            "aegisproxy-managed-generation-{}-{}",
+            std::process::id(),
+            generation_id().expect("generation")
+        ));
+        fs::create_dir(&root).expect("create test root");
+        let identity = x25519::Identity::generate();
+        let identity_path = root.join("identity.txt");
+        private_file(
+            &identity_path,
+            identity.to_string().expose_secret().as_bytes(),
+        );
+        let recipients = vec![identity.to_public().to_string()];
+        let provenance = ManagedCertificateProvenance {
+            issuer_id: "pebble-production".into(),
+            environment: ManagedCertificateEnvironment::Production,
+            profile: None,
+        };
+
+        let (first_certificate, first_key) = managed_test_material(2020, 2030);
+        let first = persist_managed_certificate(
+            &root,
+            "managed-site",
+            vec!["example.test".into()],
+            first_certificate.as_bytes(),
+            first_key.as_bytes(),
+            provenance.clone(),
+            &recipients,
+        )
+        .expect("persist initial managed certificate");
+        let (second_certificate, second_key) = managed_test_material(2020, 2031);
+        let second = persist_managed_certificate(
+            &root,
+            "managed-site",
+            vec!["example.test".into()],
+            second_certificate.as_bytes(),
+            second_key.as_bytes(),
+            provenance.clone(),
+            &recipients,
+        )
+        .expect("rotate managed certificate");
+        let certificate_dir = root.join("certificates").join("managed-site");
+        let pointer: CertificatePointer = serde_json::from_slice(
+            &read_bounded(&certificate_dir.join("current.json"), MAX_METADATA_BYTES)
+                .expect("read pointer"),
+        )
+        .expect("parse pointer");
+        assert_eq!(pointer.current, second.certificate.generation);
+        assert_eq!(
+            pointer.previous.as_deref(),
+            Some(first.certificate.generation.as_str())
+        );
+        assert!(
+            certificate_dir
+                .join("generations")
+                .join(&first.certificate.generation)
+                .is_dir()
+        );
+        assert_eq!(
+            verify_stored_certificate(&root, "managed-site", &file_reference(&identity_path))
+                .expect("verify rotated certificate"),
+            second.certificate
+        );
+
+        let (staging_certificate, staging_key) = managed_test_material(2020, 2032);
+        let staging = ManagedCertificateProvenance {
+            issuer_id: "pebble-staging".into(),
+            environment: ManagedCertificateEnvironment::Staging,
+            profile: None,
+        };
+        assert!(
+            persist_managed_certificate(
+                &root,
+                "managed-site",
+                vec!["example.test".into()],
+                staging_certificate.as_bytes(),
+                staging_key.as_bytes(),
+                staging,
+                &recipients,
+            )
+            .is_err()
+        );
+
+        let (short_certificate, short_key) = managed_test_material(2025, 2032);
+        assert!(
+            persist_managed_certificate(
+                &root,
+                "managed-site",
+                vec!["example.test".into()],
+                short_certificate.as_bytes(),
+                short_key.as_bytes(),
+                provenance,
+                &recipients,
+            )
+            .is_err()
+        );
+        assert_eq!(
+            inspect_certificate(&root, "managed-site").expect("active remains unchanged"),
+            second.certificate
+        );
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    fn managed_test_material(not_before_year: i32, not_after_year: i32) -> (String, String) {
+        let mut parameters =
+            CertificateParams::new(vec!["example.test".into()]).expect("parameters");
+        parameters.not_before = date_time_ymd(not_before_year, 1, 1);
+        parameters.not_after = date_time_ymd(not_after_year, 1, 1);
+        let key = KeyPair::generate().expect("key");
+        let certificate = parameters.self_signed(&key).expect("certificate");
+        (certificate.pem(), key.serialize_pem())
     }
 }
