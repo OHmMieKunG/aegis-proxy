@@ -1482,7 +1482,7 @@ Work is sequential unless a phase explicitly identifies a parallel documentation
 - **Dependencies:** Phase 3 and Hickory for bounded TTL-aware A/AAAA resolution; the system resolver remains an explicitly documented fallback mode only if its refresh semantics meet the deployment requirement. SRV requires a later versioned schema and is not a Phase 4 exit criterion.
 - **Security controls:** Address revalidation after DNS, egress policy, bounded pools/checks/queues, hysteresis, idempotent-method default retry, opt-in replay only within body cap, no retry after response bytes.
 - **Tests:** Weighted distribution/property tests, zero/one/all unhealthy, active/passive thresholds/recovery, DNS rebind/stale/NXDOMAIN, pool draining, gRPC streaming non-retry, cancellation and circuit half-open stampede control.
-- **Acceptance criteria:** Selection never chooses drained/unavailable endpoint when a healthy one exists; thresholds transition exactly as configured; unsafe request is attempted once by default; endpoint removal closes idle and drains active connections by deadline.
+- **Acceptance criteria:** Selection never chooses a draining/unavailable endpoint when a healthy one exists; beginning drain immediately excludes new work and waits for active guards only to the configured deadline; thresholds transition exactly as configured; unsafe request is attempted once by default. Live endpoint removal, idle-client eviction, and deadline behavior across snapshot replacement are integrated and accepted in Phase 5 because Phase 4 has no activation mechanism.
 - **Known risks:** Health oscillation and retry amplification. **Exit:** failure-injection/soak proves recovery and bounded amplification. **Deferred:** global health/rate state, Consul/Kubernetes.
 
 ### Phase 5: Dynamic reload and last-known-good rollback
@@ -1491,8 +1491,8 @@ Work is sequential unless a phase explicitly identifies a parallel documentation
 - **Exact deliverables/files:** `proxy-config/revision.rs`, activation coordinator/runtime snapshot, `config activate/revisions/rollback`, `/v1/config*`, state journal/layout, upgrade/crash fixtures.
 - **Dependencies:** ArcSwap, fs2 or narrowly scoped file-lock primitive if standard locking is insufficient; Phases 3–4.
 - **Security controls:** Serialized compare-and-swap activation, source hash/audit, prepare-before-commit, path/mode validation, maximum revisions/retention, no silent fallback.
-- **Tests:** Concurrent stale writers, invalid candidate, listener/secret/cert preparation failure, repeated same hash, crash injection before/after fsync/rename/pointer switch, in-flight long stream across reload, automatic rollback where post-activation probe fails.
-- **Acceptance criteria:** Failed candidate leaves byte-identical active revision/hash; restart after each injected crash selects either old or fully committed new state, never partial; activation meets benchmarked reload budget without accepted-request loss.
+- **Tests:** Concurrent stale writers, invalid candidate, listener/secret/cert preparation failure, repeated same hash, crash injection before/after fsync/rename/pointer switch, in-flight long stream across reload, removed/transport-changed endpoint idle-client eviction and active-work drain deadline, automatic rollback where post-activation probe fails.
+- **Acceptance criteria:** Failed candidate leaves byte-identical active revision/hash; restart after each injected crash selects either old or fully committed new state, never partial; removed/transport-changed endpoints receive no new work, close idle clients, and drain active work only to the configured deadline; activation meets benchmarked reload budget without accepted-request loss.
 - **Known risks:** OS/filesystem atomicity and listener changes. **Exit:** documented supported filesystems plus successful crash/reload campaign. **Deferred:** multi-node rollout and signed fleet snapshots.
 
 ### Phase 6: ACME certificate automation
