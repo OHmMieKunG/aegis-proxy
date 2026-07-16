@@ -79,7 +79,7 @@ pub struct Config {
 }
 
 /// Runtime settings.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RuntimeConfig {
     /// State directory.
@@ -101,7 +101,7 @@ impl Default for RuntimeConfig {
 }
 
 /// Resource limits.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct LimitsConfig {
     /// Maximum accepted connections.
@@ -153,7 +153,7 @@ impl Default for LimitsConfig {
 }
 
 /// A network listener.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ListenerConfig {
     /// Stable identifier.
@@ -168,7 +168,7 @@ pub struct ListenerConfig {
 }
 
 /// Global TLS policy.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TlsConfig {
     /// Minimum accepted TLS version: `1.2` or `1.3`.

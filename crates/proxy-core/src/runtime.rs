@@ -1,8 +1,20 @@
-use std::{collections::HashMap, fmt, sync::Arc};
+use std::{
+    collections::HashMap,
+    fmt,
+    future::Future,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
-use aegisproxy_config::Config;
+use aegisproxy_config::{
+    Config,
+    revision::{RevisionError, RevisionStore},
+};
 use aegisproxy_tls::TlsAcceptor;
 use arc_swap::ArcSwap;
+use thiserror::Error;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 use super::{
@@ -130,7 +142,6 @@ impl RuntimeHandle {
         self.current.load_full()
     }
 
-    #[cfg(test)]
     fn publish(&self, candidate: Arc<RuntimeSnapshot>) -> Arc<RuntimeSnapshot> {
         self.current.swap(candidate)
     }
@@ -141,13 +152,217 @@ impl RuntimeHandle {
     }
 }
 
+/// Transactional runtime activation failure.
+#[derive(Debug, Error)]
+pub enum ActivationError {
+    /// Durable revision state failed.
+    #[error("revision activation failed: {0}")]
+    Revision(#[from] RevisionError),
+    /// Candidate runtime preparation failed.
+    #[error("candidate preparation failed: {0}")]
+    Preparation(#[from] ProxyError),
+    /// Candidate requires process restart because listener/resource limits changed.
+    #[error("candidate changes restart-only listener or resource settings")]
+    RestartRequired,
+    /// Structural probation rejected the published candidate.
+    #[error("candidate failed structural probation")]
+    Probation,
+    /// In-memory rollback succeeded but durable rollback failed.
+    #[error("durable rollback failed; administrative mutations are disabled")]
+    RecoveryRequired,
+}
+
+/// Successful atomic activation outcome.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ActivationResult {
+    /// Newly active immutable revision ID.
+    pub active: String,
+    /// Previously active immutable revision ID, when present.
+    pub previous: Option<String>,
+}
+
+/// Serialized prepare-before-publish activation coordinator.
+#[derive(Debug)]
+pub struct ActivationCoordinator {
+    revisions: Arc<RevisionStore>,
+    runtime: RuntimeHandle,
+    process_shutdown: CancellationToken,
+    mutation: tokio::sync::Mutex<()>,
+    administration_ready: AtomicBool,
+}
+
+impl ActivationCoordinator {
+    /// Create a coordinator for one locked revision store and runtime.
+    pub fn new(
+        revisions: Arc<RevisionStore>,
+        runtime: RuntimeHandle,
+        process_shutdown: CancellationToken,
+    ) -> Self {
+        Self {
+            revisions,
+            runtime,
+            process_shutdown,
+            mutation: tokio::sync::Mutex::new(()),
+            administration_ready: AtomicBool::new(true),
+        }
+    }
+
+    /// Prepare and atomically activate an immutable candidate using exact CAS.
+    pub async fn activate(
+        &self,
+        candidate_id: &str,
+        expected_active: Option<&str>,
+    ) -> Result<ActivationResult, ActivationError> {
+        self.activate_with_probe(candidate_id, expected_active, async { true })
+            .await
+    }
+
+    /// Whether durable mutation remains safe after the latest activation.
+    pub fn administration_ready(&self) -> bool {
+        self.administration_ready.load(Ordering::Acquire)
+    }
+
+    async fn activate_with_probe<F>(
+        &self,
+        candidate_id: &str,
+        expected_active: Option<&str>,
+        probation: F,
+    ) -> Result<ActivationResult, ActivationError>
+    where
+        F: Future<Output = bool>,
+    {
+        let _guard = self.mutation.lock().await;
+        if !self.administration_ready() {
+            return Err(ActivationError::RecoveryRequired);
+        }
+        let candidate_id = candidate_id.to_owned();
+        let expected_active = expected_active.map(str::to_owned);
+        let revisions = Arc::clone(&self.revisions);
+        let candidate_config = tokio::task::spawn_blocking({
+            let candidate_id = candidate_id.clone();
+            move || revisions.load(&candidate_id)
+        })
+        .await
+        .map_err(|error| ProxyError::Preparation(error.to_string()))??;
+        let current = self.runtime.load();
+        if !hot_reload_compatible(&current.config, &candidate_config) {
+            return Err(ActivationError::RestartRequired);
+        }
+        let candidate = RuntimeSnapshot::prepare(
+            Arc::new(candidate_config),
+            Arc::<str>::from(candidate_id.clone()),
+            &self.process_shutdown,
+        )
+        .await?;
+        let revisions = Arc::clone(&self.revisions);
+        let journal = tokio::task::spawn_blocking({
+            let candidate_id = candidate_id.clone();
+            let expected_active = expected_active.clone();
+            move || revisions.begin_activation(&candidate_id, expected_active.as_deref())
+        })
+        .await
+        .map_err(|error| ProxyError::Preparation(error.to_string()))??;
+
+        let retired = self.runtime.publish(candidate);
+        if let Err(error) = self.mark_probation(&candidate_id).await {
+            return Err(self
+                .restore_after_publication(&candidate_id, retired, error)
+                .await);
+        }
+        if !probation.await {
+            return Err(self
+                .restore_after_publication(&candidate_id, retired, ActivationError::Probation)
+                .await);
+        }
+        if let Err(error) = self.commit(&candidate_id).await {
+            return Err(self
+                .restore_after_publication(&candidate_id, retired, error)
+                .await);
+        }
+        retire_pools(&retired);
+        Ok(ActivationResult {
+            active: candidate_id,
+            previous: journal.previous.map(|previous| previous.id),
+        })
+    }
+
+    async fn mark_probation(&self, candidate_id: &str) -> Result<(), ActivationError> {
+        let revisions = Arc::clone(&self.revisions);
+        let candidate_id = candidate_id.to_owned();
+        tokio::task::spawn_blocking(move || revisions.mark_probation(&candidate_id))
+            .await
+            .map_err(|error| ProxyError::Preparation(error.to_string()))??;
+        Ok(())
+    }
+
+    async fn commit(&self, candidate_id: &str) -> Result<(), ActivationError> {
+        let revisions = Arc::clone(&self.revisions);
+        let candidate_id = candidate_id.to_owned();
+        tokio::task::spawn_blocking(move || revisions.commit_activation(&candidate_id))
+            .await
+            .map_err(|error| ProxyError::Preparation(error.to_string()))??;
+        Ok(())
+    }
+
+    async fn restore_after_publication(
+        &self,
+        candidate_id: &str,
+        retired: Arc<RuntimeSnapshot>,
+        original: ActivationError,
+    ) -> ActivationError {
+        let failed = self.runtime.publish(retired);
+        failed.stop_background().await;
+        let revisions = Arc::clone(&self.revisions);
+        let candidate_id = candidate_id.to_owned();
+        match tokio::task::spawn_blocking(move || revisions.rollback_activation(&candidate_id))
+            .await
+        {
+            Ok(Ok(_)) => original,
+            Ok(Err(error)) => {
+                tracing::error!(%error, "durable activation rollback failed");
+                self.administration_ready.store(false, Ordering::Release);
+                ActivationError::RecoveryRequired
+            }
+            Err(error) => {
+                tracing::error!(%error, "durable activation rollback task failed");
+                self.administration_ready.store(false, Ordering::Release);
+                ActivationError::RecoveryRequired
+            }
+        }
+    }
+}
+
+fn hot_reload_compatible(current: &Config, candidate: &Config) -> bool {
+    current.runtime.state_dir == candidate.runtime.state_dir
+        && current.limits == candidate.limits
+        && current.tls.max_handshakes == candidate.tls.max_handshakes
+        && current.listeners.len() == candidate.listeners.len()
+        && current.listeners.iter().all(|listener| {
+            candidate.listeners.iter().any(|candidate| {
+                listener.id == candidate.id
+                    && listener.bind == candidate.bind
+                    && listener.protocol == candidate.protocol
+            })
+        })
+}
+
+fn retire_pools(snapshot: &RuntimeSnapshot) {
+    for pool in snapshot.upstream_pools.values() {
+        for endpoint in pool.endpoints() {
+            let _ = pool.begin_drain(&endpoint.config().id);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use aegisproxy_config::{
         AdminConfig, Config, LimitsConfig, ListenerConfig, RuntimeConfig, TlsConfig,
-        TrustedProxyConfig,
+        TrustedProxyConfig, revision::RevisionStore,
     };
 
     use super::*;
@@ -173,6 +388,17 @@ mod tests {
         })
     }
 
+    fn temporary_state() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "aegisproxy-runtime-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("test clock")
+                .as_nanos()
+        ))
+    }
+
     #[tokio::test]
     async fn publication_is_one_atomic_pointer_swap() {
         let shutdown = CancellationToken::new();
@@ -187,5 +413,77 @@ mod tests {
         assert_eq!(&*retired.revision, "first");
         assert_eq!(&*handle.revision(), "second");
         retired.stop_background().await;
+    }
+
+    #[tokio::test]
+    async fn coordinator_commits_and_rolls_back_failed_probation() {
+        let state = temporary_state();
+        let revisions = Arc::new(RevisionStore::open(&state).expect("revisions"));
+        let first_config = config(8080);
+        let mut second_config = (*first_config).clone();
+        second_config.runtime.config_poll_secs = 2;
+        let mut third_config = second_config.clone();
+        third_config.runtime.config_poll_secs = 3;
+        let first = revisions
+            .create_candidate(&first_config, "first")
+            .expect("first");
+        let second = revisions
+            .create_candidate(&second_config, "second")
+            .expect("second");
+        let third = revisions
+            .create_candidate(&third_config, "third")
+            .expect("third");
+        let restart = revisions
+            .create_candidate(&config(8081), "restart")
+            .expect("restart");
+        revisions
+            .begin_activation(&first.id, None)
+            .expect("first intent");
+        revisions
+            .mark_probation(&first.id)
+            .expect("first probation");
+        revisions
+            .commit_activation(&first.id)
+            .expect("first commit");
+
+        let shutdown = CancellationToken::new();
+        let initial = RuntimeSnapshot::prepare(first_config, first.id.clone(), &shutdown)
+            .await
+            .expect("initial");
+        let runtime = RuntimeHandle::new(initial);
+        let coordinator =
+            ActivationCoordinator::new(Arc::clone(&revisions), runtime.clone(), shutdown);
+        let activated = coordinator
+            .activate(&second.id, Some(&first.id))
+            .await
+            .expect("activate");
+        assert_eq!(activated.previous.as_deref(), Some(first.id.as_str()));
+        assert_eq!(&*runtime.revision(), second.id);
+        assert!(matches!(
+            coordinator.activate(&restart.id, Some(&second.id)).await,
+            Err(ActivationError::RestartRequired)
+        ));
+        assert_eq!(&*runtime.revision(), second.id);
+
+        assert!(matches!(
+            coordinator
+                .activate_with_probe(&third.id, Some(&second.id), async { false })
+                .await,
+            Err(ActivationError::Probation)
+        ));
+        assert_eq!(&*runtime.revision(), second.id);
+        assert_eq!(
+            revisions
+                .active()
+                .expect("active")
+                .expect("active")
+                .active
+                .id,
+            second.id
+        );
+        assert!(coordinator.administration_ready());
+        drop(coordinator);
+        drop(revisions);
+        fs::remove_dir_all(state).expect("cleanup");
     }
 }

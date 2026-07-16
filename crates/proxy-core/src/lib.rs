@@ -43,8 +43,8 @@ use upstream::{
 
 pub use route::RouteIndex;
 use route::{PathError, canonical_host, canonicalize_request_path, request_host};
-pub use runtime::RuntimeHandle;
 use runtime::RuntimeSnapshot;
+pub use runtime::{ActivationCoordinator, ActivationError, ActivationResult, RuntimeHandle};
 use tcp::{TcpListenerContext, accept_loop as tcp_accept_loop};
 
 /// Boxed body error.
@@ -659,6 +659,7 @@ struct ProxyService {
 
 #[derive(Clone)]
 struct PinnedProxyService {
+    _snapshot: Arc<RuntimeSnapshot>,
     config: Arc<Config>,
     route_index: Arc<RouteIndex>,
     peer: SocketAddr,
@@ -690,6 +691,7 @@ impl Service<Request<Incoming>> for ProxyService {
             shutdown: service.shutdown,
             upgrade_tasks: service.upgrade_tasks,
             tls_server_name: service.tls_server_name,
+            _snapshot: snapshot,
         };
         Box::pin(async move { Ok(pinned.forward(request).await) })
     }
