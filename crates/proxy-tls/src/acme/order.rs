@@ -498,7 +498,7 @@ fn validate_order_request(
     Ok(identifiers)
 }
 
-fn valid_dns_identifier(identifier: &str) -> bool {
+pub(super) fn valid_dns_identifier(identifier: &str) -> bool {
     if identifier.is_empty()
         || identifier.len() > MAX_IDENTIFIER_BYTES
         || !identifier.is_ascii()

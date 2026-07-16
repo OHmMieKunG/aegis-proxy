@@ -3,6 +3,7 @@
 mod account;
 mod challenge;
 mod client;
+mod dns_provider;
 mod order;
 mod scheduler;
 mod transport;
@@ -18,6 +19,7 @@ pub use challenge::{
 pub use client::{
     AcmeAccountCreateRequest, AcmeClient, AcmeClientError, AcmeExternalAccountBinding,
 };
+pub use dns_provider::{CloudflareDnsProvider, CloudflareDnsRecord, DnsProviderError};
 pub use order::{
     AcmeChallengeKind, AcmeChallengeMaterial, AcmeIssuedCertificate, AcmeOrder, AcmeOrderError,
     AcmeOrderRequest,
