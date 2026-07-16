@@ -252,6 +252,8 @@ pub struct AcmeIssuerConfig {
     pub environment: AcmeEnvironment,
     /// Optional account contact email.
     pub account_email: Option<String>,
+    /// Explicit operator acceptance required before creating an account.
+    pub terms_of_service_agreed: bool,
     /// Optional explicit private/test CA bundle.
     pub ca_bundle: Option<String>,
     /// Optional external-account binding.
@@ -1425,6 +1427,17 @@ fn validate_acme<'a>(
                 certificate.id, certificate.issuer
             )));
         }
+        if acme
+            .issuers
+            .iter()
+            .find(|issuer| issuer.id == certificate.issuer)
+            .is_some_and(|issuer| !issuer.terms_of_service_agreed)
+        {
+            return Err(ConfigError::Invalid(format!(
+                "ACME issuer {} requires explicit terms_of_service_agreed = true",
+                certificate.issuer
+            )));
+        }
         validate_acme_challenge(config, certificate, &provider_ids)?;
         if let Some(profile) = certificate.profile.as_deref()
             && (profile.is_empty()
@@ -2122,6 +2135,7 @@ mod tests {
             directory_url: "https://127.0.0.1:14000/dir".parse().expect("URL"),
             environment: AcmeEnvironment::Staging,
             account_email: Some("ops@example.test".into()),
+            terms_of_service_agreed: true,
             ca_bundle: Some("file:///pebble-ca.pem".into()),
             external_account: None,
             max_concurrent_orders: 2,
@@ -2166,6 +2180,15 @@ mod tests {
         insecure.acme.issuers[0].directory_url = "http://127.0.0.1:14000/dir".parse().expect("URL");
         let error = validate(&insecure).expect_err("production plaintext directory must fail");
         assert!(error.to_string().contains("must use HTTPS"));
+
+        let mut terms = acme_config(AcmeChallenge::Http01, "example.test");
+        terms.acme.issuers[0].terms_of_service_agreed = false;
+        let error = validate(&terms).expect_err("implicit terms agreement must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("explicit terms_of_service_agreed")
+        );
     }
 
     #[test]

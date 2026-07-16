@@ -83,6 +83,7 @@ mod tests {
                     directory_url: "https://acme.test/directory".parse().expect("URL"),
                     environment: AcmeEnvironment::Staging,
                     account_email: None,
+                    terms_of_service_agreed: true,
                     ca_bundle: Some("file:///CANARY_ACME_CA".into()),
                     external_account: Some(AcmeExternalAccountConfig {
                         key_id: "key-id".into(),
