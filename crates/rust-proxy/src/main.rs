@@ -69,6 +69,18 @@ enum ConfigCommand {
 
 #[derive(Debug, Subcommand)]
 enum CertificateCommand {
+    /// Show managed certificate renewal state from validated configuration and durable storage.
+    Status {
+        #[arg(long)]
+        config: PathBuf,
+    },
+    /// Durably request renewal from the running daemon's next reconciliation.
+    Renew {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        id: String,
+    },
     /// Validate and import a new certificate ID. Existing IDs are never replaced.
     Import {
         #[arg(long)]
@@ -158,9 +170,7 @@ async fn main() -> Result<(), BoxError> {
                 .map_err(|error| -> BoxError { Box::new(error) })??;
         }
         Command::Cert { command } => {
-            tokio::task::spawn_blocking(move || run_certificate_command(command))
-                .await
-                .map_err(|error| -> BoxError { Box::new(error) })??;
+            run_certificate_command(command).await?;
         }
     }
     Ok(())
@@ -203,8 +213,36 @@ async fn load_config(path: PathBuf) -> Result<aegisproxy_config::Config, BoxErro
         .map_err(|error| -> BoxError { Box::new(error) })
 }
 
-fn run_certificate_command(command: CertificateCommand) -> Result<(), BoxError> {
+async fn run_certificate_command(command: CertificateCommand) -> Result<(), BoxError> {
     match command {
+        CertificateCommand::Status { config } => {
+            let config = load_config(config).await?;
+            tokio::task::spawn_blocking(move || write_certificate_status(&config))
+                .await
+                .map_err(|error| -> BoxError { Box::new(error) })??;
+        }
+        CertificateCommand::Renew { config, id } => {
+            let config = load_config(config).await?;
+            if !config
+                .acme
+                .certificates
+                .iter()
+                .any(|certificate| certificate.id == id)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "certificate ID is not managed by ACME configuration",
+                )
+                .into());
+            }
+            let state_dir = PathBuf::from(config.runtime.state_dir);
+            tokio::task::spawn_blocking(move || {
+                aegisproxy_tls::acme::request_certificate_renewal(&state_dir, &id)
+            })
+            .await
+            .map_err(|error| -> BoxError { Box::new(error) })??;
+            writeln!(io::stdout().lock(), "renewal requested")?;
+        }
         CertificateCommand::Import {
             state_dir,
             id,
@@ -213,14 +251,18 @@ fn run_certificate_command(command: CertificateCommand) -> Result<(), BoxError> 
             private_key,
             recipients,
         } => {
-            let imported = aegisproxy_tls::import_certificate(
-                &state_dir,
-                &id,
-                hosts,
-                &certificate_chain,
-                &private_key,
-                &recipients,
-            )?;
+            let imported = tokio::task::spawn_blocking(move || {
+                aegisproxy_tls::import_certificate(
+                    &state_dir,
+                    &id,
+                    hosts,
+                    &certificate_chain,
+                    &private_key,
+                    &recipients,
+                )
+            })
+            .await
+            .map_err(|error| -> BoxError { Box::new(error) })??;
             write_certificate(&imported.certificate)?;
             let mut output = io::stdout().lock();
             writeln!(
@@ -231,8 +273,12 @@ fn run_certificate_command(command: CertificateCommand) -> Result<(), BoxError> 
             writeln!(output, "private_key = {:?}", imported.private_key)?;
         }
         CertificateCommand::List { state_dir } => {
+            let certificates =
+                tokio::task::spawn_blocking(move || aegisproxy_tls::list_certificates(&state_dir))
+                    .await
+                    .map_err(|error| -> BoxError { Box::new(error) })??;
             let mut output = io::stdout().lock();
-            for certificate in aegisproxy_tls::list_certificates(&state_dir)? {
+            for certificate in certificates {
                 writeln!(
                     output,
                     "{}\t{}\t{}",
@@ -245,17 +291,59 @@ fn run_certificate_command(command: CertificateCommand) -> Result<(), BoxError> 
             identity,
             id,
         } => {
-            let certificate = match identity {
+            let verified = identity.is_some();
+            let certificate = tokio::task::spawn_blocking(move || match identity {
                 Some(identity) => {
-                    let certificate =
-                        aegisproxy_tls::verify_stored_certificate(&state_dir, &id, &identity)?;
-                    writeln!(io::stdout().lock(), "private_key_verified = true")?;
-                    certificate
+                    aegisproxy_tls::verify_stored_certificate(&state_dir, &id, &identity)
                 }
-                None => aegisproxy_tls::inspect_certificate(&state_dir, &id)?,
-            };
+                None => aegisproxy_tls::inspect_certificate(&state_dir, &id),
+            })
+            .await
+            .map_err(|error| -> BoxError { Box::new(error) })??;
+            if verified {
+                writeln!(io::stdout().lock(), "private_key_verified = true")?;
+            }
             write_certificate(&certificate)?;
         }
+    }
+    Ok(())
+}
+
+fn write_certificate_status(config: &aegisproxy_config::Config) -> Result<(), BoxError> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    let state_dir = PathBuf::from(&config.runtime.state_dir);
+    let mut output = io::stdout().lock();
+    writeln!(output, "id\tstatus\tnot_after\trenew_at\trequested")?;
+    for managed in &config.acme.certificates {
+        let requested =
+            aegisproxy_tls::acme::certificate_renewal_requested(&state_dir, &managed.id)?;
+        let certificate_dir = state_dir.join("certificates").join(&managed.id);
+        if !certificate_dir.exists() {
+            writeln!(output, "{}\tmissing\t-\t-\t{requested}", managed.id)?;
+            continue;
+        }
+        let stored = aegisproxy_tls::inspect_certificate(&state_dir, &managed.id)?;
+        let schedule = aegisproxy_tls::acme::fallback_renewal_schedule(
+            &managed.id,
+            stored.not_before_unix_secs,
+            stored.not_after_unix_secs,
+            now,
+            managed.renew_before_days,
+        )?;
+        let status = if stored.not_after_unix_secs < 0 || stored.not_after_unix_secs as u64 <= now {
+            "expired"
+        } else if requested || schedule.renew_at_unix_secs <= now {
+            "renewal_due"
+        } else {
+            "active"
+        };
+        writeln!(
+            output,
+            "{}\t{}\t{}\t{}\t{}",
+            managed.id, status, stored.not_after_unix_secs, schedule.renew_at_unix_secs, requested
+        )?;
     }
     Ok(())
 }

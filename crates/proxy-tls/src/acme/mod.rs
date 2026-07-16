@@ -25,6 +25,7 @@ pub use order::{
     AcmeOrderRequest,
 };
 pub use scheduler::{
-    CertificateOrderLock, CertificateOrderLockError, RenewalSchedule, RenewalScheduleError,
-    expiry_alert_days, fallback_renewal_schedule, retry_delay,
+    CertificateOrderLock, CertificateOrderLockError, RenewalRequestError, RenewalSchedule,
+    RenewalScheduleError, certificate_renewal_requested, clear_certificate_renewal_request,
+    expiry_alert_days, fallback_renewal_schedule, request_certificate_renewal, retry_delay,
 };

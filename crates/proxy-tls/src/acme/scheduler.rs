@@ -2,6 +2,7 @@ use std::{
     collections::HashSet,
     fmt,
     fs::{self, File, OpenOptions},
+    io::Write,
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
     time::Duration,
@@ -10,7 +11,7 @@ use std::{
 use fs2::FileExt;
 use thiserror::Error;
 
-use crate::generation::{create_private_dir, validate_id};
+use crate::generation::{create_private_dir, sync_directory, validate_id};
 
 const DAY_SECS: u64 = 24 * 60 * 60;
 const RETRY_BASE_SECS: u64 = 60;
@@ -46,6 +47,93 @@ pub enum CertificateOrderLockError {
     /// Lock storage or the blocking worker was unavailable.
     #[error("certificate order lock is unavailable")]
     Unavailable,
+}
+
+/// Durable operator renewal-request failure.
+#[derive(Clone, Debug, Error, Eq, PartialEq)]
+pub enum RenewalRequestError {
+    /// State path or certificate ID is invalid.
+    #[error("invalid certificate renewal request")]
+    Input,
+    /// Durable request state could not be read or changed.
+    #[error("certificate renewal request storage failed")]
+    Storage,
+}
+
+/// Durably request renewal; repeated requests for the same certificate are idempotent.
+pub fn request_certificate_renewal(
+    state_dir: &Path,
+    certificate_id: &str,
+) -> Result<(), RenewalRequestError> {
+    let path = renewal_request_path(state_dir, certificate_id)?;
+    let directory = path.parent().ok_or(RenewalRequestError::Input)?;
+    create_private_dir(directory).map_err(|_| RenewalRequestError::Storage)?;
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    match options.open(&path) {
+        Ok(mut file) => {
+            file.write_all(b"renew\n")
+                .and_then(|()| file.sync_all())
+                .map_err(|_| RenewalRequestError::Storage)?;
+            sync_directory(directory).map_err(|_| RenewalRequestError::Storage)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            certificate_renewal_requested(state_dir, certificate_id).and_then(|requested| {
+                if requested {
+                    Ok(())
+                } else {
+                    Err(RenewalRequestError::Storage)
+                }
+            })
+        }
+        Err(_) => Err(RenewalRequestError::Storage),
+    }
+}
+
+/// Check whether a durable operator renewal request exists.
+pub fn certificate_renewal_requested(
+    state_dir: &Path,
+    certificate_id: &str,
+) -> Result<bool, RenewalRequestError> {
+    let path = renewal_request_path(state_dir, certificate_id)?;
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() && metadata.len() == 6 => Ok(true),
+        Ok(_) => Err(RenewalRequestError::Storage),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(_) => Err(RenewalRequestError::Storage),
+    }
+}
+
+/// Clear one fulfilled durable operator renewal request.
+pub fn clear_certificate_renewal_request(
+    state_dir: &Path,
+    certificate_id: &str,
+) -> Result<(), RenewalRequestError> {
+    let path = renewal_request_path(state_dir, certificate_id)?;
+    let directory = path.parent().ok_or(RenewalRequestError::Input)?;
+    match fs::remove_file(&path) {
+        Ok(()) => sync_directory(directory).map_err(|_| RenewalRequestError::Storage),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(RenewalRequestError::Storage),
+    }
+}
+
+fn renewal_request_path(
+    state_dir: &Path,
+    certificate_id: &str,
+) -> Result<PathBuf, RenewalRequestError> {
+    if !state_dir.is_absolute() || validate_id(certificate_id).is_err() {
+        return Err(RenewalRequestError::Input);
+    }
+    Ok(state_dir
+        .join("acme")
+        .join("renewal-requests")
+        .join(format!("{certificate_id}.request")))
 }
 
 /// Owned OS file lock that releases when dropped and leaves a stable lock inode behind.
@@ -302,5 +390,22 @@ mod tests {
             .expect("lock after release");
         assert!(root.join("acme/locks/site.lock").is_file());
         fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn renewal_request_is_durable_idempotent_and_exact() {
+        let state = std::env::temp_dir().join(format!(
+            "aegisproxy-renewal-request-{}-{}",
+            std::process::id(),
+            stable_hash("renewal-request-test")
+        ));
+        request_certificate_renewal(&state, "site").expect("request renewal");
+        request_certificate_renewal(&state, "site").expect("repeat renewal");
+        assert_eq!(certificate_renewal_requested(&state, "site"), Ok(true));
+        assert_eq!(certificate_renewal_requested(&state, "other"), Ok(false));
+        clear_certificate_renewal_request(&state, "site").expect("clear renewal");
+        assert_eq!(certificate_renewal_requested(&state, "site"), Ok(false));
+        clear_certificate_renewal_request(&state, "site").expect("repeat clear");
+        fs::remove_dir_all(state).expect("cleanup");
     }
 }

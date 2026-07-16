@@ -15,7 +15,8 @@ use aegisproxy_tls::{
     acme::{
         AcmeAccountCreateRequest, AcmeChallengeKind, AcmeClient, AcmeExternalAccountBinding,
         AcmeOrderRequest, CertificateOrderLock, CloudflareDnsProvider, CloudflareDnsRecord,
-        HttpChallengeLease, StoredAcmeEnvironment, TlsAlpnChallengeLease, expiry_alert_days,
+        HttpChallengeLease, StoredAcmeEnvironment, TlsAlpnChallengeLease,
+        certificate_renewal_requested, clear_certificate_renewal_request, expiry_alert_days,
         fallback_renewal_schedule, load_account_generation, persist_account_generation,
         retry_delay,
     },
@@ -293,6 +294,12 @@ async fn certificate_schedule(
     let id = certificate.id.clone();
     let renew_before_days = certificate.renew_before_days;
     tokio::task::spawn_blocking(move || {
+        if certificate_renewal_requested(&state_dir, &id).map_err(|_| ManagerError::State)? {
+            return Ok(CertificateSchedule {
+                due: true,
+                expiry_alert_days: None,
+            });
+        }
         if !state_dir.join("certificates").join(&id).exists() {
             return Ok(CertificateSchedule {
                 due: true,
@@ -499,7 +506,13 @@ async fn issue(
     .map_err(|_| ManagerError::State)?;
     runtime
         .publish_certificate(prepared)
-        .map_err(|_| ManagerError::Runtime)
+        .map_err(|_| ManagerError::Runtime)?;
+    let state_dir = PathBuf::from(&config.runtime.state_dir);
+    let id = certificate.id.clone();
+    tokio::task::spawn_blocking(move || clear_certificate_renewal_request(&state_dir, &id))
+        .await
+        .map_err(|_| ManagerError::State)?
+        .map_err(|_| ManagerError::State)
 }
 
 async fn provision(
