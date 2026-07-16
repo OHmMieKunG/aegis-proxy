@@ -623,4 +623,62 @@ mod tests {
         drop(revisions);
         fs::remove_dir_all(state).expect("cleanup");
     }
+
+    #[tokio::test]
+    #[ignore = "manual release-mode reload benchmark"]
+    async fn benchmark_atomic_reload() {
+        let state = temporary_state();
+        let revisions = Arc::new(RevisionStore::open(&state).expect("revisions"));
+        let initial_config = config(8080);
+        let initial = revisions
+            .create_candidate(&initial_config, "benchmark")
+            .expect("initial candidate");
+        revisions
+            .begin_activation(&initial.id, None)
+            .expect("initial intent");
+        revisions
+            .mark_probation(&initial.id)
+            .expect("initial probation");
+        revisions
+            .commit_activation(&initial.id)
+            .expect("initial commit");
+        let shutdown = CancellationToken::new();
+        let snapshot = RuntimeSnapshot::prepare(initial_config, initial.id.clone(), &shutdown)
+            .await
+            .expect("initial snapshot");
+        let runtime = RuntimeHandle::new(snapshot);
+        let coordinator =
+            ActivationCoordinator::new(Arc::clone(&revisions), runtime.clone(), shutdown.clone());
+        let mut active = initial.id;
+        let mut samples = Vec::with_capacity(25);
+        for poll_secs in 2..=26 {
+            let mut candidate_config = (*config(8080)).clone();
+            candidate_config.runtime.config_poll_secs = poll_secs;
+            let candidate = revisions
+                .create_candidate(&candidate_config, "benchmark")
+                .expect("candidate");
+            let started = std::time::Instant::now();
+            coordinator
+                .activate(&candidate.id, Some(&active))
+                .await
+                .expect("activation");
+            samples.push(started.elapsed().as_micros());
+            active = candidate.id;
+        }
+        samples.sort_unstable();
+        let percentile = |numerator: usize| samples[(samples.len() - 1) * numerator / 100];
+        println!(
+            "reload_us samples={} p50={} p90={} p99={} max={} raw={samples:?}",
+            samples.len(),
+            percentile(50),
+            percentile(90),
+            percentile(99),
+            samples[samples.len() - 1]
+        );
+        assert_eq!(&*runtime.revision(), active);
+        shutdown.cancel();
+        drop(coordinator);
+        drop(revisions);
+        fs::remove_dir_all(state).expect("cleanup");
+    }
 }
