@@ -59,6 +59,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-util",
+ "toml 0.8.23",
  "tower-service",
  "tracing",
 ]

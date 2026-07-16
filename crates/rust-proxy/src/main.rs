@@ -6,7 +6,6 @@ use std::{
     error::Error,
     io::{self, Write},
     path::PathBuf,
-    sync::Arc,
 };
 
 use clap::{Parser, Subcommand};
@@ -114,14 +113,13 @@ async fn main() -> Result<(), BoxError> {
             writeln!(io::stdout().lock(), "{}", toml::to_string_pretty(&config)?)?;
         }
         Command::Run { config } => {
-            let config = Arc::new(load_config(config).await?);
             let cancel = CancellationToken::new();
             let signal = cancel.clone();
             tokio::spawn(async move {
                 let _ = tokio::signal::ctrl_c().await;
                 signal.cancel();
             });
-            aegisproxy_core::run(config, cancel).await?;
+            aegisproxy_core::run_managed(config, cancel).await?;
         }
         Command::Cert { command } => {
             tokio::task::spawn_blocking(move || run_certificate_command(command))

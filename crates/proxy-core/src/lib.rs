@@ -9,11 +9,13 @@ mod upstream;
 
 use std::{
     collections::HashMap, convert::Infallible, error::Error, future::Future, net::SocketAddr,
-    pin::Pin, sync::Arc, time::Duration,
+    path::PathBuf, pin::Pin, sync::Arc, time::Duration,
 };
 
 use aegisproxy_config::{
     Config, ConfigError, EndpointConfig, HealthCheckConfig, HealthCheckKind, LimitsConfig,
+    ListenerConfig,
+    revision::{RevisionError, RevisionStore},
 };
 use aegisproxy_tls::{CertificateResolver, Identity, TlsAcceptor, load_identity, tls_acceptor};
 use http_body_util::{BodyExt, Full, Limited, combinators::BoxBody};
@@ -71,18 +73,102 @@ pub enum ProxyError {
     /// A blocking preparation task failed unexpectedly.
     #[error("runtime preparation failed: {0}")]
     Preparation(String),
+    /// Durable revision state failed.
+    #[error("revision state failed: {0}")]
+    Revision(#[from] RevisionError),
 }
 
 /// Run configured public listeners until cancellation.
 pub async fn run(config: Arc<Config>, shutdown: CancellationToken) -> Result<(), ProxyError> {
     let snapshot = RuntimeSnapshot::prepare(config, "startup", &shutdown).await?;
     let runtime = RuntimeHandle::new(Arc::clone(&snapshot));
-    let snapshot = runtime.load();
+    let listeners = bind_listeners(&snapshot.config).await?;
+    serve_bound(runtime, snapshot, listeners, shutdown).await
+}
+
+/// Run a file-backed daemon with durable revisions and automatic safe reload.
+pub async fn run_managed(
+    config_path: PathBuf,
+    shutdown: CancellationToken,
+) -> Result<(), ProxyError> {
+    let config = tokio::task::spawn_blocking({
+        let config_path = config_path.clone();
+        move || aegisproxy_config::load_file(config_path)
+    })
+    .await
+    .map_err(|error| ProxyError::Preparation(error.to_string()))??;
+    let state_dir = PathBuf::from(&config.runtime.state_dir);
+    let revisions = Arc::new(
+        tokio::task::spawn_blocking(move || RevisionStore::open(state_dir))
+            .await
+            .map_err(|error| ProxyError::Preparation(error.to_string()))??,
+    );
+    let recovered = {
+        let revisions = Arc::clone(&revisions);
+        tokio::task::spawn_blocking(move || revisions.recover_incomplete())
+            .await
+            .map_err(|error| ProxyError::Preparation(error.to_string()))??
+    };
+    let candidate = {
+        let revisions = Arc::clone(&revisions);
+        let config = config.clone();
+        tokio::task::spawn_blocking(move || revisions.create_candidate(&config, "file"))
+            .await
+            .map_err(|error| ProxyError::Preparation(error.to_string()))??
+    };
+    let snapshot =
+        RuntimeSnapshot::prepare(Arc::new(config), candidate.id.clone(), &shutdown).await?;
+    let listeners = bind_listeners(&snapshot.config).await?;
+    if recovered.as_ref().map(|pointer| pointer.active.id.as_str()) != Some(&candidate.id) {
+        let revisions = Arc::clone(&revisions);
+        let candidate_id = candidate.id.clone();
+        let expected = recovered.map(|pointer| pointer.active.id);
+        tokio::task::spawn_blocking(move || {
+            revisions.begin_activation(&candidate_id, expected.as_deref())?;
+            revisions.mark_probation(&candidate_id)?;
+            revisions.commit_activation(&candidate_id)
+        })
+        .await
+        .map_err(|error| ProxyError::Preparation(error.to_string()))??;
+    }
+    let runtime = RuntimeHandle::new(Arc::clone(&snapshot));
+    let coordinator = Arc::new(ActivationCoordinator::new(
+        Arc::clone(&revisions),
+        runtime.clone(),
+        shutdown.clone(),
+    ));
+    let watcher = tokio::spawn(watch_config_file(
+        config_path,
+        revisions,
+        Arc::clone(&coordinator),
+        runtime.clone(),
+        shutdown.clone(),
+    ));
+    let result = serve_bound(runtime, snapshot, listeners, shutdown).await;
+    if let Err(error) = watcher.await {
+        tracing::error!(%error, "configuration watcher task failed");
+    }
+    result
+}
+
+async fn bind_listeners(config: &Config) -> Result<Vec<(ListenerConfig, TcpListener)>, ProxyError> {
+    let mut listeners = Vec::with_capacity(config.listeners.len());
+    for listener in &config.listeners {
+        listeners.push((listener.clone(), TcpListener::bind(listener.bind).await?));
+    }
+    Ok(listeners)
+}
+
+async fn serve_bound(
+    runtime: RuntimeHandle,
+    snapshot: Arc<RuntimeSnapshot>,
+    listeners: Vec<(ListenerConfig, TcpListener)>,
+    shutdown: CancellationToken,
+) -> Result<(), ProxyError> {
     let config = Arc::clone(&snapshot.config);
     let handshake_permits = Arc::new(Semaphore::new(config.tls.max_handshakes));
     let mut tasks = tokio::task::JoinSet::new();
-    for listener in &config.listeners {
-        let tcp = TcpListener::bind(listener.bind).await?;
+    for (listener, tcp) in listeners {
         let listener_id = listener.id.clone();
         let runtime = runtime.clone();
         let shutdown = shutdown.clone();
@@ -146,6 +232,70 @@ pub async fn run(config: Arc<Config>, shutdown: CancellationToken) -> Result<(),
     }
     snapshot.stop_background().await;
     Ok(())
+}
+
+async fn watch_config_file(
+    config_path: PathBuf,
+    revisions: Arc<RevisionStore>,
+    coordinator: Arc<ActivationCoordinator>,
+    runtime: RuntimeHandle,
+    shutdown: CancellationToken,
+) {
+    let mut last_error: Option<String> = None;
+    loop {
+        let interval = Duration::from_secs(runtime.load().config.runtime.config_poll_secs);
+        tokio::select! {
+            _ = shutdown.cancelled() => break,
+            () = tokio::time::sleep(interval) => {}
+        }
+        let loaded = tokio::task::spawn_blocking({
+            let config_path = config_path.clone();
+            move || aegisproxy_config::load_file(config_path)
+        })
+        .await;
+        let config = match loaded {
+            Ok(Ok(config)) => config,
+            Ok(Err(error)) => {
+                let message = error.to_string();
+                if last_error.as_deref() != Some(message.as_str()) {
+                    tracing::error!(%error, "changed configuration rejected");
+                    last_error = Some(message);
+                }
+                continue;
+            }
+            Err(error) => {
+                tracing::error!(%error, "configuration reload task failed");
+                continue;
+            }
+        };
+        last_error = None;
+        let candidate = tokio::task::spawn_blocking({
+            let revisions = Arc::clone(&revisions);
+            move || revisions.create_candidate(&config, "file")
+        })
+        .await;
+        let candidate = match candidate {
+            Ok(Ok(candidate)) => candidate,
+            Ok(Err(error)) => {
+                tracing::error!(%error, "configuration candidate persistence failed");
+                continue;
+            }
+            Err(error) => {
+                tracing::error!(%error, "configuration candidate task failed");
+                continue;
+            }
+        };
+        let active = runtime.revision();
+        if candidate.id.as_str() == active.as_ref() {
+            continue;
+        }
+        match coordinator.activate(&candidate.id, Some(&active)).await {
+            Ok(result) => tracing::info!(revision = %result.active, "configuration activated"),
+            Err(error) => {
+                tracing::error!(%error, candidate = %candidate.id, "configuration activation rejected")
+            }
+        }
+    }
 }
 
 fn build_upstream_clients(config: &Config) -> Result<(UpstreamClients, DnsEndpoints), ProxyError> {
@@ -1403,6 +1553,84 @@ mod tests {
         upstream_task.await.expect("upstream task");
         fs::remove_file(ca_path).expect("remove CA");
         response
+    }
+
+    #[tokio::test]
+    async fn managed_file_reload_is_atomic_and_rejects_invalid_change() {
+        use std::fs;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let (first_upstream, first_task) = identified_upstream(b"first").await;
+        let (second_upstream, second_task) = identified_upstream(b"second").await;
+        let reserved = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("reserve proxy port");
+        let proxy_addr = reserved.local_addr().expect("proxy address");
+        drop(reserved);
+        let root = std::env::temp_dir().join(format!(
+            "aegisproxy-managed-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("test clock")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test directory");
+        let config_path = root.join("proxy.toml");
+        let mut managed = config(RouteConfig {
+            id: "managed".into(),
+            listeners: vec!["public".into()],
+            hosts: vec!["example.test".into()],
+            paths: vec![],
+            path_prefixes: vec!["/".into()],
+            methods: vec![],
+            headers: vec![],
+            default: false,
+            priority: 0,
+            middlewares: vec![],
+            upstream_group: Some("app".into()),
+        });
+        managed.listeners[0].bind = proxy_addr;
+        managed.runtime.state_dir = root.join("state").to_string_lossy().into_owned();
+        managed.runtime.config_poll_secs = 1;
+        managed.upstream_groups[0].endpoints[0].url = format!("http://{first_upstream}")
+            .parse()
+            .expect("first upstream");
+        fs::write(
+            &config_path,
+            toml::to_string_pretty(&managed).expect("serialize first config"),
+        )
+        .expect("write first config");
+        let shutdown = CancellationToken::new();
+        let proxy_task = tokio::spawn(run_managed(config_path.clone(), shutdown.clone()));
+        assert!(proxy_get(proxy_addr).await.ends_with(b"first"));
+
+        managed.upstream_groups[0].endpoints[0].url = format!("http://{second_upstream}")
+            .parse()
+            .expect("second upstream");
+        fs::write(
+            &config_path,
+            toml::to_string_pretty(&managed).expect("serialize second config"),
+        )
+        .expect("write second config");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            if proxy_get(proxy_addr).await.ends_with(b"second") {
+                break;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "reload timed out");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        fs::write(&config_path, "schema_version = 1\nunknown = true\n")
+            .expect("write invalid config");
+        tokio::time::sleep(Duration::from_millis(1_100)).await;
+        assert!(proxy_get(proxy_addr).await.ends_with(b"second"));
+        shutdown.cancel();
+        proxy_task.await.expect("proxy task").expect("proxy run");
+        first_task.abort();
+        second_task.abort();
+        fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[tokio::test]
