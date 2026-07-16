@@ -20,6 +20,14 @@ const MAX_ENCRYPTED_KEY_BYTES: usize = 512 * 1024;
 const MAX_METADATA_BYTES: usize = 64 * 1024;
 const MAX_ISSUER_BYTES: usize = 1024;
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CertificatePointer {
+    schema_version: u32,
+    current: String,
+    previous: Option<String>,
+}
+
 /// Public metadata for one immutable certificate generation.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -109,7 +117,8 @@ pub fn import_certificate(
         certificate_pem.as_ref(),
         &encrypted_key,
     )
-    .and_then(|()| fs::rename(&staging, &final_dir).map_err(TlsError::from));
+    .and_then(|()| fs::rename(&staging, &final_dir).map_err(TlsError::from))
+    .and_then(|()| sync_directory(&root));
     if result.is_err() {
         let _ = fs::remove_dir_all(&staging);
     }
@@ -150,17 +159,20 @@ pub fn list_certificates(state_dir: &Path) -> Result<Vec<StoredCertificate>, Tls
 pub fn inspect_certificate(state_dir: &Path, id: &str) -> Result<StoredCertificate, TlsError> {
     validate_id(id)?;
     let certificate_dir = state_dir.join("certificates").join(id);
-    let generation = String::from_utf8(read_bounded(&certificate_dir.join("current"), 128)?)
-        .map_err(|_| TlsError::StoreFormat("current generation is not UTF-8".into()))?;
-    let generation = generation.trim();
-    if generation.is_empty()
-        || generation.len() > 32
-        || !generation.bytes().all(|byte| byte.is_ascii_digit())
-    {
-        return Err(TlsError::StoreFormat(
-            "current generation ID is invalid".into(),
-        ));
+    let pointer = read_certificate_pointer(&certificate_dir)?;
+    let metadata = inspect_generation(&certificate_dir, id, &pointer.current)?;
+    if let Some(previous) = pointer.previous.as_deref() {
+        inspect_generation(&certificate_dir, id, previous)?;
     }
+    Ok(metadata)
+}
+
+fn inspect_generation(
+    certificate_dir: &Path,
+    id: &str,
+    generation: &str,
+) -> Result<StoredCertificate, TlsError> {
+    validate_generation(generation)?;
     let generation_dir = certificate_dir.join("generations").join(generation);
     let metadata_path = generation_dir.join("metadata.toml");
     let metadata: StoredCertificate = toml::from_str(
@@ -252,7 +264,81 @@ fn write_generation(
     let metadata_toml =
         toml::to_string(metadata).map_err(|error| TlsError::StoreFormat(error.to_string()))?;
     write_private_file(&generation.join("metadata.toml"), metadata_toml.as_bytes())?;
-    write_private_file(&staging.join("current"), metadata.generation.as_bytes())?;
+    sync_directory(&generation)?;
+    sync_directory(&generations)?;
+    write_certificate_pointer(
+        &staging.join("current.json"),
+        &CertificatePointer {
+            schema_version: 1,
+            current: metadata.generation.clone(),
+            previous: None,
+        },
+    )?;
+    Ok(())
+}
+
+fn read_certificate_pointer(certificate_dir: &Path) -> Result<CertificatePointer, TlsError> {
+    let path = certificate_dir.join("current.json");
+    if path.exists() {
+        let pointer: CertificatePointer =
+            serde_json::from_slice(&read_bounded(&path, MAX_METADATA_BYTES)?)
+                .map_err(|error| TlsError::StoreFormat(error.to_string()))?;
+        if pointer.schema_version != 1 {
+            return Err(TlsError::StoreFormat(
+                "unsupported certificate pointer version".into(),
+            ));
+        }
+        validate_generation(&pointer.current)?;
+        if let Some(previous) = pointer.previous.as_deref() {
+            validate_generation(previous)?;
+            if previous == pointer.current {
+                return Err(TlsError::StoreFormat(
+                    "certificate pointer generations are duplicated".into(),
+                ));
+            }
+        }
+        return Ok(pointer);
+    }
+
+    let legacy = String::from_utf8(read_bounded(&certificate_dir.join("current"), 128)?)
+        .map_err(|_| TlsError::StoreFormat("legacy certificate pointer is not UTF-8".into()))?;
+    let current = legacy.trim().to_owned();
+    validate_generation(&current)?;
+    Ok(CertificatePointer {
+        schema_version: 1,
+        current,
+        previous: None,
+    })
+}
+
+fn write_certificate_pointer(path: &Path, pointer: &CertificatePointer) -> Result<(), TlsError> {
+    let bytes = serde_json::to_vec_pretty(pointer)
+        .map_err(|error| TlsError::StoreFormat(error.to_string()))?;
+    let temporary = path.with_file_name(format!(
+        ".current-{}-{}.json",
+        std::process::id(),
+        generation_id()?
+    ));
+    write_private_file(&temporary, &bytes)?;
+    if let Err(error) = fs::rename(&temporary, path) {
+        let _ = fs::remove_file(&temporary);
+        return Err(error.into());
+    }
+    sync_directory(
+        path.parent()
+            .ok_or_else(|| TlsError::StoreFormat("certificate pointer has no parent".into()))?,
+    )
+}
+
+fn validate_generation(generation: &str) -> Result<(), TlsError> {
+    if generation.is_empty()
+        || generation.len() > 32
+        || !generation.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(TlsError::StoreFormat(
+            "invalid certificate generation".into(),
+        ));
+    }
     Ok(())
 }
 
@@ -425,6 +511,8 @@ mod tests {
             inspect_certificate(&root, "site").expect("inspect"),
             imported.certificate
         );
+        let certificate_dir = root.join("certificates").join("site");
+        assert!(certificate_dir.join("current.json").is_file());
         assert!(
             import_certificate(
                 &root,
@@ -452,9 +540,16 @@ mod tests {
         )
         .expect("scan");
         assert_eq!(scan.len(), 1);
-        let generation_dir = root
-            .join("certificates")
-            .join("site")
+        let pointer =
+            fs::read_to_string(certificate_dir.join("current.json")).expect("read current pointer");
+        let pointer: CertificatePointer = serde_json::from_str(&pointer).expect("parse pointer");
+        fs::remove_file(certificate_dir.join("current.json")).expect("remove JSON pointer");
+        private_file(&certificate_dir.join("current"), pointer.current.as_bytes());
+        assert_eq!(
+            inspect_certificate(&root, "site").expect("legacy pointer inspect"),
+            imported.certificate
+        );
+        let generation_dir = certificate_dir
             .join("generations")
             .join(&imported.certificate.generation);
         let encrypted = fs::read(generation_dir.join("key.age")).expect("read envelope");

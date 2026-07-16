@@ -1,6 +1,6 @@
 # ADR-0009: Encrypted certificate storage
 
-Status: Accepted
+Status: Accepted; Phase 6 pointer format implemented
 Date: 2026-07-16
 
 ## Context
@@ -17,7 +17,7 @@ Age-encrypted files; OS keyring only; plaintext PEM; external vault required.
 
 ## Decision
 
-Use age-encrypted generation files with externally supplied decryption identity and atomic `current` pointer. Phase 2 imports activate a new certificate ID by atomically renaming its complete staged directory and reject replacement; later rotation must retain old generations and provide platform-correct pointer replacement.
+Use age-encrypted generation files with externally supplied decryption identity and an atomic, versioned `current.json` pointer containing current and optional previous generation IDs. Phase 2 imports activate a new certificate ID by atomically renaming its complete staged directory and reject replacement. Phase 6 readers retain compatibility with the legacy plain `current` pointer; the next successful rotation writes `current.json`, retains old generations, and becomes the migration boundary.
 
 ## Rationale
 
@@ -33,7 +33,7 @@ Modes, core-dump policy, zeroizing wrappers, canary tests, and separate recovery
 
 ## Reliability implications
 
-Initial import is all-or-nothing. Old generations remain through later renewal/storage failure once rotation is introduced.
+Initial import is all-or-nothing and syncs generation and parent directories where the platform supports directory sync. Pointer publication happens only after the complete generation is durable. Old generations remain through renewal/storage failure and neither current nor previous may be garbage-collected.
 
 ## Operational implications
 
