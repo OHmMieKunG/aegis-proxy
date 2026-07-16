@@ -15,6 +15,21 @@ pub fn redacted(config: &Config) -> Config {
         certificate.certificate_chain = REDACTED.into();
         certificate.private_key = REDACTED.into();
     }
+    for issuer in &mut output.acme.issuers {
+        if issuer.ca_bundle.is_some() {
+            issuer.ca_bundle = Some(REDACTED.into());
+        }
+        if let Some(external) = &mut issuer.external_account {
+            external.hmac_key = REDACTED.into();
+        }
+    }
+    for provider in &mut output.acme.dns_providers {
+        match provider {
+            crate::AcmeDnsProviderConfig::Cloudflare { api_token, .. } => {
+                *api_token = REDACTED.into();
+            }
+        }
+    }
     for endpoint in output
         .upstream_groups
         .iter_mut()
@@ -32,8 +47,9 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::{
-        AdminConfig, CertificateConfig, Config, EndpointConfig, LimitsConfig, ListenerConfig,
-        RuntimeConfig, TlsConfig, TrustedProxyConfig, UpstreamGroupConfig,
+        AcmeConfig, AcmeDnsProviderConfig, AcmeEnvironment, AcmeExternalAccountConfig,
+        AcmeIssuerConfig, AdminConfig, CertificateConfig, Config, EndpointConfig, LimitsConfig,
+        ListenerConfig, RuntimeConfig, TlsConfig, TrustedProxyConfig, UpstreamGroupConfig,
     };
 
     use super::*;
@@ -60,6 +76,27 @@ mod tests {
                 certificate_chain: "file:///CANARY_CHAIN".into(),
                 private_key: "file:///CANARY_KEY".into(),
             }],
+            acme: AcmeConfig {
+                max_concurrent_orders: 4,
+                issuers: vec![AcmeIssuerConfig {
+                    id: "test-ca".into(),
+                    directory_url: "https://acme.test/directory".parse().expect("URL"),
+                    environment: AcmeEnvironment::Staging,
+                    account_email: None,
+                    ca_bundle: Some("file:///CANARY_ACME_CA".into()),
+                    external_account: Some(AcmeExternalAccountConfig {
+                        key_id: "key-id".into(),
+                        hmac_key: "env://CANARY_EAB".into(),
+                    }),
+                    max_concurrent_orders: 2,
+                }],
+                certificates: vec![],
+                dns_providers: vec![AcmeDnsProviderConfig::Cloudflare {
+                    id: "cloudflare".into(),
+                    zone_id: "0123456789abcdef0123456789abcdef".into(),
+                    api_token: "env://CANARY_DNS".into(),
+                }],
+            },
             trusted_proxies: TrustedProxyConfig::default(),
             upstream_groups: vec![UpstreamGroupConfig {
                 id: "app".into(),
@@ -79,6 +116,6 @@ mod tests {
         };
         let serialized = toml::to_string(&redacted(&config)).expect("serialize redacted config");
         assert!(!serialized.contains("CANARY"));
-        assert_eq!(serialized.matches(REDACTED).count(), 4);
+        assert_eq!(serialized.matches(REDACTED).count(), 7);
     }
 }

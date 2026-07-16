@@ -471,6 +471,7 @@ mod tests {
             }],
             tls: TlsConfig::default(),
             certificates: vec![],
+            acme: aegisproxy_config::AcmeConfig::default(),
             trusted_proxies: TrustedProxyConfig::default(),
             upstream_groups: vec![],
             middlewares: BTreeMap::new(),

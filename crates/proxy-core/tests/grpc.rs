@@ -207,6 +207,7 @@ async fn proxies_unary_and_streaming_grpc_with_trailers() {
             certificate_chain: format!("file://{}", downstream_cert_path.display()),
             private_key: format!("file://{}", downstream_key_path.display()),
         }],
+        acme: aegisproxy_config::AcmeConfig::default(),
         trusted_proxies: TrustedProxyConfig::default(),
         upstream_groups: vec![UpstreamGroupConfig {
             id: "grpc".into(),

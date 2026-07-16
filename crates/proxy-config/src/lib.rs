@@ -13,7 +13,7 @@ use std::{
     path::Path,
 };
 
-use aegisproxy_secrets::SecretRef;
+use aegisproxy_secrets::{SecretRef, validate_age_recipient};
 use http::{HeaderName, HeaderValue, Method};
 use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
@@ -39,6 +39,9 @@ const MAX_ROUTE_HEADERS: usize = 32;
 const MAX_ROUTE_MIDDLEWARES: usize = 64;
 const MAX_HEADER_VALUE_BYTES: usize = 1_024;
 const MAX_PATH_BYTES: usize = 2_048;
+const MAX_ACME_ISSUERS: usize = 32;
+const MAX_ACME_CERTIFICATES: usize = 1024;
+const MAX_ACME_DNS_PROVIDERS: usize = 32;
 
 /// Root configuration document.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -61,6 +64,9 @@ pub struct Config {
     /// Bring-your-own certificate identities.
     #[serde(default)]
     pub certificates: Vec<CertificateConfig>,
+    /// Automated certificate-management policy.
+    #[serde(default)]
+    pub acme: AcmeConfig,
     /// Trusted forwarding peers.
     #[serde(default)]
     pub trusted_proxies: TrustedProxyConfig,
@@ -179,6 +185,8 @@ pub struct TlsConfig {
     pub handshake_timeout_secs: u64,
     /// Secret reference containing one or more age X25519 decryption identities.
     pub identity: Option<String>,
+    /// Public age X25519 recipients used for new encrypted state.
+    pub state_encryption_recipients: Vec<String>,
 }
 
 impl Default for TlsConfig {
@@ -188,6 +196,7 @@ impl Default for TlsConfig {
             max_handshakes: 256,
             handshake_timeout_secs: 10,
             identity: None,
+            state_encryption_recipients: Vec::new(),
         }
     }
 }
@@ -204,6 +213,140 @@ pub struct CertificateConfig {
     pub certificate_chain: String,
     /// Age-encrypted PEM private-key envelope reference.
     pub private_key: String,
+}
+
+/// Strict ACME issuers, managed certificates, and DNS adapters.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AcmeConfig {
+    /// Global bound across all issuers.
+    pub max_concurrent_orders: usize,
+    /// Explicit CA directory/account policies.
+    pub issuers: Vec<AcmeIssuerConfig>,
+    /// Certificates owned by ACME automation.
+    pub certificates: Vec<AcmeCertificateConfig>,
+    /// Approved DNS-01 providers.
+    pub dns_providers: Vec<AcmeDnsProviderConfig>,
+}
+
+impl Default for AcmeConfig {
+    fn default() -> Self {
+        Self {
+            max_concurrent_orders: 4,
+            issuers: Vec::new(),
+            certificates: Vec::new(),
+            dns_providers: Vec::new(),
+        }
+    }
+}
+
+/// One explicitly classified ACME directory/account.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcmeIssuerConfig {
+    /// Stable issuer ID.
+    pub id: String,
+    /// Exact ACME directory URL.
+    pub directory_url: Url,
+    /// Operator-selected CA environment classification.
+    pub environment: AcmeEnvironment,
+    /// Optional account contact email.
+    pub account_email: Option<String>,
+    /// Optional explicit private/test CA bundle.
+    pub ca_bundle: Option<String>,
+    /// Optional external-account binding.
+    pub external_account: Option<AcmeExternalAccountConfig>,
+    /// Per-issuer order concurrency bound.
+    #[serde(default = "default_issuer_order_limit")]
+    pub max_concurrent_orders: usize,
+}
+
+/// Explicit CA environment; it is never inferred from the directory URL.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AcmeEnvironment {
+    /// Real publicly trusted or organizational production issuance.
+    Production,
+    /// Test/staging issuance that must never replace production material.
+    Staging,
+}
+
+/// External account binding references.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcmeExternalAccountConfig {
+    /// CA-provided external account key ID.
+    pub key_id: String,
+    /// Secret reference containing raw or provider-documented HMAC bytes.
+    pub hmac_key: String,
+}
+
+/// One managed certificate order and renewal policy.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcmeCertificateConfig {
+    /// Stable certificate ID shared with listener references.
+    pub id: String,
+    /// Exact or single-label wildcard DNS identifiers.
+    pub hosts: Vec<String>,
+    /// Issuer ID.
+    pub issuer: String,
+    /// Challenge type selected without automatic fallback.
+    pub challenge: AcmeChallenge,
+    /// Listener that exclusively serves HTTP-01 or TLS-ALPN-01 state.
+    pub challenge_listener: Option<String>,
+    /// DNS provider ID required only for DNS-01.
+    pub dns_provider: Option<String>,
+    /// Optional ACME certificate profile name.
+    pub profile: Option<String>,
+    /// Fallback renewal window when ARI is unavailable.
+    #[serde(default = "default_renew_before_days")]
+    pub renew_before_days: u16,
+}
+
+/// Supported ACME ownership challenges.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum AcmeChallenge {
+    /// HTTP token response on an explicitly configured HTTP listener.
+    #[serde(rename = "http-01")]
+    Http01,
+    /// DNS TXT record through an approved provider.
+    #[serde(rename = "dns-01")]
+    Dns01,
+    /// Ephemeral `acme-tls/1` certificate on an HTTPS listener.
+    #[serde(rename = "tls-alpn-01")]
+    TlsAlpn01,
+}
+
+/// Compile-time reviewed DNS-01 provider configuration.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AcmeDnsProviderConfig {
+    /// Cloudflare v4 API using a zone-scoped token.
+    Cloudflare {
+        /// Stable provider ID.
+        id: String,
+        /// Explicit Cloudflare zone ID; discovery is not used.
+        zone_id: String,
+        /// Secret reference containing a narrowly scoped API token.
+        api_token: String,
+    },
+}
+
+impl AcmeDnsProviderConfig {
+    fn id(&self) -> &str {
+        match self {
+            Self::Cloudflare { id, .. } => id,
+        }
+    }
+}
+
+fn default_issuer_order_limit() -> usize {
+    2
+}
+
+fn default_renew_before_days() -> u16 {
+    30
 }
 
 /// Trusted reverse proxies.
@@ -708,6 +851,13 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             "tls.identity is required for encrypted private keys".into(),
         ));
     }
+    validate_acme(config, &mut certificate_ids, &mut certificate_hosts)?;
+    if !config.acme.certificates.is_empty() {
+        return Err(ConfigError::Invalid(
+            "ACME certificate automation is not activated until the Phase 6 scheduler is wired"
+                .into(),
+        ));
+    }
     if config.limits.max_connections == 0 || config.limits.max_connections > 1_000_000 {
         return Err(ConfigError::Invalid(
             "limits.max_connections is outside 1..=1000000".into(),
@@ -1126,6 +1276,288 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                 )));
             }
             _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_acme<'a>(
+    config: &'a Config,
+    certificate_ids: &mut HashSet<&'a str>,
+    certificate_hosts: &mut HashSet<&'a str>,
+) -> Result<(), ConfigError> {
+    let acme = &config.acme;
+    if acme.max_concurrent_orders == 0 || acme.max_concurrent_orders > 32 {
+        return Err(ConfigError::Invalid(
+            "acme.max_concurrent_orders is outside 1..=32".into(),
+        ));
+    }
+    if acme.issuers.len() > MAX_ACME_ISSUERS
+        || acme.certificates.len() > MAX_ACME_CERTIFICATES
+        || acme.dns_providers.len() > MAX_ACME_DNS_PROVIDERS
+        || config.certificates.len() + acme.certificates.len() > MAX_ACME_CERTIFICATES
+    {
+        return Err(ConfigError::Invalid(
+            "ACME issuer, certificate, or DNS provider count exceeds its bound".into(),
+        ));
+    }
+
+    let mut issuer_ids = HashSet::new();
+    for issuer in &acme.issuers {
+        valid_id(&issuer.id)?;
+        if !issuer_ids.insert(issuer.id.as_str()) {
+            return Err(ConfigError::Invalid(format!(
+                "duplicate ACME issuer id {}",
+                issuer.id
+            )));
+        }
+        validate_acme_directory(issuer)?;
+        if let Some(email) = issuer.account_email.as_deref()
+            && (email.is_empty()
+                || email.len() > 254
+                || !email.is_ascii()
+                || email.chars().any(char::is_control)
+                || email.matches('@').count() != 1)
+        {
+            return Err(ConfigError::Invalid(format!(
+                "ACME issuer {} has an invalid account_email",
+                issuer.id
+            )));
+        }
+        if let Some(ca_bundle) = issuer.ca_bundle.as_deref() {
+            SecretRef::parse(ca_bundle).map_err(|_| {
+                ConfigError::Invalid(format!(
+                    "ACME issuer {} has an invalid ca_bundle secret reference",
+                    issuer.id
+                ))
+            })?;
+        }
+        if let Some(external) = &issuer.external_account {
+            if external.key_id.is_empty()
+                || external.key_id.len() > 256
+                || external.key_id.chars().any(char::is_control)
+            {
+                return Err(ConfigError::Invalid(format!(
+                    "ACME issuer {} has an invalid external account key ID",
+                    issuer.id
+                )));
+            }
+            SecretRef::parse(&external.hmac_key).map_err(|_| {
+                ConfigError::Invalid(format!(
+                    "ACME issuer {} has an invalid external account HMAC secret reference",
+                    issuer.id
+                ))
+            })?;
+        }
+        if issuer.max_concurrent_orders == 0
+            || issuer.max_concurrent_orders > acme.max_concurrent_orders
+        {
+            return Err(ConfigError::Invalid(format!(
+                "ACME issuer {} order limit exceeds the global bound",
+                issuer.id
+            )));
+        }
+    }
+
+    let mut provider_ids = HashSet::new();
+    for provider in &acme.dns_providers {
+        valid_id(provider.id())?;
+        if !provider_ids.insert(provider.id()) {
+            return Err(ConfigError::Invalid(format!(
+                "duplicate ACME DNS provider id {}",
+                provider.id()
+            )));
+        }
+        match provider {
+            AcmeDnsProviderConfig::Cloudflare {
+                id,
+                zone_id,
+                api_token,
+            } => {
+                if zone_id.len() != 32
+                    || !zone_id
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+                {
+                    return Err(ConfigError::Invalid(format!(
+                        "ACME DNS provider {id} has an invalid Cloudflare zone_id"
+                    )));
+                }
+                SecretRef::parse(api_token).map_err(|_| {
+                    ConfigError::Invalid(format!(
+                        "ACME DNS provider {id} has an invalid api_token secret reference"
+                    ))
+                })?;
+            }
+        }
+    }
+
+    for certificate in &acme.certificates {
+        valid_id(&certificate.id)?;
+        if !certificate_ids.insert(certificate.id.as_str()) {
+            return Err(ConfigError::Invalid(format!(
+                "duplicate certificate id {}",
+                certificate.id
+            )));
+        }
+        if certificate.hosts.is_empty() || certificate.hosts.len() > 64 {
+            return Err(ConfigError::Invalid(format!(
+                "ACME certificate {} must contain 1..=64 hosts",
+                certificate.id
+            )));
+        }
+        for host in &certificate.hosts {
+            valid_certificate_host(host)?;
+            if !certificate_hosts.insert(host.as_str()) {
+                return Err(ConfigError::Invalid(format!(
+                    "certificate host {host} is assigned more than once"
+                )));
+            }
+            if host.starts_with("*.") && certificate.challenge != AcmeChallenge::Dns01 {
+                return Err(ConfigError::Invalid(format!(
+                    "ACME wildcard {host} requires dns-01"
+                )));
+            }
+        }
+        if !issuer_ids.contains(certificate.issuer.as_str()) {
+            return Err(ConfigError::Invalid(format!(
+                "ACME certificate {} references unknown issuer {}",
+                certificate.id, certificate.issuer
+            )));
+        }
+        validate_acme_challenge(config, certificate, &provider_ids)?;
+        if let Some(profile) = certificate.profile.as_deref()
+            && (profile.is_empty()
+                || profile.len() > 64
+                || !profile
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')))
+        {
+            return Err(ConfigError::Invalid(format!(
+                "ACME certificate {} has an invalid profile",
+                certificate.id
+            )));
+        }
+        if !(1..=90).contains(&certificate.renew_before_days) {
+            return Err(ConfigError::Invalid(format!(
+                "ACME certificate {} renew_before_days is outside 1..=90",
+                certificate.id
+            )));
+        }
+    }
+
+    if !acme.certificates.is_empty() {
+        if config.tls.identity.is_none() {
+            return Err(ConfigError::Invalid(
+                "tls.identity is required for encrypted ACME state".into(),
+            ));
+        }
+        if config.tls.state_encryption_recipients.is_empty()
+            || config.tls.state_encryption_recipients.len() > 8
+        {
+            return Err(ConfigError::Invalid(
+                "tls.state_encryption_recipients must contain 1..=8 recipients for ACME".into(),
+            ));
+        }
+        for recipient in &config.tls.state_encryption_recipients {
+            validate_age_recipient(recipient).map_err(|_| {
+                ConfigError::Invalid("tls.state_encryption_recipients is invalid".into())
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_acme_directory(issuer: &AcmeIssuerConfig) -> Result<(), ConfigError> {
+    let url = &issuer.directory_url;
+    if url.username() != ""
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.host_str().is_none()
+    {
+        return Err(ConfigError::Invalid(format!(
+            "ACME issuer {} directory_url contains forbidden URL components",
+            issuer.id
+        )));
+    }
+    let loopback = url.host_str().is_some_and(|host| {
+        host.eq_ignore_ascii_case("localhost")
+            || host
+                .parse::<IpAddr>()
+                .is_ok_and(|address| address.is_loopback())
+    });
+    let valid_transport = url.scheme() == "https"
+        || issuer.environment == AcmeEnvironment::Staging && url.scheme() == "http" && loopback;
+    if !valid_transport {
+        return Err(ConfigError::Invalid(format!(
+            "ACME issuer {} directory_url must use HTTPS; staging permits loopback HTTP only",
+            issuer.id
+        )));
+    }
+    Ok(())
+}
+
+fn validate_acme_challenge(
+    config: &Config,
+    certificate: &AcmeCertificateConfig,
+    provider_ids: &HashSet<&str>,
+) -> Result<(), ConfigError> {
+    match certificate.challenge {
+        AcmeChallenge::Dns01 => {
+            if certificate.challenge_listener.is_some() {
+                return Err(ConfigError::Invalid(format!(
+                    "ACME certificate {} dns-01 cannot set challenge_listener",
+                    certificate.id
+                )));
+            }
+            let provider = certificate.dns_provider.as_deref().ok_or_else(|| {
+                ConfigError::Invalid(format!(
+                    "ACME certificate {} dns-01 requires dns_provider",
+                    certificate.id
+                ))
+            })?;
+            if !provider_ids.contains(provider) {
+                return Err(ConfigError::Invalid(format!(
+                    "ACME certificate {} references unknown DNS provider {provider}",
+                    certificate.id
+                )));
+            }
+        }
+        AcmeChallenge::Http01 | AcmeChallenge::TlsAlpn01 => {
+            if certificate.dns_provider.is_some() {
+                return Err(ConfigError::Invalid(format!(
+                    "ACME certificate {} non-DNS challenge cannot set dns_provider",
+                    certificate.id
+                )));
+            }
+            let listener_id = certificate.challenge_listener.as_deref().ok_or_else(|| {
+                ConfigError::Invalid(format!(
+                    "ACME certificate {} requires challenge_listener",
+                    certificate.id
+                ))
+            })?;
+            let listener = config
+                .listeners
+                .iter()
+                .find(|listener| listener.id == listener_id)
+                .ok_or_else(|| {
+                    ConfigError::Invalid(format!(
+                        "ACME certificate {} references unknown challenge listener {listener_id}",
+                        certificate.id
+                    ))
+                })?;
+            let expected = if certificate.challenge == AcmeChallenge::Http01 {
+                "http"
+            } else {
+                "https"
+            };
+            if listener.protocol != expected {
+                return Err(ConfigError::Invalid(format!(
+                    "ACME certificate {} challenge listener must use {expected}",
+                    certificate.id
+                )));
+            }
         }
     }
     Ok(())
@@ -1583,6 +2015,7 @@ mod tests {
             }],
             tls: TlsConfig::default(),
             certificates: vec![],
+            acme: AcmeConfig::default(),
             trusted_proxies: TrustedProxyConfig::default(),
             upstream_groups: vec![],
             middlewares: BTreeMap::new(),
@@ -1677,6 +2110,98 @@ mod tests {
         config.listeners[0].certificates = vec!["missing".into()];
         let error = validate(&config).expect_err("unknown certificate must fail");
         assert!(error.to_string().contains("listeners[0].certificates[0]"));
+    }
+
+    fn acme_config(challenge: AcmeChallenge, host: &str) -> Config {
+        let mut config = base_config();
+        config.tls.identity = Some("env://STATE_IDENTITY".into());
+        config.tls.state_encryption_recipients =
+            vec![age::x25519::Identity::generate().to_public().to_string()];
+        config.acme.issuers.push(AcmeIssuerConfig {
+            id: "pebble".into(),
+            directory_url: "https://127.0.0.1:14000/dir".parse().expect("URL"),
+            environment: AcmeEnvironment::Staging,
+            account_email: Some("ops@example.test".into()),
+            ca_bundle: Some("file:///pebble-ca.pem".into()),
+            external_account: None,
+            max_concurrent_orders: 2,
+        });
+        config.acme.certificates.push(AcmeCertificateConfig {
+            id: "managed".into(),
+            hosts: vec![host.into()],
+            issuer: "pebble".into(),
+            challenge,
+            challenge_listener: Some("public".into()),
+            dns_provider: None,
+            profile: None,
+            renew_before_days: 30,
+        });
+        config
+    }
+
+    #[test]
+    fn validates_acme_policy_before_scheduler_gate() {
+        let config = acme_config(AcmeChallenge::Http01, "example.test");
+        let mut certificate_ids = HashSet::new();
+        let mut certificate_hosts = HashSet::new();
+        validate_acme(&config, &mut certificate_ids, &mut certificate_hosts)
+            .expect("valid ACME policy");
+        let error = validate(&config).expect_err("inactive scheduler must fail closed");
+        assert!(error.to_string().contains("scheduler is wired"));
+    }
+
+    #[test]
+    fn rejects_unsafe_acme_challenge_combinations() {
+        let wildcard = acme_config(AcmeChallenge::Http01, "*.example.test");
+        assert!(validate(&wildcard).is_err());
+
+        let mut dns = acme_config(AcmeChallenge::Dns01, "*.example.test");
+        dns.acme.certificates[0].challenge_listener = None;
+        dns.acme.certificates[0].dns_provider = Some("missing".into());
+        let error = validate(&dns).expect_err("unknown DNS provider must fail");
+        assert!(error.to_string().contains("unknown DNS provider"));
+
+        let mut insecure = acme_config(AcmeChallenge::Http01, "example.test");
+        insecure.acme.issuers[0].environment = AcmeEnvironment::Production;
+        insecure.acme.issuers[0].directory_url = "http://127.0.0.1:14000/dir".parse().expect("URL");
+        let error = validate(&insecure).expect_err("production plaintext directory must fail");
+        assert!(error.to_string().contains("must use HTTPS"));
+    }
+
+    #[test]
+    fn rejects_unknown_nested_acme_fields() {
+        let source = r#"
+            schema_version = 1
+
+            [[listeners]]
+            id = "public"
+            bind = "127.0.0.1:8080"
+            protocol = "http"
+
+            [[acme.issuers]]
+            id = "pebble"
+            directory_url = "https://127.0.0.1:14000/dir"
+            environment = "staging"
+            surprise = true
+        "#;
+        assert!(toml::from_str::<Config>(source).is_err());
+
+        let provider = r#"
+            schema_version = 1
+
+            [[listeners]]
+            id = "public"
+            bind = "127.0.0.1:8080"
+            protocol = "http"
+
+            [[acme.dns_providers]]
+            kind = "cloudflare"
+            id = "dns"
+            zone_id = "0123456789abcdef0123456789abcdef"
+            api_token = "env://DNS_TOKEN"
+            surprise = true
+        "#;
+        assert!(toml::from_str::<Config>(provider).is_err());
     }
 
     #[test]

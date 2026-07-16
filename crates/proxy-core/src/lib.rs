@@ -1495,6 +1495,7 @@ mod tests {
             }],
             tls: aegisproxy_config::TlsConfig::default(),
             certificates: vec![],
+            acme: aegisproxy_config::AcmeConfig::default(),
             trusted_proxies: TrustedProxyConfig::default(),
             upstream_groups: vec![UpstreamGroupConfig {
                 id: "app".into(),

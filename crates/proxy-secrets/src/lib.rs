@@ -11,6 +11,7 @@ use std::{
     fs::{File, Metadata},
     io::Read,
     path::{Path, PathBuf},
+    str::FromStr,
 };
 
 use thiserror::Error;
@@ -127,6 +128,13 @@ impl SecretRef {
     }
 }
 
+/// Validate one public age X25519 recipient without accepting plugin recipients.
+pub fn validate_age_recipient(value: &str) -> Result<(), SecretError> {
+    age::x25519::Recipient::from_str(value)
+        .map(|_| ())
+        .map_err(|_| SecretError::Envelope)
+}
+
 fn portable_absolute_file_path(raw: &str) -> bool {
     (raw.starts_with('/') && !raw.starts_with("//"))
         || windows_drive_absolute(raw)
@@ -185,6 +193,16 @@ mod tests {
         let output = format!("{secret:?}");
         assert!(!output.contains("private-canary"));
         assert!(output.contains("REDACTED"));
+    }
+
+    #[test]
+    fn validates_only_x25519_recipients() {
+        use age::secrecy::ExposeSecret;
+
+        let identity = age::x25519::Identity::generate();
+        assert!(validate_age_recipient(&identity.to_public().to_string()).is_ok());
+        assert!(validate_age_recipient(identity.to_string().expose_secret()).is_err());
+        assert!(validate_age_recipient("ssh-ed25519 AAAA").is_err());
     }
 
     #[test]
