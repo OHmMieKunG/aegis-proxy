@@ -88,6 +88,8 @@ pub struct LimitsConfig {
     pub max_header_bytes: usize,
     /// Maximum header count.
     pub max_headers: usize,
+    /// Maximum concurrent HTTP/2 streams per connection.
+    pub max_http2_streams: u32,
     /// Maximum request body bytes.
     pub max_request_body: usize,
     /// Request header timeout seconds.
@@ -102,6 +104,7 @@ impl Default for LimitsConfig {
             max_connections: 4096,
             max_header_bytes: 32 * 1024,
             max_headers: 100,
+            max_http2_streams: 128,
             max_request_body: 32 * 1024 * 1024,
             request_header_timeout_secs: 10,
             response_header_timeout_secs: 30,
@@ -396,6 +399,11 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
     if config.limits.max_headers == 0 || config.limits.max_headers > 1024 {
         return Err(ConfigError::Invalid(
             "limits.max_headers is outside 1..=1024".into(),
+        ));
+    }
+    if config.limits.max_http2_streams == 0 || config.limits.max_http2_streams > 10_000 {
+        return Err(ConfigError::Invalid(
+            "limits.max_http2_streams is outside 1..=10000".into(),
         ));
     }
     if config.limits.max_request_body == 0 || config.limits.max_request_body > 1024 * 1024 * 1024 {
