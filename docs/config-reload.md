@@ -2,7 +2,7 @@
 
 ## Supported storage contract
 
-Configuration state must use a local filesystem with atomic same-directory rename and reliable file `fsync`. Intended production support targets local ext4 or XFS on Linux, subject to the Phase 5 crash campaign on the deployment storage stack. NTFS is exercised by development tests, but Windows directory `fsync` is unavailable through the current safe standard-library path, so equivalent crash-durability is not claimed. NFS, SMB, distributed filesystems, overlay state directories, and concurrent writers are unsupported.
+Configuration state must use a local filesystem with atomic same-directory rename and reliable file `fsync`. Local ext4 is the Phase 5 tested filesystem: the logical crash/reopen campaign passed on an isolated WSL2 Docker ext4 volume. Exact production storage still requires deployment-specific power-loss qualification. XFS remains a candidate but is unverified. NTFS is exercised by development tests, but Windows directory `fsync` is unavailable through the current safe standard-library path, so equivalent crash-durability is not claimed. NFS, SMB, XFS, distributed filesystems, overlay state directories, and concurrent writers are unsupported until separately qualified.
 
 The daemon exclusively locks `<state-dir>/config/owner.lock`. Failure to acquire the lock exits; it never guesses that another writer is dead. Immutable TOML revisions and JSON metadata use exclusive creation, bounded reads, SHA-256 verification, file sync, and directory sync where supported. Mutable `active.json` and `activation.json` are replaced from a synced temporary file in the same directory.
 
@@ -50,4 +50,4 @@ Offline activation and rollback are intentionally absent. Mutation requires prep
 - Corrupt, oversized, unknown-field, hash-mismatched, or missing referenced state fails closed.
 - If in-memory rollback succeeds but durable rollback fails, traffic uses the old snapshot and further administrative mutation is disabled until restart/recovery.
 
-Automated tests cover same-hash concurrency, stale compare-and-swap, journal-before-pointer recovery, incomplete probation, committed restart, invalid live reload, explicit recovery, Unix SIGHUP activation, and accepted requests returning either the old or new successful response during reload. Power-loss guarantees still require Linux filesystem crash testing on the deployment storage stack.
+Automated tests cover same-hash concurrency, stale compare-and-swap, journal-before-pointer recovery, incomplete probation, committed restart, invalid live reload, explicit recovery, Unix SIGHUP activation, removed-endpoint idle connection eviction, active-work drain deadlines, and accepted requests returning either the old or new successful response during reload. The ext4 campaign is recorded in `docs/testing/phase-5-crash-recovery.md`; physical power-loss guarantees still require testing on the deployment storage stack.

@@ -31,7 +31,7 @@ Endpoint state is node-local and intentionally not HA-consistent. Smooth weighte
 Selection cannot add destinations; all endpoints originate from validated config/DNS and pass egress checks. Bounds apply to endpoints, DNS answers, samples, probes, attempts, and half-open work. Retry defaults prevent non-idempotent replay and amplification.
 
 ## Reliability implications
-Hysteresis reduces oscillation. All-unavailable groups fail quickly with 503 and do not fall through to another route. Draining preserves existing work until its deadline. Health task failure affects readiness/status but not unrelated pools.
+Hysteresis reduces oscillation. All-unavailable groups fail quickly with 503 and do not fall through to another route. Draining preserves existing work until its deadline, then cancellation terminates HTTP bodies and TCP relays. Successful activation drops the retired snapshot/client maps before awaiting bounded endpoint drains, closing idle connections without cutting active work. Health task failure affects readiness/status but not unrelated pools.
 
 ## Operational implications
 Status exposes stable group/endpoint IDs, state, active count, transition reason class, and bounded timestamps. Raw DNS names/errors are not metric labels. Operators configure explicit thresholds and probe behavior.
