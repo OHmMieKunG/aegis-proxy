@@ -149,6 +149,10 @@ impl AcmeClient {
     pub fn account_id(&self) -> &str {
         self.account.id()
     }
+
+    pub(super) fn account(&self) -> &Account {
+        &self.account
+    }
 }
 
 #[derive(Deserialize)]
