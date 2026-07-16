@@ -48,9 +48,11 @@ impl Identity {
 pub fn load_identity(
     id: String,
     hosts: Vec<String>,
-    certificate_chain: &SecretRef,
-    private_key: &SecretRef,
+    certificate_chain: &str,
+    private_key: &str,
 ) -> Result<Identity, TlsError> {
+    let certificate_chain = SecretRef::parse(certificate_chain)?;
+    let private_key = SecretRef::parse(private_key)?;
     let certificate_chain = certificate_chain.resolve(MAX_CERTIFICATE_PEM_BYTES)?;
     let private_key = private_key.resolve(MAX_PRIVATE_KEY_PEM_BYTES)?;
     identity_from_pem(id, hosts, certificate_chain.as_ref(), private_key.as_ref())

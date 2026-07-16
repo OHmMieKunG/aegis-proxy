@@ -3,10 +3,12 @@
 //! Data-plane HTTP forwarding primitives.
 
 use std::{
-    convert::Infallible, error::Error, future::Future, net::SocketAddr, pin::Pin, sync::Arc,
+    collections::HashMap, convert::Infallible, error::Error, future::Future, net::SocketAddr,
+    pin::Pin, sync::Arc, time::Duration,
 };
 
 use aegisproxy_config::{Config, ConfigError, LimitsConfig, RouteConfig};
+use aegisproxy_tls::{CertificateResolver, Identity, TlsAcceptor, load_identity, tls_acceptor};
 use http_body_util::{BodyExt, Full, Limited, combinators::BoxBody};
 use hyper::service::Service;
 use hyper::{
@@ -20,6 +22,7 @@ use hyper_util::{
 };
 use thiserror::Error;
 use tokio::{
+    io::{AsyncRead, AsyncWrite},
     net::{TcpListener, TcpStream},
     sync::Semaphore,
 };
@@ -40,33 +43,95 @@ pub enum ProxyError {
     /// Listener bind failure.
     #[error("listener failed: {0}")]
     Io(#[from] std::io::Error),
+    /// TLS identity or policy preparation failed.
+    #[error("TLS preparation failed: {0}")]
+    Tls(#[from] aegisproxy_tls::TlsError),
+    /// A blocking preparation task failed unexpectedly.
+    #[error("runtime preparation failed: {0}")]
+    Preparation(String),
 }
 
-/// Run configured HTTP listeners until cancellation.
+/// Run configured HTTP and HTTPS listeners until cancellation.
 pub async fn run(config: Arc<Config>, shutdown: CancellationToken) -> Result<(), ProxyError> {
     aegisproxy_config::validate(&config)?;
+    let preparation_config = Arc::clone(&config);
+    let mut tls_acceptors = tokio::task::spawn_blocking(move || prepare_tls(&preparation_config))
+        .await
+        .map_err(|error| ProxyError::Preparation(error.to_string()))??;
+    let handshake_permits = Arc::new(Semaphore::new(config.tls.max_handshakes));
     let mut tasks = tokio::task::JoinSet::new();
     for listener in config
         .listeners
         .iter()
-        .filter(|listener| listener.protocol == "http")
+        .filter(|listener| matches!(listener.protocol.as_str(), "http" | "https"))
     {
         let tcp = TcpListener::bind(listener.bind).await?;
         let listener_id = listener.id.clone();
+        let tls_acceptor = tls_acceptors.remove(&listener_id);
         let config = Arc::clone(&config);
         let shutdown = shutdown.clone();
         let limits = config.limits.clone();
-        tracing::info!(listener = %listener_id, bind = %listener.bind, "http listener started");
-        tasks.spawn(async move { accept_loop(tcp, listener_id, config, limits, shutdown).await });
+        let handshake_permits = Arc::clone(&handshake_permits);
+        tracing::info!(listener = %listener_id, bind = %listener.bind, protocol = %listener.protocol, "listener started");
+        tasks.spawn(async move {
+            accept_loop(
+                tcp,
+                listener_id,
+                config,
+                limits,
+                tls_acceptor,
+                handshake_permits,
+                shutdown,
+            )
+            .await
+        });
     }
     if tasks.is_empty() {
         return Err(ProxyError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            "no http listeners configured",
+            "no HTTP or HTTPS listeners configured",
         )));
     }
     while tasks.join_next().await.is_some() {}
     Ok(())
+}
+
+fn prepare_tls(config: &Config) -> Result<HashMap<String, TlsAcceptor>, ProxyError> {
+    let mut identities = HashMap::new();
+    for certificate in &config.certificates {
+        let identity = load_identity(
+            certificate.id.clone(),
+            certificate.hosts.clone(),
+            &certificate.certificate_chain,
+            &certificate.private_key,
+        )?;
+        identities.insert(certificate.id.as_str(), identity);
+    }
+    let mut acceptors = HashMap::new();
+    for listener in config
+        .listeners
+        .iter()
+        .filter(|listener| listener.protocol == "https")
+    {
+        let selected: Result<Vec<Identity>, ProxyError> = listener
+            .certificates
+            .iter()
+            .map(|id| {
+                identities.get(id.as_str()).cloned().ok_or_else(|| {
+                    ProxyError::Preparation(format!(
+                        "listener {} references missing certificate {id}",
+                        listener.id
+                    ))
+                })
+            })
+            .collect();
+        let resolver = CertificateResolver::new(&selected?)?;
+        acceptors.insert(
+            listener.id.clone(),
+            tls_acceptor(resolver, &config.tls.minimum_version)?,
+        );
+    }
+    Ok(acceptors)
 }
 
 async fn accept_loop(
@@ -74,6 +139,8 @@ async fn accept_loop(
     listener_id: String,
     config: Arc<Config>,
     limits: LimitsConfig,
+    tls_acceptor: Option<TlsAcceptor>,
+    handshake_permits: Arc<Semaphore>,
     shutdown: CancellationToken,
 ) {
     let permits = Arc::new(Semaphore::new(limits.max_connections));
@@ -98,24 +165,70 @@ async fn accept_loop(
             tracing::debug!(%peer, "connection limit reached");
             continue;
         };
+        let handshake_permit = if tls_acceptor.is_some() {
+            let Ok(permit) = handshake_permits.clone().try_acquire_owned() else {
+                tracing::debug!(%peer, "TLS handshake limit reached");
+                continue;
+            };
+            Some(permit)
+        } else {
+            None
+        };
         let config = Arc::clone(&config);
         let shutdown = shutdown.clone();
         let limits = limits.clone();
         let listener_id = listener_id.clone();
+        let tls_acceptor = tls_acceptor.clone();
         let upgrade_tasks = upgrade_tasks.clone();
         connections.spawn(async move {
             let _permit = permit;
-            if let Err(error) = serve_connection(
-                stream,
-                peer,
-                listener_id,
-                config,
-                limits,
-                shutdown,
-                upgrade_tasks,
-            )
-            .await
-            {
+            let result = match tls_acceptor {
+                Some(acceptor) => {
+                    let accepted = tokio::time::timeout(
+                        Duration::from_secs(config.tls.handshake_timeout_secs),
+                        acceptor.accept(stream),
+                    )
+                    .await;
+                    drop(handshake_permit);
+                    match accepted {
+                        Ok(Ok(stream)) => {
+                            serve_tls_connection(
+                                stream,
+                                peer,
+                                listener_id,
+                                config,
+                                limits,
+                                shutdown,
+                                upgrade_tasks,
+                            )
+                            .await
+                        }
+                        Ok(Err(error)) => Err(Box::new(error) as BoxError),
+                        Err(_) => Err(Box::new(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "TLS handshake timed out",
+                        )) as BoxError),
+                    }
+                }
+                None => {
+                    drop(handshake_permit);
+                    serve_http1_connection(
+                        stream,
+                        ConnectionContext {
+                            peer,
+                            listener_id,
+                            config,
+                            limits,
+                            shutdown,
+                            upgrade_tasks,
+                            tls_server_name: None,
+                        },
+                    )
+                    .await
+                    .map_err(|error| Box::new(error) as BoxError)
+                }
+            };
+            if let Err(error) = result {
                 tracing::debug!(%peer, %error, "connection ended");
             }
         });
@@ -134,26 +247,67 @@ async fn accept_loop(
     }
 }
 
-async fn serve_connection(
-    stream: TcpStream,
+#[derive(Clone, Debug)]
+struct ConnectionContext {
     peer: SocketAddr,
     listener_id: String,
     config: Arc<Config>,
     limits: LimitsConfig,
     shutdown: CancellationToken,
     upgrade_tasks: TaskTracker,
-) -> Result<(), hyper::Error> {
-    let io = TokioIo::new(stream);
-    let client = Client::builder(TokioExecutor::new()).build_http();
-    let max_header_bytes = limits.max_header_bytes;
-    let service = ProxyService {
-        config,
+    tls_server_name: Option<String>,
+}
+
+async fn serve_tls_connection(
+    stream: aegisproxy_tls::TlsStream<TcpStream>,
+    peer: SocketAddr,
+    listener_id: String,
+    config: Arc<Config>,
+    limits: LimitsConfig,
+    shutdown: CancellationToken,
+    upgrade_tasks: TaskTracker,
+) -> Result<(), BoxError> {
+    let protocol = stream.get_ref().1.alpn_protocol().map(<[u8]>::to_vec);
+    let server_name = stream.get_ref().1.server_name().map(str::to_owned);
+    let context = ConnectionContext {
         peer,
         listener_id,
+        config,
         limits,
-        client,
-        shutdown: shutdown.clone(),
+        shutdown,
         upgrade_tasks,
+        tls_server_name: server_name,
+    };
+    if protocol.as_deref() == Some(b"h2") {
+        serve_http2_connection(stream, context)
+            .await
+            .map_err(|error| Box::new(error) as BoxError)
+    } else {
+        serve_http1_connection(stream, context)
+            .await
+            .map_err(|error| Box::new(error) as BoxError)
+    }
+}
+
+async fn serve_http1_connection<I>(
+    stream: I,
+    context: ConnectionContext,
+) -> Result<(), hyper::Error>
+where
+    I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let io = TokioIo::new(stream);
+    let client = Client::builder(TokioExecutor::new()).build_http();
+    let max_header_bytes = context.limits.max_header_bytes;
+    let service = ProxyService {
+        config: context.config,
+        peer: context.peer,
+        listener_id: context.listener_id,
+        limits: context.limits,
+        client,
+        shutdown: context.shutdown.clone(),
+        upgrade_tasks: context.upgrade_tasks,
+        tls_server_name: context.tls_server_name,
     };
     let mut http = hyper::server::conn::http1::Builder::new();
     http.timer(TokioTimer::new())
@@ -166,7 +320,40 @@ async fn serve_connection(
     tokio::pin!(connection);
     tokio::select! {
         result = &mut connection => result,
-        _ = shutdown.cancelled() => {
+        _ = context.shutdown.cancelled() => {
+            connection.as_mut().graceful_shutdown();
+            connection.await
+        }
+    }
+}
+
+async fn serve_http2_connection<I>(
+    stream: I,
+    context: ConnectionContext,
+) -> Result<(), hyper::Error>
+where
+    I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let io = TokioIo::new(stream);
+    let client = Client::builder(TokioExecutor::new()).build_http();
+    let service = ProxyService {
+        config: context.config,
+        peer: context.peer,
+        listener_id: context.listener_id,
+        limits: context.limits,
+        client,
+        shutdown: context.shutdown.clone(),
+        upgrade_tasks: context.upgrade_tasks,
+        tls_server_name: context.tls_server_name,
+    };
+    let mut http = hyper::server::conn::http2::Builder::new(TokioExecutor::new());
+    http.max_concurrent_streams(service.limits.max_http2_streams)
+        .max_header_list_size(service.limits.max_header_bytes as u32);
+    let connection = http.serve_connection(io, service);
+    tokio::pin!(connection);
+    tokio::select! {
+        result = &mut connection => result,
+        _ = context.shutdown.cancelled() => {
             connection.as_mut().graceful_shutdown();
             connection.await
         }
@@ -182,6 +369,7 @@ struct ProxyService {
     client: Client<HttpConnector, ResponseBody>,
     shutdown: CancellationToken,
     upgrade_tasks: TaskTracker,
+    tls_server_name: Option<String>,
 }
 
 impl Service<Request<Incoming>> for ProxyService {
@@ -199,6 +387,19 @@ impl ProxyService {
     async fn forward(&self, mut request: Request<Incoming>) -> Response<ResponseBody> {
         if let Some(status) = reject_unsafe_request_target(&request) {
             return error_response(status, "request target is not supported\n");
+        }
+        if self
+            .tls_server_name
+            .as_deref()
+            .is_some_and(|server_name| match request_host(&request) {
+                Ok(host) => host != normalize_host(server_name),
+                Err(()) => true,
+            })
+        {
+            return error_response(
+                StatusCode::MISDIRECTED_REQUEST,
+                "authority does not match TLS server name\n",
+            );
         }
         if request.headers().len() > self.limits.max_headers
             || request
@@ -267,6 +468,7 @@ impl ProxyService {
             return error_response(StatusCode::BAD_GATEWAY, "invalid upstream URI\n");
         };
         parts.uri = uri;
+        parts.version = hyper::Version::HTTP_11;
         strip_hop_by_hop_headers(&mut parts.headers, websocket);
         for name in [
             "forwarded",
@@ -350,15 +552,30 @@ impl ProxyService {
 }
 
 fn reject_unsafe_request_target<B>(request: &Request<B>) -> Option<StatusCode> {
-    if request.method() == hyper::Method::CONNECT
-        || request.uri().scheme().is_some()
-        || request.uri().authority().is_some()
+    let http2 = request.version() == hyper::Version::HTTP_2;
+    if request.method() == hyper::Method::CONNECT {
+        return Some(StatusCode::BAD_REQUEST);
+    }
+    if (!http2 && (request.uri().scheme().is_some() || request.uri().authority().is_some()))
+        || (http2
+            && (request.uri().scheme_str() != Some("https") || request.uri().authority().is_none()))
+        || request_host(request).is_err()
     {
         return Some(StatusCode::BAD_REQUEST);
     }
-    if request.headers().get(HOST).is_none() {
+    if http2
+        && ["connection", "keep-alive", "proxy-connection", "upgrade"]
+            .iter()
+            .any(|name| request.headers().contains_key(*name))
+    {
         return Some(StatusCode::BAD_REQUEST);
     }
+    let invalid_http2_te = http2
+        && (request.headers().get_all(hyper::header::TE).iter().count() > 1
+            || request
+                .headers()
+                .get(hyper::header::TE)
+                .is_some_and(|value| value.as_bytes() != b"trailers"));
     let content_lengths: Vec<&[u8]> = request
         .headers()
         .get_all(hyper::header::CONTENT_LENGTH)
@@ -371,7 +588,9 @@ fn reject_unsafe_request_target<B>(request: &Request<B>) -> Option<StatusCode> {
         .iter()
         .filter_map(|value| value.to_str().ok())
         .collect();
-    if (!content_lengths.is_empty() && !transfer_encodings.is_empty())
+    if invalid_http2_te
+        || (http2 && !transfer_encodings.is_empty())
+        || (!content_lengths.is_empty() && !transfer_encodings.is_empty())
         || content_lengths.len() > 1
         || transfer_encodings.len() > 1
         || transfer_encodings
@@ -381,6 +600,24 @@ fn reject_unsafe_request_target<B>(request: &Request<B>) -> Option<StatusCode> {
         return Some(StatusCode::BAD_REQUEST);
     }
     None
+}
+
+fn request_host<B>(request: &Request<B>) -> Result<String, ()> {
+    let authority_host = request
+        .uri()
+        .authority()
+        .map(|authority| normalize_host(authority.as_str()));
+    let header_host = request
+        .headers()
+        .get(HOST)
+        .and_then(|value| value.to_str().ok())
+        .map(normalize_host);
+    match (authority_host, header_host) {
+        (Some(authority), Some(header)) if authority != header => Err(()),
+        (Some(authority), _) => Ok(authority),
+        (_, Some(header)) if !header.is_empty() => Ok(header),
+        _ => Err(()),
+    }
 }
 
 fn is_websocket_upgrade<B>(request: &Request<B>) -> bool {
@@ -436,12 +673,7 @@ pub fn select_route<'a, B>(
     request: &Request<B>,
     listener_id: &str,
 ) -> Option<&'a RouteConfig> {
-    let host = request
-        .headers()
-        .get(HOST)
-        .and_then(|value| value.to_str().ok())
-        .map(normalize_host)
-        .unwrap_or_default();
+    let host = request_host(request).unwrap_or_default();
     let path = request.uri().path();
     config
         .routes
@@ -522,8 +754,8 @@ fn full_body(bytes: &[u8]) -> ResponseBody {
 mod tests {
     use super::*;
     use aegisproxy_config::{
-        AdminConfig, Config, EndpointConfig, LimitsConfig, ListenerConfig, RouteConfig,
-        RuntimeConfig, TrustedProxyConfig, UpstreamGroupConfig,
+        AdminConfig, CertificateConfig, Config, EndpointConfig, LimitsConfig, ListenerConfig,
+        RouteConfig, RuntimeConfig, TrustedProxyConfig, UpstreamGroupConfig,
     };
     use http_body_util::Empty;
     use std::collections::HashMap;
@@ -617,6 +849,173 @@ mod tests {
         }
     }
 
+    async fn tls_request(http2: bool, authority: &str) -> (Vec<u8>, StatusCode, bytes::Bytes) {
+        use rustls::{ClientConfig, RootCertStore, crypto::aws_lc_rs, pki_types::ServerName};
+        use std::{
+            fs,
+            sync::atomic::{AtomicU64, Ordering},
+        };
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
+        let generated = rcgen::generate_simple_self_signed(vec!["example.test".into()])
+            .expect("generate test identity");
+        let sequence = NEXT_FILE.fetch_add(1, Ordering::Relaxed);
+        let base =
+            std::env::temp_dir().join(format!("aegisproxy-tls-{}-{sequence}", std::process::id()));
+        let certificate_path = base.with_extension("cert.pem");
+        let private_key_path = base.with_extension("key.pem");
+        fs::write(&certificate_path, generated.cert.pem()).expect("write certificate");
+        fs::write(&private_key_path, generated.signing_key.serialize_pem())
+            .expect("write private key");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&certificate_path, fs::Permissions::from_mode(0o600))
+                .expect("secure certificate");
+            fs::set_permissions(&private_key_path, fs::Permissions::from_mode(0o600))
+                .expect("secure private key");
+        }
+
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("upstream bind");
+        let upstream_addr = upstream.local_addr().expect("upstream address");
+        let upstream_task = tokio::spawn(async move {
+            let (mut stream, _) = upstream.accept().await.expect("upstream accept");
+            let mut request = [0_u8; 4096];
+            let count = stream.read(&mut request).await.expect("upstream read");
+            assert!(
+                std::str::from_utf8(&request[..count])
+                    .expect("request text")
+                    .contains(&format!("host: {upstream_addr}"))
+            );
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")
+                .await
+                .expect("upstream response");
+        });
+        let (proxy_addr, shutdown, proxy_task) = start_test_proxy(upstream_addr, |config| {
+            config.listeners[0].protocol = "https".into();
+            config.listeners[0].certificates = vec!["site".into()];
+            config.certificates.push(CertificateConfig {
+                id: "site".into(),
+                hosts: vec!["example.test".into()],
+                certificate_chain: format!("file://{}", certificate_path.display()),
+                private_key: format!("file://{}", private_key_path.display()),
+            });
+        })
+        .await;
+        let stream = connect_to_proxy(proxy_addr).await;
+        let mut roots = RootCertStore::empty();
+        roots
+            .add(generated.cert.der().clone())
+            .expect("add test root");
+        let mut client_config =
+            ClientConfig::builder_with_provider(Arc::new(aws_lc_rs::default_provider()))
+                .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
+                .expect("TLS versions")
+                .with_root_certificates(roots)
+                .with_no_client_auth();
+        client_config.alpn_protocols = if http2 {
+            vec![b"h2".to_vec()]
+        } else {
+            vec![b"http/1.1".to_vec()]
+        };
+        let tls = tokio_rustls::TlsConnector::from(Arc::new(client_config))
+            .connect(
+                ServerName::try_from("example.test").expect("server name"),
+                stream,
+            )
+            .await
+            .expect("TLS connect");
+        let negotiated = tls
+            .get_ref()
+            .1
+            .alpn_protocol()
+            .expect("ALPN negotiated")
+            .to_vec();
+        let request = if http2 {
+            Request::builder()
+                .uri(format!("https://{authority}/"))
+                .body(Empty::<bytes::Bytes>::new())
+                .expect("HTTP/2 request")
+        } else {
+            Request::builder()
+                .uri("/")
+                .header(HOST, authority)
+                .body(Empty::<bytes::Bytes>::new())
+                .expect("HTTP/1.1 request")
+        };
+        let (status, body) = if http2 {
+            let (mut sender, connection) =
+                hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(tls))
+                    .await
+                    .expect("HTTP/2 handshake");
+            let connection_task = tokio::spawn(connection);
+            let response = sender.send_request(request).await.expect("HTTP/2 response");
+            let status = response.status();
+            let body = response
+                .into_body()
+                .collect()
+                .await
+                .expect("HTTP/2 body")
+                .to_bytes();
+            connection_task.abort();
+            (status, body)
+        } else {
+            let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(tls))
+                .await
+                .expect("HTTP/1.1 handshake");
+            let connection_task = tokio::spawn(connection);
+            let response = sender
+                .send_request(request)
+                .await
+                .expect("HTTP/1.1 response");
+            let status = response.status();
+            let body = response
+                .into_body()
+                .collect()
+                .await
+                .expect("HTTP/1.1 body")
+                .to_bytes();
+            connection_task.abort();
+            (status, body)
+        };
+        shutdown.cancel();
+        proxy_task.await.expect("proxy task").expect("proxy run");
+        if status == StatusCode::OK {
+            upstream_task.await.expect("upstream task");
+        } else {
+            upstream_task.abort();
+        }
+        fs::remove_file(certificate_path).expect("remove certificate");
+        fs::remove_file(private_key_path).expect("remove private key");
+        (negotiated, status, body)
+    }
+
+    #[tokio::test]
+    async fn terminates_tls_with_http1_alpn() {
+        let (alpn, status, body) = tls_request(false, "example.test").await;
+        assert_eq!(alpn, b"http/1.1");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, "ok");
+    }
+
+    #[tokio::test]
+    async fn proxies_http2_selected_by_alpn() {
+        let (alpn, status, body) = tls_request(true, "example.test").await;
+        assert_eq!(alpn, b"h2");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, "ok");
+    }
+
+    #[tokio::test]
+    async fn rejects_authority_that_differs_from_sni() {
+        let (_, status, _) = tls_request(true, "other.test").await;
+        assert_eq!(status, StatusCode::MISDIRECTED_REQUEST);
+    }
+
     #[test]
     fn route_matching_is_deterministic_and_header_aware() {
         let route = RouteConfig {
@@ -677,6 +1076,38 @@ mod tests {
             .expect("request");
         assert_eq!(
             reject_unsafe_request_target(&no_host),
+            Some(StatusCode::BAD_REQUEST)
+        );
+    }
+
+    #[test]
+    fn validates_http2_authority_and_connection_headers() {
+        let valid = Request::builder()
+            .version(hyper::Version::HTTP_2)
+            .uri("https://example.test/")
+            .body(Empty::<bytes::Bytes>::new())
+            .expect("HTTP/2 request");
+        assert_eq!(reject_unsafe_request_target(&valid), None);
+
+        let conflicting = Request::builder()
+            .version(hyper::Version::HTTP_2)
+            .uri("https://example.test/")
+            .header(HOST, "other.test")
+            .body(Empty::<bytes::Bytes>::new())
+            .expect("HTTP/2 request");
+        assert_eq!(
+            reject_unsafe_request_target(&conflicting),
+            Some(StatusCode::BAD_REQUEST)
+        );
+
+        let connection_header = Request::builder()
+            .version(hyper::Version::HTTP_2)
+            .uri("https://example.test/")
+            .header(CONNECTION, "close")
+            .body(Empty::<bytes::Bytes>::new())
+            .expect("HTTP/2 request");
+        assert_eq!(
+            reject_unsafe_request_target(&connection_header),
             Some(StatusCode::BAD_REQUEST)
         );
     }

@@ -27,12 +27,16 @@ name = "aegisproxy-core"
 version = "0.1.0"
 dependencies = [
  "aegisproxy-config",
+ "aegisproxy-tls",
  "bytes",
  "http-body-util",
  "hyper",
  "hyper-util",
+ "rcgen",
+ "rustls",
  "thiserror",
  "tokio",
+ "tokio-rustls",
  "tokio-util",
  "tracing",
 ]

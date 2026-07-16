@@ -9,6 +9,7 @@ mod store;
 pub use acceptor::{server_config, tls_acceptor};
 pub use selector::CertificateResolver;
 pub use store::{Identity, load_identity};
+pub use tokio_rustls::{TlsAcceptor, server::TlsStream};
 
 use thiserror::Error;
 
