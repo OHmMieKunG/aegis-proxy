@@ -998,7 +998,35 @@ mod tests {
         assert!(response.starts_with(b"HTTP/1.1 502 Bad Gateway"));
     }
 
-    async fn tls_request(http2: bool, authority: &str) -> (Vec<u8>, StatusCode, bytes::Bytes) {
+    async fn tls_request(
+        http2: bool,
+        authority: &str,
+    ) -> (
+        Vec<u8>,
+        Option<rustls::ProtocolVersion>,
+        StatusCode,
+        bytes::Bytes,
+    ) {
+        tls_request_with_versions(
+            http2,
+            authority,
+            "1.2",
+            &[&rustls::version::TLS13, &rustls::version::TLS12],
+        )
+        .await
+    }
+
+    async fn tls_request_with_versions(
+        http2: bool,
+        authority: &str,
+        minimum_version: &str,
+        client_versions: &[&'static rustls::SupportedProtocolVersion],
+    ) -> (
+        Vec<u8>,
+        Option<rustls::ProtocolVersion>,
+        StatusCode,
+        bytes::Bytes,
+    ) {
         use age::secrecy::ExposeSecret;
         use rustls::{ClientConfig, RootCertStore, crypto::aws_lc_rs, pki_types::ServerName};
         use std::{
@@ -1062,6 +1090,7 @@ mod tests {
             config.listeners[0].protocol = "https".into();
             config.listeners[0].certificates = vec!["site".into()];
             config.tls.identity = Some(format!("file://{}", identity_path.display()));
+            config.tls.minimum_version = minimum_version.to_owned();
             config.certificates.push(CertificateConfig {
                 id: "site".into(),
                 hosts: vec!["example.test".into()],
@@ -1077,7 +1106,7 @@ mod tests {
             .expect("add test root");
         let mut client_config =
             ClientConfig::builder_with_provider(Arc::new(aws_lc_rs::default_provider()))
-                .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
+                .with_protocol_versions(client_versions)
                 .expect("TLS versions")
                 .with_root_certificates(roots)
                 .with_no_client_auth();
@@ -1099,6 +1128,7 @@ mod tests {
             .alpn_protocol()
             .expect("ALPN negotiated")
             .to_vec();
+        let protocol_version = tls.get_ref().1.protocol_version();
         let request = if http2 {
             Request::builder()
                 .uri(format!("https://{authority}/"))
@@ -1156,12 +1186,12 @@ mod tests {
         fs::remove_file(certificate_path).expect("remove certificate");
         fs::remove_file(private_key_path).expect("remove private key");
         fs::remove_file(identity_path).expect("remove age identity");
-        (negotiated, status, body)
+        (negotiated, protocol_version, status, body)
     }
 
     #[tokio::test]
     async fn terminates_tls_with_http1_alpn() {
-        let (alpn, status, body) = tls_request(false, "example.test").await;
+        let (alpn, _, status, body) = tls_request(false, "example.test").await;
         assert_eq!(alpn, b"http/1.1");
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, "ok");
@@ -1169,7 +1199,7 @@ mod tests {
 
     #[tokio::test]
     async fn proxies_http2_selected_by_alpn() {
-        let (alpn, status, body) = tls_request(true, "example.test").await;
+        let (alpn, _, status, body) = tls_request(true, "example.test").await;
         assert_eq!(alpn, b"h2");
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, "ok");
@@ -1177,8 +1207,29 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_authority_that_differs_from_sni() {
-        let (_, status, _) = tls_request(true, "other.test").await;
+        let (_, _, status, _) = tls_request(true, "other.test").await;
         assert_eq!(status, StatusCode::MISDIRECTED_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn supports_explicit_tls12_and_tls13_matrix() {
+        for (minimum, client_version, expected) in [
+            (
+                "1.2",
+                &rustls::version::TLS12,
+                rustls::ProtocolVersion::TLSv1_2,
+            ),
+            (
+                "1.3",
+                &rustls::version::TLS13,
+                rustls::ProtocolVersion::TLSv1_3,
+            ),
+        ] {
+            let (_, negotiated, status, _) =
+                tls_request_with_versions(false, "example.test", minimum, &[client_version]).await;
+            assert_eq!(negotiated, Some(expected));
+            assert_eq!(status, StatusCode::OK);
+        }
     }
 
     #[test]
