@@ -42,6 +42,7 @@ name = "aegisproxy-core"
 version = "0.1.0"
 dependencies = [
  "aegisproxy-config",
+ "aegisproxy-secrets",
  "aegisproxy-tls",
  "age",
  "arc-swap",

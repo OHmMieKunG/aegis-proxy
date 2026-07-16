@@ -13,7 +13,7 @@ use aegisproxy_config::{
     revision::{RevisionError, RevisionStore},
 };
 use aegisproxy_tls::{
-    TlsAcceptor,
+    CertificateResolver, Identity, PreparedCertificateMaps, TlsAcceptor,
     acme::{HttpChallengeRegistry, TlsAlpnChallengeRegistry},
 };
 use arc_swap::ArcSwap;
@@ -33,6 +33,8 @@ pub(crate) struct RuntimeSnapshot {
     pub(crate) config: Arc<Config>,
     pub(crate) route_index: Arc<RouteIndex>,
     pub(crate) tls_acceptors: HashMap<String, TlsAcceptor>,
+    pub(crate) tls_resolvers: HashMap<String, CertificateResolver>,
+    pub(crate) tls_identities: Arc<ArcSwap<HashMap<String, Identity>>>,
     pub(crate) upstream_clients: UpstreamClients,
     pub(crate) upstream_pools: UpstreamPools,
     pub(crate) dns_endpoints: DnsEndpoints,
@@ -90,47 +92,55 @@ impl RuntimeSnapshot {
             .map(|previous| previous.tls_challenges.clone())
             .unwrap_or_default();
         let preparation_tls_challenges = tls_challenges.clone();
-        let (tls_acceptors, upstream_clients, upstream_pools, dns_endpoints) =
-            tokio::task::spawn_blocking(move || {
-                let (mut clients, mut dns_endpoints) = build_upstream_clients(&preparation_config)?;
-                let mut pools = build_upstream_pools(&preparation_config)?;
-                if let Some((previous_config, previous_clients, previous_pools, previous_dns)) =
-                    previous_upstreams
-                {
-                    for group in &preparation_config.upstream_groups {
-                        if !previous_config
-                            .upstream_groups
-                            .iter()
-                            .any(|previous| previous == group)
-                        {
-                            continue;
+        let (
+            tls_acceptors,
+            tls_resolvers,
+            tls_identities,
+            upstream_clients,
+            upstream_pools,
+            dns_endpoints,
+        ) = tokio::task::spawn_blocking(move || {
+            let (mut clients, mut dns_endpoints) = build_upstream_clients(&preparation_config)?;
+            let mut pools = build_upstream_pools(&preparation_config)?;
+            if let Some((previous_config, previous_clients, previous_pools, previous_dns)) =
+                previous_upstreams
+            {
+                for group in &preparation_config.upstream_groups {
+                    if !previous_config
+                        .upstream_groups
+                        .iter()
+                        .any(|previous| previous == group)
+                    {
+                        continue;
+                    }
+                    if let Some(previous_pool) = previous_pools.get(&group.id) {
+                        Arc::make_mut(&mut pools)
+                            .insert(group.id.clone(), Arc::clone(previous_pool));
+                    }
+                    for endpoint in &group.endpoints {
+                        let key = super::endpoint_key(&group.id, &endpoint.id);
+                        if let Some(previous_client) = previous_clients.get(&key) {
+                            Arc::make_mut(&mut clients)
+                                .insert(key.clone(), previous_client.clone());
                         }
-                        if let Some(previous_pool) = previous_pools.get(&group.id) {
-                            Arc::make_mut(&mut pools)
-                                .insert(group.id.clone(), Arc::clone(previous_pool));
-                        }
-                        for endpoint in &group.endpoints {
-                            let key = super::endpoint_key(&group.id, &endpoint.id);
-                            if let Some(previous_client) = previous_clients.get(&key) {
-                                Arc::make_mut(&mut clients)
-                                    .insert(key.clone(), previous_client.clone());
-                            }
-                            if let Some(previous_dns) = previous_dns.get(&key) {
-                                Arc::make_mut(&mut dns_endpoints)
-                                    .insert(key, Arc::clone(previous_dns));
-                            }
+                        if let Some(previous_dns) = previous_dns.get(&key) {
+                            Arc::make_mut(&mut dns_endpoints).insert(key, Arc::clone(previous_dns));
                         }
                     }
                 }
-                Ok::<_, ProxyError>((
-                    prepare_tls(&preparation_config, preparation_tls_challenges)?,
-                    clients,
-                    pools,
-                    dns_endpoints,
-                ))
-            })
-            .await
-            .map_err(|error| ProxyError::Preparation(error.to_string()))??;
+            }
+            let tls = prepare_tls(&preparation_config, preparation_tls_challenges)?;
+            Ok::<_, ProxyError>((
+                tls.acceptors,
+                tls.resolvers,
+                tls.identities,
+                clients,
+                pools,
+                dns_endpoints,
+            ))
+        })
+        .await
+        .map_err(|error| ProxyError::Preparation(error.to_string()))??;
         let dns_resolver = prepare_dns(
             &dns_endpoints.values().cloned().collect::<Vec<_>>(),
             config.limits.max_dns_lookups,
@@ -156,6 +166,8 @@ impl RuntimeSnapshot {
             config,
             route_index,
             tls_acceptors,
+            tls_resolvers,
+            tls_identities: Arc::new(ArcSwap::from_pointee(tls_identities)),
             upstream_clients,
             upstream_pools,
             dns_endpoints,
@@ -179,6 +191,25 @@ pub struct RuntimeHandle {
     current: Arc<ArcSwap<RuntimeSnapshot>>,
     http_challenges: HttpChallengeRegistry,
     tls_challenges: TlsAlpnChallengeRegistry,
+    mutation: Arc<tokio::sync::Mutex<()>>,
+}
+
+pub(crate) struct PreparedCertificatePublication {
+    snapshot: Arc<RuntimeSnapshot>,
+    previous_identities: Arc<HashMap<String, Identity>>,
+    identities: Arc<HashMap<String, Identity>>,
+    resolvers: Vec<(CertificateResolver, PreparedCertificateMaps)>,
+}
+
+impl fmt::Debug for PreparedCertificatePublication {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PreparedCertificatePublication")
+            .field("revision", &self.snapshot.revision)
+            .field("identity_count", &self.identities.len())
+            .field("resolver_count", &self.resolvers.len())
+            .finish()
+    }
 }
 
 impl fmt::Debug for RuntimeHandle {
@@ -197,6 +228,7 @@ impl RuntimeHandle {
             current: Arc::new(ArcSwap::from(initial)),
             http_challenges: HttpChallengeRegistry::default(),
             tls_challenges,
+            mutation: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -223,6 +255,78 @@ impl RuntimeHandle {
     #[must_use]
     pub fn tls_challenges(&self) -> TlsAlpnChallengeRegistry {
         self.tls_challenges.clone()
+    }
+
+    pub(crate) async fn lock_mutation(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        Arc::clone(&self.mutation).lock_owned().await
+    }
+
+    pub(crate) fn prepare_certificate_publication(
+        &self,
+        certificate_id: &str,
+        identity: Identity,
+    ) -> Result<PreparedCertificatePublication, ProxyError> {
+        let snapshot = self.load();
+        if !snapshot
+            .config
+            .acme
+            .certificates
+            .iter()
+            .any(|certificate| certificate.id == certificate_id)
+        {
+            return Err(ProxyError::Preparation(
+                "managed certificate is not present in active configuration".into(),
+            ));
+        }
+        let previous_identities = snapshot.tls_identities.load_full();
+        let mut identities = (*previous_identities).clone();
+        identities.insert(certificate_id.to_owned(), identity);
+        let mut resolvers = Vec::new();
+        for listener in snapshot
+            .config
+            .listeners
+            .iter()
+            .filter(|listener| listener.protocol == "https")
+        {
+            let selected = listener
+                .certificates
+                .iter()
+                .filter_map(|id| identities.get(id).cloned())
+                .collect::<Vec<_>>();
+            let prepared = CertificateResolver::prepare_replacement(&selected)?;
+            let resolver = snapshot.tls_resolvers.get(&listener.id).ok_or_else(|| {
+                ProxyError::Preparation("active HTTPS resolver is missing".into())
+            })?;
+            resolvers.push((resolver.clone(), prepared));
+        }
+        Ok(PreparedCertificatePublication {
+            snapshot,
+            previous_identities,
+            identities: Arc::new(identities),
+            resolvers,
+        })
+    }
+
+    pub(crate) fn publish_certificate(
+        &self,
+        prepared: PreparedCertificatePublication,
+    ) -> Result<(), ProxyError> {
+        let current = self.load();
+        if !Arc::ptr_eq(&current, &prepared.snapshot)
+            || !Arc::ptr_eq(
+                &current.tls_identities.load_full(),
+                &prepared.previous_identities,
+            )
+        {
+            return Err(ProxyError::Preparation(
+                "runtime changed during managed certificate publication".into(),
+            ));
+        }
+        for (resolver, certificates) in prepared.resolvers {
+            resolver.publish_prepared(certificates);
+        }
+        current.tls_identities.store(prepared.identities);
+        Ok(())
     }
 }
 
@@ -306,6 +410,7 @@ impl ActivationCoordinator {
         F: Future<Output = bool>,
     {
         let _guard = self.mutation.lock().await;
+        let _runtime_guard = self.runtime.lock_mutation().await;
         if !self.administration_ready() {
             return Err(ActivationError::RecoveryRequired);
         }
@@ -470,9 +575,15 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use aegisproxy_config::{
-        AdminConfig, CertificateConfig, Config, EndpointConfig, LimitsConfig, ListenerConfig,
-        RuntimeConfig, TlsConfig, TrustedProxyConfig, UpstreamGroupConfig, revision::RevisionStore,
+        AcmeCertificateConfig, AcmeChallenge, AcmeEnvironment, AcmeIssuerConfig, AdminConfig,
+        CertificateConfig, Config, EndpointConfig, LimitsConfig, ListenerConfig, RuntimeConfig,
+        TlsConfig, TrustedProxyConfig, UpstreamGroupConfig, revision::RevisionStore,
     };
+    use aegisproxy_tls::{
+        ManagedCertificateEnvironment, ManagedCertificateProvenance, load_stored_identity,
+        persist_managed_certificate,
+    };
+    use age::secrecy::ExposeSecret;
 
     use super::*;
 
@@ -651,6 +762,112 @@ mod tests {
             Err(aegisproxy_tls::acme::TlsAlpnChallengeError::Collision)
         ));
         drop(lease);
+    }
+
+    #[tokio::test]
+    async fn missing_managed_certificate_starts_closed_then_publishes_atomically() {
+        let state = temporary_state();
+        fs::create_dir(&state).expect("state directory");
+        let identity = age::x25519::Identity::generate();
+        let identity_path = state.join("identity.txt");
+        fs::write(
+            &identity_path,
+            identity.to_string().expose_secret().as_bytes(),
+        )
+        .expect("identity file");
+        let mut managed = (*config(8080)).clone();
+        managed.runtime.state_dir = state.display().to_string();
+        managed.tls.identity = Some(format!("file://{}", identity_path.display()));
+        managed.tls.state_encryption_recipients = vec![identity.to_public().to_string()];
+        managed.listeners.push(ListenerConfig {
+            id: "https".into(),
+            bind: "127.0.0.1:8443".parse().expect("HTTPS address"),
+            protocol: "https".into(),
+            certificates: vec!["managed".into()],
+        });
+        managed.acme.issuers.push(AcmeIssuerConfig {
+            id: "pebble".into(),
+            directory_url: "https://127.0.0.1:14000/dir"
+                .parse()
+                .expect("directory URL"),
+            environment: AcmeEnvironment::Staging,
+            account_email: None,
+            terms_of_service_agreed: true,
+            ca_bundle: Some("file:///pebble-ca.pem".into()),
+            external_account: None,
+            max_concurrent_orders: 1,
+        });
+        managed.acme.certificates.push(AcmeCertificateConfig {
+            id: "managed".into(),
+            hosts: vec!["example.test".into()],
+            issuer: "pebble".into(),
+            challenge: AcmeChallenge::Http01,
+            challenge_listener: Some("http".into()),
+            dns_provider: None,
+            profile: None,
+            renew_before_days: 30,
+        });
+        let shutdown = CancellationToken::new();
+        let snapshot = RuntimeSnapshot::prepare(Arc::new(managed), "managed", &shutdown)
+            .await
+            .expect("managed snapshot");
+        assert!(
+            snapshot
+                .tls_resolvers
+                .get("https")
+                .expect("HTTPS resolver")
+                .resolve_name("example.test")
+                .is_none()
+        );
+        let runtime = RuntimeHandle::new(snapshot);
+        let generated =
+            rcgen::generate_simple_self_signed(vec!["example.test".into()]).expect("certificate");
+        persist_managed_certificate(
+            &state,
+            "managed",
+            vec!["example.test".into()],
+            generated.cert.pem().as_bytes(),
+            generated.signing_key.serialize_pem().as_bytes(),
+            ManagedCertificateProvenance {
+                issuer_id: "pebble".into(),
+                environment: ManagedCertificateEnvironment::Staging,
+                profile: None,
+            },
+            &[identity.to_public().to_string()],
+        )
+        .expect("persist managed certificate");
+        let loaded = load_stored_identity(
+            &state,
+            "managed",
+            &format!("file://{}", identity_path.display()),
+        )
+        .expect("load managed certificate");
+        let _guard = runtime.lock_mutation().await;
+        let prepared = runtime
+            .prepare_certificate_publication("managed", loaded)
+            .expect("prepare publication");
+        assert!(
+            runtime
+                .load()
+                .tls_resolvers
+                .get("https")
+                .expect("HTTPS resolver")
+                .resolve_name("example.test")
+                .is_none()
+        );
+        runtime
+            .publish_certificate(prepared)
+            .expect("publish certificate");
+        assert!(
+            runtime
+                .load()
+                .tls_resolvers
+                .get("https")
+                .expect("HTTPS resolver")
+                .resolve_name("example.test")
+                .is_some()
+        );
+        fs::remove_dir_all(state).expect("cleanup");
     }
 
     #[tokio::test]

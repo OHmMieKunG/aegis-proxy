@@ -92,6 +92,21 @@ impl AcmeIssuedCertificate {
     pub fn private_key_pem(&self) -> &[u8] {
         self.private_key_pem.as_slice()
     }
+
+    /// Revalidate this candidate as a runtime identity before durable activation.
+    pub fn runtime_identity(
+        &self,
+        id: String,
+        hosts: Vec<String>,
+    ) -> Result<crate::Identity, AcmeOrderError> {
+        identity_from_pem(
+            id,
+            hosts,
+            &self.certificate_chain_pem,
+            self.private_key_pem.as_slice(),
+        )
+        .map_err(|_| AcmeOrderError::Protocol)
+    }
 }
 
 enum AcmeChallengeResponse {

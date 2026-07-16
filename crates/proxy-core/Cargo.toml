@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 aegisproxy-config = { path = "../proxy-config" }
+aegisproxy-secrets = { path = "../proxy-secrets" }
 aegisproxy-tls = { path = "../proxy-tls" }
 arc-swap = "1"
 bytes = "1"

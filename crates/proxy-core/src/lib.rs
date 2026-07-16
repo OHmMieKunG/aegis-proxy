@@ -2,14 +2,22 @@
 #![warn(missing_debug_implementations, missing_docs)]
 //! Data-plane HTTP forwarding primitives.
 
+mod acme_manager;
 mod route;
 mod runtime;
 mod tcp;
 mod upstream;
 
 use std::{
-    collections::HashMap, convert::Infallible, error::Error, future::Future, net::SocketAddr,
-    path::PathBuf, pin::Pin, sync::Arc, time::Duration,
+    collections::HashMap,
+    convert::Infallible,
+    error::Error,
+    future::Future,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    pin::Pin,
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use aegisproxy_config::{
@@ -20,7 +28,7 @@ use aegisproxy_config::{
 use aegisproxy_tls::{
     CertificateResolver, Identity, TlsAcceptor,
     acme::{HttpChallengeError, HttpChallengeRegistry},
-    load_identity, tls_acceptor,
+    inspect_certificate, load_identity, load_stored_identity, tls_acceptor,
 };
 use http_body_util::{BodyExt, Full, Limited, combinators::BoxBody};
 use hyper::service::Service;
@@ -62,6 +70,12 @@ type UpstreamClient = Client<HttpsConnector<HttpConnector<PolicyResolver>>, Resp
 type UpstreamClients = Arc<HashMap<String, UpstreamClient>>;
 type UpstreamPools = Arc<HashMap<String, Arc<UpstreamPool>>>;
 type DnsEndpoints = Arc<HashMap<String, Arc<DnsEndpoint>>>;
+
+struct TlsPreparation {
+    acceptors: HashMap<String, TlsAcceptor>,
+    resolvers: HashMap<String, CertificateResolver>,
+    identities: HashMap<String, Identity>,
+}
 
 /// Proxy runtime error.
 #[derive(Debug, Error)]
@@ -272,7 +286,10 @@ async fn serve_bound(
             "no public listeners configured",
         )));
     }
+    let acme_tasks = acme_manager::start(runtime.clone(), shutdown.clone());
     while tasks.join_next().await.is_some() {}
+    shutdown.cancel();
+    acme_tasks.wait().await;
     let snapshot = runtime.load();
     for pool in snapshot.upstream_pools.values() {
         let handles: Vec<_> = pool
@@ -643,7 +660,7 @@ fn health_interval(endpoint_id: &str, policy: &HealthCheckConfig) -> Duration {
 fn prepare_tls(
     config: &Config,
     tls_challenges: aegisproxy_tls::acme::TlsAlpnChallengeRegistry,
-) -> Result<HashMap<String, TlsAcceptor>, ProxyError> {
+) -> Result<TlsPreparation, ProxyError> {
     let mut identities = HashMap::new();
     let decryption_identity = config.tls.identity.as_deref();
     for certificate in &config.certificates {
@@ -660,7 +677,67 @@ fn prepare_tls(
         )?;
         identities.insert(certificate.id.as_str(), identity);
     }
+    for certificate in &config.acme.certificates {
+        let state_dir = Path::new(&config.runtime.state_dir);
+        let certificate_dir = state_dir.join("certificates").join(&certificate.id);
+        if !certificate_dir.exists() {
+            continue;
+        }
+        let metadata = inspect_certificate(state_dir, &certificate.id)?;
+        if metadata.hosts != certificate.hosts {
+            return Err(ProxyError::Preparation(format!(
+                "stored ACME certificate {} hosts do not match configuration",
+                certificate.id
+            )));
+        }
+        let expected_environment = match config
+            .acme
+            .issuers
+            .iter()
+            .find(|issuer| issuer.id == certificate.issuer)
+            .map(|issuer| issuer.environment)
+        {
+            Some(aegisproxy_config::AcmeEnvironment::Production) => {
+                aegisproxy_tls::ManagedCertificateEnvironment::Production
+            }
+            Some(aegisproxy_config::AcmeEnvironment::Staging) => {
+                aegisproxy_tls::ManagedCertificateEnvironment::Staging
+            }
+            None => {
+                return Err(ProxyError::Preparation(format!(
+                    "ACME certificate {} references missing issuer",
+                    certificate.id
+                )));
+            }
+        };
+        if !metadata.managed.as_ref().is_some_and(|provenance| {
+            provenance.issuer_id == certificate.issuer
+                && provenance.environment == expected_environment
+                && provenance.profile == certificate.profile
+        }) {
+            return Err(ProxyError::Preparation(format!(
+                "stored ACME certificate {} provenance does not match configuration",
+                certificate.id
+            )));
+        }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| ProxyError::Preparation("system clock predates Unix epoch".into()))?
+            .as_secs();
+        if metadata.not_after_unix_secs >= 0 && metadata.not_after_unix_secs as u64 <= now {
+            continue;
+        }
+        let identity = load_stored_identity(
+            state_dir,
+            &certificate.id,
+            decryption_identity.ok_or_else(|| {
+                ProxyError::Preparation("tls.identity is required for managed certificates".into())
+            })?,
+        )?;
+        identities.insert(certificate.id.as_str(), identity);
+    }
     let mut acceptors = HashMap::new();
+    let mut resolvers = HashMap::new();
     for listener in config
         .listeners
         .iter()
@@ -669,23 +746,38 @@ fn prepare_tls(
         let selected: Result<Vec<Identity>, ProxyError> = listener
             .certificates
             .iter()
-            .map(|id| {
-                identities.get(id.as_str()).cloned().ok_or_else(|| {
-                    ProxyError::Preparation(format!(
-                        "listener {} references missing certificate {id}",
-                        listener.id
-                    ))
-                })
+            .filter_map(|id| match identities.get(id.as_str()).cloned() {
+                Some(identity) => Some(Ok(identity)),
+                None if config
+                    .acme
+                    .certificates
+                    .iter()
+                    .any(|certificate| certificate.id == *id) =>
+                {
+                    None
+                }
+                None => Some(Err(ProxyError::Preparation(format!(
+                    "listener {} references missing certificate {id}",
+                    listener.id
+                )))),
             })
             .collect();
         let resolver =
             CertificateResolver::with_acme_challenges(&selected?, tls_challenges.clone())?;
         acceptors.insert(
             listener.id.clone(),
-            tls_acceptor(resolver, &config.tls.minimum_version)?,
+            tls_acceptor(resolver.clone(), &config.tls.minimum_version)?,
         );
+        resolvers.insert(listener.id.clone(), resolver);
     }
-    Ok(acceptors)
+    Ok(TlsPreparation {
+        acceptors,
+        resolvers,
+        identities: identities
+            .into_iter()
+            .map(|(id, identity)| (id.to_owned(), identity))
+            .collect(),
+    })
 }
 
 #[derive(Clone)]

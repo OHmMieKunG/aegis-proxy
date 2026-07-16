@@ -854,12 +854,6 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         ));
     }
     validate_acme(config, &mut certificate_ids, &mut certificate_hosts)?;
-    if !config.acme.certificates.is_empty() {
-        return Err(ConfigError::Invalid(
-            "ACME certificate automation is not activated until the Phase 6 scheduler is wired"
-                .into(),
-        ));
-    }
     if config.limits.max_connections == 0 || config.limits.max_connections > 1_000_000 {
         return Err(ConfigError::Invalid(
             "limits.max_connections is outside 1..=1000000".into(),
@@ -2154,14 +2148,13 @@ mod tests {
     }
 
     #[test]
-    fn validates_acme_policy_before_scheduler_gate() {
+    fn accepts_acme_after_all_policy_checks() {
         let config = acme_config(AcmeChallenge::Http01, "example.test");
         let mut certificate_ids = HashSet::new();
         let mut certificate_hosts = HashSet::new();
         validate_acme(&config, &mut certificate_ids, &mut certificate_hosts)
             .expect("valid ACME policy");
-        let error = validate(&config).expect_err("inactive scheduler must fail closed");
-        assert!(error.to_string().contains("scheduler is wired"));
+        validate(&config).expect("wired scheduler accepts valid ACME policy");
     }
 
     #[test]
