@@ -115,6 +115,8 @@ pub struct LimitsConfig {
     pub max_http2_streams: u32,
     /// Maximum concurrent active upstream health probes.
     pub max_health_checks: usize,
+    /// Maximum concurrent upstream DNS lookups.
+    pub max_dns_lookups: usize,
     /// Maximum request body bytes.
     pub max_request_body: usize,
     /// Request header timeout seconds.
@@ -132,6 +134,7 @@ impl Default for LimitsConfig {
             max_request_target: 8 * 1024,
             max_http2_streams: 128,
             max_health_checks: 64,
+            max_dns_lookups: 32,
             max_request_body: 32 * 1024 * 1024,
             request_header_timeout_secs: 10,
             response_header_timeout_secs: 30,
@@ -720,6 +723,11 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             "limits.max_health_checks is outside 1..=4096".into(),
         ));
     }
+    if config.limits.max_dns_lookups == 0 || config.limits.max_dns_lookups > 4_096 {
+        return Err(ConfigError::Invalid(
+            "limits.max_dns_lookups is outside 1..=4096".into(),
+        ));
+    }
     if config.limits.max_request_body == 0 || config.limits.max_request_body > 1024 * 1024 * 1024 {
         return Err(ConfigError::Invalid(
             "limits.max_request_body is outside 1..=1073741824".into(),
@@ -902,20 +910,23 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                 _ => {}
             }
             let host = endpoint.url.host_str().unwrap_or_default();
-            let ip = host.parse::<IpAddr>().map_err(|_| {
-                ConfigError::Invalid(format!(
-                    "endpoint {} must use a literal IP until DNS discovery is implemented",
-                    endpoint.id
-                ))
-            })?;
-            validate_egress_ip(ip, &group.allowed_cidrs, &group.denied_cidrs).map_err(
-                |reason| {
+            if let Ok(ip) = host.parse::<IpAddr>() {
+                validate_egress_ip(ip, &group.allowed_cidrs, &group.denied_cidrs).map_err(
+                    |reason| {
+                        ConfigError::Invalid(format!(
+                            "endpoint {} is not allowed: {reason}",
+                            endpoint.id
+                        ))
+                    },
+                )?;
+            } else {
+                valid_upstream_host(host).map_err(|reason| {
                     ConfigError::Invalid(format!(
-                        "endpoint {} is not allowed: {reason}",
+                        "endpoint {} has invalid DNS name: {reason}",
                         endpoint.id
                     ))
-                },
-            )?;
+                })?;
+            }
         }
     }
     let listener_ids: HashSet<&str> = config.listeners.iter().map(|l| l.id.as_str()).collect();
@@ -1001,12 +1012,6 @@ fn validate_upstream_policy(
     {
         return Err(ConfigError::Invalid(format!(
             "{} contains an unsafe answer, timeout, TTL, or stale bound",
-            field("dns")
-        )));
-    }
-    if group.dns != DnsConfig::default() {
-        return Err(ConfigError::Invalid(format!(
-            "{} is not activated until the Phase 4 DNS refresh task is installed",
             field("dns")
         )));
     }
@@ -1337,6 +1342,24 @@ pub fn validate_egress_ip(
     Ok(())
 }
 
+fn valid_upstream_host(value: &str) -> Result<(), &'static str> {
+    if value.is_empty() || value.len() > 253 || value != value.to_ascii_lowercase() {
+        return Err("name must be bounded lowercase ASCII");
+    }
+    if value.split('.').any(|label| {
+        label.is_empty()
+            || label.len() > 63
+            || label.starts_with('-')
+            || label.ends_with('-')
+            || !label
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    }) {
+        return Err("name contains an invalid DNS label");
+    }
+    Ok(())
+}
+
 fn valid_id(value: &str) -> Result<(), ConfigError> {
     let bytes = value.as_bytes();
     let valid = bytes.first().is_some_and(u8::is_ascii_lowercase)
@@ -1430,6 +1453,9 @@ mod tests {
         config.limits.max_header_bytes = LimitsConfig::default().max_header_bytes;
         config.limits.max_request_target = 512;
         assert!(validate(&config).is_err());
+        config.limits.max_request_target = LimitsConfig::default().max_request_target;
+        config.limits.max_dns_lookups = 0;
+        assert!(validate(&config).is_err());
     }
 
     #[test]
@@ -1520,6 +1546,35 @@ mod tests {
         config.upstream_groups[0].endpoints[0].url = "http://127.0.0.1:8080".parse().expect("URL");
         config.upstream_groups[0].endpoints[0].server_name = None;
         assert!(validate(&config).is_err());
+    }
+
+    #[test]
+    fn accepts_canonical_dns_upstream_and_rejects_invalid_label() {
+        let mut config = base_config();
+        config.upstream_groups.push(UpstreamGroupConfig {
+            id: "app".into(),
+            endpoints: vec![EndpointConfig {
+                id: "app-1".into(),
+                url: "http://app.internal:8080"
+                    .parse()
+                    .expect("DNS endpoint URL"),
+                weight: 1,
+                server_name: None,
+                ca_bundle: None,
+            }],
+            ..UpstreamGroupConfig::default()
+        });
+        validate(&config).expect("canonical DNS endpoint");
+
+        config.upstream_groups[0].endpoints[0].url = "http://bad_name.internal:8080"
+            .parse()
+            .expect("invalid DNS endpoint URL");
+        assert!(
+            validate(&config)
+                .expect_err("underscore label must fail")
+                .to_string()
+                .contains("invalid DNS name")
+        );
     }
 
     fn test_route() -> RouteConfig {
@@ -1689,12 +1744,7 @@ mod tests {
         group.dns = DnsConfig::default();
 
         group.dns.max_answers = 8;
-        assert!(
-            validate_upstream_policy(0, &group)
-                .expect_err("inactive DNS policy must fail")
-                .to_string()
-                .contains("not activated")
-        );
+        validate_upstream_policy(0, &group).expect("active DNS policy must validate");
         group.dns = DnsConfig::default();
 
         group.drain_timeout_secs = 10;

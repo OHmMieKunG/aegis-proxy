@@ -35,7 +35,9 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
-use upstream::{GuardedBody, UpstreamPool};
+use upstream::{
+    DnsEndpoint, GuardedBody, PolicyResolver, UpstreamPool, prepare_dns, start_dns_refreshes,
+};
 
 pub use route::RouteIndex;
 use route::{PathError, canonical_host, canonicalize_request_path, request_host};
@@ -44,9 +46,10 @@ use route::{PathError, canonical_host, canonicalize_request_path, request_host};
 pub type BoxError = Box<dyn Error + Send + Sync>;
 /// Boxed response body used by the server and upstream client.
 pub type ResponseBody = BoxBody<bytes::Bytes, BoxError>;
-type UpstreamClient = Client<HttpsConnector<HttpConnector>, ResponseBody>;
+type UpstreamClient = Client<HttpsConnector<HttpConnector<PolicyResolver>>, ResponseBody>;
 type UpstreamClients = Arc<HashMap<String, UpstreamClient>>;
 type UpstreamPools = Arc<HashMap<String, Arc<UpstreamPool>>>;
+type DnsEndpoints = Arc<HashMap<String, Arc<DnsEndpoint>>>;
 
 /// Proxy runtime error.
 #[derive(Debug, Error)]
@@ -70,16 +73,24 @@ pub async fn run(config: Arc<Config>, shutdown: CancellationToken) -> Result<(),
     aegisproxy_config::validate(&config)?;
     let route_index = Arc::new(RouteIndex::compile(&config));
     let preparation_config = Arc::clone(&config);
-    let (mut tls_acceptors, upstream_clients, upstream_pools) =
+    let (mut tls_acceptors, upstream_clients, upstream_pools, dns_endpoints) =
         tokio::task::spawn_blocking(move || {
+            let (clients, dns_endpoints) = build_upstream_clients(&preparation_config)?;
             Ok::<_, ProxyError>((
                 prepare_tls(&preparation_config)?,
-                build_upstream_clients(&preparation_config)?,
+                clients,
                 build_upstream_pools(&preparation_config)?,
+                dns_endpoints,
             ))
         })
         .await
         .map_err(|error| ProxyError::Preparation(error.to_string()))??;
+    let dns_resolver = prepare_dns(
+        &dns_endpoints.values().cloned().collect::<Vec<_>>(),
+        config.limits.max_dns_lookups,
+    )
+    .await
+    .map_err(|error| ProxyError::Preparation(error.to_string()))?;
     let handshake_permits = Arc::new(Semaphore::new(config.tls.max_handshakes));
     let mut tasks = tokio::task::JoinSet::new();
     for listener in config
@@ -122,15 +133,28 @@ pub async fn run(config: Arc<Config>, shutdown: CancellationToken) -> Result<(),
             "no HTTP or HTTPS listeners configured",
         )));
     }
-    let health_tasks =
-        start_active_health_checks(&config, &upstream_clients, &upstream_pools, &shutdown)?;
+    let health_tasks = start_active_health_checks(
+        &config,
+        &upstream_clients,
+        &upstream_pools,
+        &dns_endpoints,
+        &shutdown,
+    )?;
+    let dns_tasks = start_dns_refreshes(
+        &dns_endpoints.values().cloned().collect::<Vec<_>>(),
+        dns_resolver,
+        config.limits.max_dns_lookups,
+        &shutdown,
+    );
     while tasks.join_next().await.is_some() {}
     health_tasks.wait().await;
+    dns_tasks.wait().await;
     Ok(())
 }
 
-fn build_upstream_clients(config: &Config) -> Result<UpstreamClients, ProxyError> {
+fn build_upstream_clients(config: &Config) -> Result<(UpstreamClients, DnsEndpoints), ProxyError> {
     let mut clients = HashMap::new();
+    let mut dns_endpoints = HashMap::new();
     for group in &config.upstream_groups {
         for endpoint in &group.endpoints {
             let server_name = endpoint
@@ -146,6 +170,12 @@ fn build_upstream_clients(config: &Config) -> Result<UpstreamClients, ProxyError
                 })
                 .transpose()?;
             let tls_config = aegisproxy_tls::client_config(endpoint.ca_bundle.as_deref())?;
+            let dns_endpoint = Arc::new(
+                DnsEndpoint::new(endpoint, group)
+                    .map_err(|error| ProxyError::Preparation(error.to_string()))?,
+            );
+            let mut http = HttpConnector::new_with_resolver(dns_endpoint.resolver());
+            http.enforce_http(false);
             let connector = HttpsConnectorBuilder::new()
                 .with_tls_config(tls_config)
                 .https_or_http()
@@ -158,7 +188,7 @@ fn build_upstream_clients(config: &Config) -> Result<UpstreamClients, ProxyError
                 })
                 .enable_http1()
                 .enable_http2()
-                .build();
+                .wrap_connector(http);
             let client = Client::builder(TokioExecutor::new()).build(connector);
             let key = endpoint_key(&group.id, &endpoint.id);
             if clients.insert(key, client).is_some() {
@@ -167,9 +197,16 @@ fn build_upstream_clients(config: &Config) -> Result<UpstreamClients, ProxyError
                     group.id, endpoint.id
                 )));
             }
+            let key = endpoint_key(&group.id, &endpoint.id);
+            if dns_endpoints.insert(key, dns_endpoint).is_some() {
+                return Err(ProxyError::Preparation(format!(
+                    "duplicate DNS endpoint {}/{}",
+                    group.id, endpoint.id
+                )));
+            }
         }
     }
-    Ok(Arc::new(clients))
+    Ok((Arc::new(clients), Arc::new(dns_endpoints)))
 }
 
 fn build_upstream_pools(config: &Config) -> Result<UpstreamPools, ProxyError> {
@@ -195,6 +232,7 @@ fn start_active_health_checks(
     config: &Config,
     clients: &UpstreamClients,
     pools: &UpstreamPools,
+    dns_endpoints: &DnsEndpoints,
     shutdown: &CancellationToken,
 ) -> Result<TaskTracker, ProxyError> {
     let tracker = TaskTracker::new();
@@ -217,6 +255,16 @@ fn start_active_health_checks(
                         endpoint.config().id
                     ))
                 })?;
+            let dns_endpoint = dns_endpoints
+                .get(&endpoint_key(&group.id, &endpoint.config().id))
+                .cloned()
+                .ok_or_else(|| {
+                    ProxyError::Preparation(format!(
+                        "DNS endpoint {}/{} is missing",
+                        group.id,
+                        endpoint.config().id
+                    ))
+                })?;
             let endpoint = Arc::clone(endpoint);
             let policy = policy.clone();
             let permits = Arc::clone(&permits);
@@ -230,7 +278,13 @@ fn start_active_health_checks(
                             Err(_) => break,
                         },
                     };
-                    let healthy = active_health_probe(&client, endpoint.config(), &policy).await;
+                    let healthy = active_health_probe(
+                        &client,
+                        &dns_endpoint,
+                        endpoint.config(),
+                        &policy,
+                    )
+                    .await;
                     drop(permit);
                     if healthy {
                         endpoint
@@ -255,22 +309,29 @@ fn start_active_health_checks(
 
 async fn active_health_probe(
     client: &UpstreamClient,
+    dns_endpoint: &DnsEndpoint,
     endpoint: &EndpointConfig,
     policy: &HealthCheckConfig,
 ) -> bool {
     match policy.kind {
         HealthCheckKind::Tcp => {
-            let Some(address) = endpoint_socket_addr(endpoint) else {
+            let Ok(addresses) = dns_endpoint.connection_addresses() else {
                 return false;
             };
-            matches!(
-                tokio::time::timeout(
-                    Duration::from_secs(policy.timeout_secs),
-                    TcpStream::connect(address)
-                )
-                .await,
-                Ok(Ok(_))
-            )
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(policy.timeout_secs);
+            for address in addresses {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() {
+                    return false;
+                }
+                if matches!(
+                    tokio::time::timeout(remaining, TcpStream::connect(address)).await,
+                    Ok(Ok(_))
+                ) {
+                    return true;
+                }
+            }
+            false
         }
         HealthCheckKind::Http => {
             let Ok(method) = hyper::Method::from_bytes(policy.method.as_bytes()) else {
@@ -303,13 +364,6 @@ async fn active_health_probe(
             )
         }
     }
-}
-
-fn endpoint_socket_addr(endpoint: &EndpointConfig) -> Option<SocketAddr> {
-    Some(SocketAddr::new(
-        endpoint.url.host_str()?.parse().ok()?,
-        endpoint.url.port()?,
-    ))
 }
 
 fn endpoint_authority(endpoint: &EndpointConfig) -> Option<HeaderValue> {
@@ -1890,19 +1944,78 @@ mod tests {
         });
         config.upstream_groups[0].endpoints[0].url =
             format!("http://{address}").parse().expect("endpoint URL");
-        let clients = build_upstream_clients(&config).expect("upstream clients");
+        let (clients, dns_endpoints) = build_upstream_clients(&config).expect("upstream clients");
         let client = clients.get("app/app-1").expect("upstream client");
+        let dns_endpoint = dns_endpoints.get("app/app-1").expect("DNS endpoint");
         let policy = aegisproxy_config::HealthCheckConfig {
             kind: HealthCheckKind::Tcp,
             ..aegisproxy_config::HealthCheckConfig::default()
         };
         assert!(
-            active_health_probe(client, &config.upstream_groups[0].endpoints[0], &policy).await
+            active_health_probe(
+                client,
+                dns_endpoint,
+                &config.upstream_groups[0].endpoints[0],
+                &policy,
+            )
+            .await
         );
         drop(listener);
         assert!(
-            !active_health_probe(client, &config.upstream_groups[0].endpoints[0], &policy).await
+            !active_health_probe(
+                client,
+                dns_endpoint,
+                &config.upstream_groups[0].endpoints[0],
+                &policy,
+            )
+            .await
         );
+    }
+
+    #[tokio::test]
+    async fn custom_dns_resolver_connects_only_to_pinned_address() {
+        let (upstream_addr, upstream_task) = identified_upstream(b"dns").await;
+        let mut config = config(RouteConfig {
+            id: "test".into(),
+            listeners: vec!["public".into()],
+            hosts: vec!["example.test".into()],
+            paths: vec![],
+            path_prefixes: vec!["/".into()],
+            methods: vec![],
+            headers: vec![],
+            default: false,
+            priority: 0,
+            middlewares: vec![],
+            upstream_group: Some("app".into()),
+        });
+        config.upstream_groups[0].endpoints[0].url =
+            format!("http://app.internal:{}", upstream_addr.port())
+                .parse()
+                .expect("DNS endpoint URL");
+        let (clients, dns_endpoints) = build_upstream_clients(&config).expect("upstream clients");
+        dns_endpoints
+            .get("app/app-1")
+            .expect("DNS endpoint")
+            .install_test_answers(vec![upstream_addr.ip()])
+            .expect("DNS answer");
+        let request = Request::builder()
+            .uri(format!("http://app.internal:{}/", upstream_addr.port()))
+            .header(HOST, format!("app.internal:{}", upstream_addr.port()))
+            .body(full_body(b""))
+            .expect("request");
+        let response = clients
+            .get("app/app-1")
+            .expect("client")
+            .request(request)
+            .await
+            .expect("resolved request")
+            .into_body()
+            .collect()
+            .await
+            .expect("response body")
+            .to_bytes();
+        assert_eq!(response, b"dns".as_slice());
+        upstream_task.abort();
     }
 
     #[tokio::test]

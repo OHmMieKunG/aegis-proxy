@@ -14,6 +14,8 @@ Phase 0 inventory; versions are locked in `Cargo.lock` and must be re-reviewed o
 | rustls/rustls-pemfile | TLS and certificate parsing | Phase 2 selected provider | Apache-2.0/MIT/ISC | Crypto provider/native build reviewed | OpenSSL | Security advisory gate |
 | tokio-rustls | Async Rustls accept/connect adapters | `aws_lc_rs`, `tls12` | MIT/Apache-2.0 | AWS-LC native build | manual Tokio adapter | Review with Rustls |
 | hyper-rustls | Verified pooled HTTPS/H2 upstream connections | `aws-lc-rs`, `http1`, `http2`, `tls12`, `webpki-tokio` | Apache-2.0/ISC/MIT | Rustls/AWS-LC native build | custom connector | Review with Hyper and Rustls |
+| hickory-resolver | Bounded async A/AAAA resolution and TTL metadata | `system-config`, `tokio`; defaults/TLS/DNSSEC disabled | MIT/Apache-2.0 | No native code in selected features; transitive safe/unsafe review required | system resolver, custom DNS client | Pin 0.26 lockfile; resolver/rebinding tests and advisory gate on upgrade |
+| tower-service | Custom Hyper DNS resolver service contract | default | MIT | No native code; no known direct unsafe surface | direct connector implementation | Track with Hyper utility stack |
 | webpki-roots | Mozilla-derived default upstream trust anchors | default | MPL-2.0 | Static data; no native code | OS trust store | Review root updates with Rustls releases |
 | rustls-webpki | Certificate metadata, path, validity, and name validation | `aws-lc-rs`, `std` | ISC | AWS-LC native build | Rustls verifier internals | Review with Rustls |
 | x509-parser | Bounded certificate issuer/validity metadata | no optional features | MIT/Apache-2.0 | Crate forbids unsafe; untrusted ASN.1 parser | custom DER parser | Pin; retain parser/fuzz review on upgrade |

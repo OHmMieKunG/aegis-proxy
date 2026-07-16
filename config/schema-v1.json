@@ -78,6 +78,7 @@
         "max_request_target": { "type": "integer", "minimum": 1024, "maximum": 65536, "default": 8192 },
         "max_http2_streams": { "type": "integer", "minimum": 1, "maximum": 10000, "default": 128 },
         "max_health_checks": { "type": "integer", "minimum": 1, "maximum": 4096, "default": 64 },
+        "max_dns_lookups": { "type": "integer", "minimum": 1, "maximum": 4096, "default": 32 },
         "max_request_body": { "type": "integer", "minimum": 1, "maximum": 1073741824, "default": 33554432 },
         "request_header_timeout_secs": { "type": "integer", "minimum": 1, "maximum": 300, "default": 10 },
         "response_header_timeout_secs": { "type": "integer", "minimum": 1, "maximum": 3600, "default": 30 }
