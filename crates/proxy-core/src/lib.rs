@@ -280,7 +280,16 @@ impl ProxyService {
             parts.headers.remove(name);
         }
         if let Some(host) = endpoint.url.host_str() {
-            if let Ok(value) = HeaderValue::from_str(host) {
+            let mut authority = if host.contains(':') {
+                format!("[{host}]")
+            } else {
+                host.to_owned()
+            };
+            if let Some(port) = endpoint.url.port() {
+                authority.push(':');
+                authority.push_str(&port.to_string());
+            }
+            if let Ok(value) = HeaderValue::from_str(&authority) {
                 parts.headers.insert(HOST, value);
             }
         }
@@ -683,7 +692,9 @@ mod tests {
         let upstream_task = tokio::spawn(async move {
             let (mut stream, _) = upstream.accept().await.expect("upstream accept");
             let mut request = vec![0_u8; 4096];
-            let _ = stream.read(&mut request).await.expect("upstream read");
+            let count = stream.read(&mut request).await.expect("upstream read");
+            let request = std::str::from_utf8(&request[..count]).expect("request text");
+            assert!(request.contains(&format!("host: {upstream_addr}")));
             request_seen_tx.send(()).expect("signal request");
             release_rx.await.expect("release response");
             stream
