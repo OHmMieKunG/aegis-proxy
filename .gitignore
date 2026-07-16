@@ -1,0 +1,13 @@
+/target/
+/state/
+/.cargo/
+*.log
+*.pem
+*.key
+*.crt
+*.p12
+*.sqlite*
+.env
+.env.*
+!.env.example
+
