@@ -256,7 +256,7 @@ fn write_generation(
     Ok(())
 }
 
-fn generation_id() -> Result<String, TlsError> {
+pub(crate) fn generation_id() -> Result<String, TlsError> {
     Ok(SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| TlsError::StoreFormat("system clock predates Unix epoch".into()))?
@@ -279,7 +279,7 @@ fn parse_public_metadata(pem: &[u8]) -> Result<(String, i64, i64), TlsError> {
     ))
 }
 
-fn validate_id(id: &str) -> Result<(), TlsError> {
+pub(crate) fn validate_id(id: &str) -> Result<(), TlsError> {
     if id.is_empty()
         || id.len() > 64
         || !id
@@ -318,7 +318,7 @@ fn validate_host(host: &str) -> Result<(), TlsError> {
         .map_err(|_| TlsError::StoreFormat(format!("invalid certificate host {host:?}")))
 }
 
-fn create_private_dir(path: &Path) -> Result<(), TlsError> {
+pub(crate) fn create_private_dir(path: &Path) -> Result<(), TlsError> {
     fs::create_dir_all(path)?;
     #[cfg(unix)]
     {
@@ -328,7 +328,7 @@ fn create_private_dir(path: &Path) -> Result<(), TlsError> {
     Ok(())
 }
 
-fn write_private_file(path: &Path, contents: &[u8]) -> Result<(), TlsError> {
+pub(crate) fn write_private_file(path: &Path, contents: &[u8]) -> Result<(), TlsError> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -342,7 +342,7 @@ fn write_private_file(path: &Path, contents: &[u8]) -> Result<(), TlsError> {
     Ok(())
 }
 
-fn read_bounded(path: &Path, max_bytes: usize) -> Result<Vec<u8>, TlsError> {
+pub(crate) fn read_bounded(path: &Path, max_bytes: usize) -> Result<Vec<u8>, TlsError> {
     let mut bytes = Vec::new();
     File::open(path)?
         .take(max_bytes.saturating_add(1) as u64)
@@ -360,6 +360,17 @@ fn file_reference(path: &Path) -> String {
     #[cfg(windows)]
     let path = path.strip_prefix(r"\\?\").unwrap_or(&path);
     format!("file://{path}")
+}
+
+#[cfg(unix)]
+pub(crate) fn sync_directory(path: &Path) -> Result<(), TlsError> {
+    File::open(path)?.sync_all()?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub(crate) fn sync_directory(_path: &Path) -> Result<(), TlsError> {
+    Ok(())
 }
 
 #[cfg(test)]

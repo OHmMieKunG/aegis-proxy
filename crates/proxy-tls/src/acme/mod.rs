@@ -5,7 +5,10 @@ mod challenge;
 mod client;
 mod scheduler;
 
-pub use account::{AcmeAccountError, decrypt_account_credentials, encrypt_account_credentials};
+pub use account::{
+    AcmeAccountError, StoredAcmeAccount, StoredAcmeEnvironment, decrypt_account_credentials,
+    encrypt_account_credentials, load_account_generation, persist_account_generation,
+};
 pub use challenge::{HttpChallengeError, HttpChallengeLease, HttpChallengeRegistry};
 pub use client::{AcmeClient, AcmeClientError};
 pub use scheduler::{
