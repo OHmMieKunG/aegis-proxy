@@ -1685,7 +1685,10 @@ mod tests {
         .expect("write second config");
         let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
         loop {
-            if proxy_get(proxy_addr).await.ends_with(b"second") {
+            let response = proxy_get(proxy_addr).await;
+            assert!(response.starts_with(b"HTTP/1.1 200 OK"));
+            assert!(response.ends_with(b"first") || response.ends_with(b"second"));
+            if response.ends_with(b"second") {
                 break;
             }
             assert!(tokio::time::Instant::now() < deadline, "reload timed out");
