@@ -5,13 +5,22 @@ use std::{
     time::{Duration, Instant},
 };
 
+use rcgen::{CertificateParams, CustomExtension, DistinguishedName, KeyPair, PublicKeyData};
+use rustls::{
+    crypto::aws_lc_rs,
+    pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
+    sign::CertifiedKey,
+};
 use thiserror::Error;
+use time::OffsetDateTime;
+use x509_parser::{extensions::GeneralName, parse_x509_certificate};
 
 const HTTP_CHALLENGE_PREFIX: &str = "/.well-known/acme-challenge/";
 const MAX_CHALLENGES: usize = 256;
 const MAX_TOKEN_BYTES: usize = 256;
 const MAX_KEY_AUTHORIZATION_BYTES: usize = 1024;
 const MAX_LIFETIME: Duration = Duration::from_secs(60 * 60);
+const TLS_ALPN_PROTOCOL: &[u8] = b"acme-tls/1";
 
 /// Failure to install an isolated HTTP-01 challenge response.
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
@@ -28,6 +37,32 @@ pub enum HttpChallengeError {
     /// The registry lock was poisoned; challenge handling fails closed.
     #[error("HTTP-01 challenge registry is unavailable")]
     Unavailable,
+}
+
+/// Failure to install an isolated TLS-ALPN-01 certificate.
+#[derive(Clone, Debug, Error, Eq, PartialEq)]
+pub enum TlsAlpnChallengeError {
+    /// SNI, digest, or lifetime was invalid.
+    #[error("invalid TLS-ALPN-01 challenge material")]
+    Invalid,
+    /// The bounded registry is full.
+    #[error("TLS-ALPN-01 challenge registry is full")]
+    Full,
+    /// The SNI is already owned by another active authorization.
+    #[error("TLS-ALPN-01 challenge SNI collision")]
+    Collision,
+    /// Certificate generation or the registry lock failed closed.
+    #[error("TLS-ALPN-01 challenge registry is unavailable")]
+    Unavailable,
+    /// Ephemeral certificate generation failed without exposing key material.
+    #[error("TLS-ALPN-01 certificate generation failed")]
+    Generation,
+    /// The generated certificate did not satisfy the RFC 8737 invariant checks.
+    #[error("TLS-ALPN-01 certificate validation failed")]
+    Certificate,
+    /// Rustls rejected the private key or its public key did not match the certificate.
+    #[error("TLS-ALPN-01 certificate key assembly failed")]
+    PrivateKey,
 }
 
 #[derive(Debug)]
@@ -150,6 +185,211 @@ pub struct HttpChallengeLease {
     registry: HttpChallengeRegistry,
     token: String,
     generation: u64,
+}
+
+#[derive(Debug)]
+struct TlsAlpnChallenge {
+    generation: u64,
+    key: Arc<CertifiedKey>,
+    expires_at: Instant,
+}
+
+#[derive(Debug, Default)]
+struct TlsAlpnRegistryState {
+    next_generation: u64,
+    challenges: HashMap<String, TlsAlpnChallenge>,
+}
+
+/// Bounded ephemeral TLS-ALPN-01 certificates selected only for exact SNI and ACME ALPN.
+#[derive(Clone, Default)]
+pub struct TlsAlpnChallengeRegistry {
+    state: Arc<Mutex<TlsAlpnRegistryState>>,
+}
+
+impl fmt::Debug for TlsAlpnChallengeRegistry {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TlsAlpnChallengeRegistry")
+            .finish_non_exhaustive()
+    }
+}
+
+impl TlsAlpnChallengeRegistry {
+    /// Generate and install one exact-SNI ephemeral challenge certificate.
+    pub async fn install(
+        &self,
+        identifier: &str,
+        digest: [u8; 32],
+        lifetime: Duration,
+    ) -> Result<TlsAlpnChallengeLease, TlsAlpnChallengeError> {
+        if !valid_identifier(identifier) || lifetime.is_zero() || lifetime > MAX_LIFETIME {
+            return Err(TlsAlpnChallengeError::Invalid);
+        }
+        let certificate_identifier = identifier.to_owned();
+        let certificate_key = tokio::task::spawn_blocking(move || {
+            tls_alpn_certified_key(&certificate_identifier, digest, lifetime)
+        })
+        .await
+        .map_err(|_| TlsAlpnChallengeError::Unavailable)??;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| TlsAlpnChallengeError::Unavailable)?;
+        prune_tls_alpn_expired(&mut state, Instant::now());
+        if state.challenges.contains_key(identifier) {
+            return Err(TlsAlpnChallengeError::Collision);
+        }
+        if state.challenges.len() >= MAX_CHALLENGES {
+            return Err(TlsAlpnChallengeError::Full);
+        }
+        state.next_generation = state.next_generation.wrapping_add(1);
+        let generation = state.next_generation;
+        state.challenges.insert(
+            identifier.to_owned(),
+            TlsAlpnChallenge {
+                generation,
+                key: certificate_key,
+                expires_at: Instant::now() + lifetime,
+            },
+        );
+        Ok(TlsAlpnChallengeLease {
+            registry: self.clone(),
+            identifier: identifier.to_owned(),
+            generation,
+        })
+    }
+
+    /// Resolve an exact canonical SNI. Callers must separately require `acme-tls/1` ALPN.
+    pub(crate) fn resolve_name(
+        &self,
+        identifier: &str,
+    ) -> Result<Option<Arc<CertifiedKey>>, TlsAlpnChallengeError> {
+        if !valid_identifier(identifier) {
+            return Ok(None);
+        }
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| TlsAlpnChallengeError::Unavailable)?;
+        prune_tls_alpn_expired(&mut state, Instant::now());
+        Ok(state
+            .challenges
+            .get(identifier)
+            .map(|challenge| Arc::clone(&challenge.key)))
+    }
+
+    fn remove(&self, identifier: &str, generation: u64) {
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        if state
+            .challenges
+            .get(identifier)
+            .is_some_and(|challenge| challenge.generation == generation)
+        {
+            state.challenges.remove(identifier);
+        }
+    }
+}
+
+/// Removes its ephemeral certificate when authorization ends.
+#[derive(Debug)]
+pub struct TlsAlpnChallengeLease {
+    registry: TlsAlpnChallengeRegistry,
+    identifier: String,
+    generation: u64,
+}
+
+impl Drop for TlsAlpnChallengeLease {
+    fn drop(&mut self) {
+        self.registry.remove(&self.identifier, self.generation);
+    }
+}
+
+fn tls_alpn_certified_key(
+    identifier: &str,
+    digest: [u8; 32],
+    lifetime: Duration,
+) -> Result<Arc<CertifiedKey>, TlsAlpnChallengeError> {
+    let mut parameters = CertificateParams::new(vec![identifier.to_owned()])
+        .map_err(|_| TlsAlpnChallengeError::Generation)?;
+    parameters.distinguished_name = DistinguishedName::new();
+    let now = OffsetDateTime::now_utc();
+    parameters.not_before = now - time::Duration::minutes(5);
+    parameters.not_after =
+        now + time::Duration::try_from(lifetime).map_err(|_| TlsAlpnChallengeError::Invalid)?;
+    parameters
+        .custom_extensions
+        .push(CustomExtension::new_acme_identifier(&digest));
+    let key = KeyPair::generate().map_err(|_| TlsAlpnChallengeError::Generation)?;
+    let certificate = parameters
+        .self_signed(&key)
+        .map_err(|_| TlsAlpnChallengeError::Generation)?;
+    let certificate_der = certificate.der().clone();
+    validate_tls_alpn_certificate(
+        &certificate_der,
+        identifier,
+        &digest,
+        &key.subject_public_key_info(),
+    )?;
+    let private_key =
+        PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der()).clone_key());
+    let provider = aws_lc_rs::default_provider();
+    let signing_key = provider
+        .key_provider
+        .load_private_key(private_key)
+        .map_err(|_| TlsAlpnChallengeError::PrivateKey)?;
+    Ok(Arc::new(CertifiedKey::new(
+        vec![certificate_der],
+        signing_key,
+    )))
+}
+
+fn validate_tls_alpn_certificate(
+    certificate_der: &CertificateDer<'_>,
+    identifier: &str,
+    digest: &[u8; 32],
+    expected_spki: &[u8],
+) -> Result<(), TlsAlpnChallengeError> {
+    let (_, certificate) = parse_x509_certificate(certificate_der.as_ref())
+        .map_err(|_| TlsAlpnChallengeError::Certificate)?;
+    if !certificate.validity().is_valid() {
+        return Err(TlsAlpnChallengeError::Certificate);
+    }
+    let san = certificate
+        .subject_alternative_name()
+        .map_err(|_| TlsAlpnChallengeError::Certificate)?
+        .ok_or(TlsAlpnChallengeError::Certificate)?;
+    if san.value.general_names.as_slice() != [GeneralName::DNSName(identifier)] {
+        return Err(TlsAlpnChallengeError::Certificate);
+    }
+    if certificate.public_key().raw != expected_spki {
+        return Err(TlsAlpnChallengeError::PrivateKey);
+    }
+    let mut extensions = certificate
+        .extensions()
+        .iter()
+        .filter(|extension| extension.oid.to_id_string() == "1.3.6.1.5.5.7.1.31");
+    let extension = extensions
+        .next()
+        .ok_or(TlsAlpnChallengeError::Certificate)?;
+    let expected = [&[0x04, 0x20], digest.as_slice()].concat();
+    if extensions.next().is_some() || !extension.critical || extension.value != expected {
+        return Err(TlsAlpnChallengeError::Certificate);
+    }
+    Ok(())
+}
+
+fn prune_tls_alpn_expired(state: &mut TlsAlpnRegistryState, now: Instant) {
+    state
+        .challenges
+        .retain(|_, challenge| challenge.expires_at > now);
+}
+
+/// Return the RFC 8737 ALPN protocol identifier.
+#[must_use]
+pub const fn tls_alpn_protocol() -> &'static [u8] {
+    TLS_ALPN_PROTOCOL
 }
 
 impl Drop for HttpChallengeLease {
@@ -371,5 +611,47 @@ mod tests {
             )
             .expect("expired challenges must not consume capacity");
         drop(lease);
+    }
+
+    #[test]
+    fn tls_alpn_registry_is_exact_temporary_and_rfc8737_encoded() {
+        let registry = TlsAlpnChallengeRegistry::default();
+        let digest = [0x5a; 32];
+        let lease = test_runtime()
+            .block_on(registry.install(IDENTIFIER, digest, Duration::from_secs(60)))
+            .expect("install TLS-ALPN challenge");
+        let key = registry
+            .resolve_name(IDENTIFIER)
+            .expect("resolve")
+            .expect("challenge key");
+        assert!(
+            registry
+                .resolve_name("other.test")
+                .expect("resolve other")
+                .is_none()
+        );
+        let (_, certificate) = x509_parser::parse_x509_certificate(key.cert[0].as_ref())
+            .expect("parse challenge certificate");
+        let extension = certificate
+            .extensions()
+            .iter()
+            .find(|extension| extension.oid.to_id_string() == "1.3.6.1.5.5.7.1.31")
+            .expect("acmeIdentifier extension");
+        assert!(extension.critical);
+        assert_eq!(extension.value, [&[0x04, 0x20], digest.as_slice()].concat());
+        drop(lease);
+        assert!(
+            registry
+                .resolve_name(IDENTIFIER)
+                .expect("resolve after drop")
+                .is_none()
+        );
+    }
+
+    fn test_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("test runtime")
     }
 }

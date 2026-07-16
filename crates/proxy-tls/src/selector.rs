@@ -3,12 +3,16 @@ use std::{collections::HashMap, sync::Arc};
 use arc_swap::ArcSwap;
 use rustls::{server::ResolvesServerCert, sign::CertifiedKey};
 
-use crate::{Identity, TlsError};
+use crate::{
+    Identity, TlsError,
+    acme::{TlsAlpnChallengeRegistry, tls_alpn_protocol},
+};
 
 /// SNI resolver with exact-name precedence and single-label wildcards.
 #[derive(Clone)]
 pub struct CertificateResolver {
     current: Arc<ArcSwap<CertificateMaps>>,
+    acme: TlsAlpnChallengeRegistry,
 }
 
 struct CertificateMaps {
@@ -30,9 +34,18 @@ impl std::fmt::Debug for CertificateResolver {
 impl CertificateResolver {
     /// Build a resolver, rejecting duplicate exact or wildcard names.
     pub fn new(identities: &[Identity]) -> Result<Self, TlsError> {
+        Self::with_acme_challenges(identities, TlsAlpnChallengeRegistry::default())
+    }
+
+    /// Build a resolver retaining one process-wide ephemeral ACME challenge registry.
+    pub fn with_acme_challenges(
+        identities: &[Identity],
+        acme: TlsAlpnChallengeRegistry,
+    ) -> Result<Self, TlsError> {
         let maps = build_maps(identities)?;
         Ok(Self {
             current: Arc::new(ArcSwap::from_pointee(maps)),
+            acme,
         })
     }
 
@@ -78,6 +91,14 @@ impl CertificateMaps {
 
 impl ResolvesServerCert for CertificateResolver {
     fn resolve(&self, client_hello: rustls::server::ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        let acme_alpn = client_hello
+            .alpn()
+            .is_some_and(|mut protocols| protocols.any(|protocol| protocol == tls_alpn_protocol()));
+        if acme_alpn {
+            return client_hello
+                .server_name()
+                .and_then(|name| self.acme.resolve_name(name).ok().flatten());
+        }
         client_hello
             .server_name()
             .and_then(|name| self.resolve_name(name))

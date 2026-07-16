@@ -11,7 +11,10 @@ pub use account::{
     AcmeAccountError, StoredAcmeAccount, StoredAcmeEnvironment, decrypt_account_credentials,
     encrypt_account_credentials, load_account_generation, persist_account_generation,
 };
-pub use challenge::{HttpChallengeError, HttpChallengeLease, HttpChallengeRegistry};
+pub use challenge::{
+    HttpChallengeError, HttpChallengeLease, HttpChallengeRegistry, TlsAlpnChallengeError,
+    TlsAlpnChallengeLease, TlsAlpnChallengeRegistry, tls_alpn_protocol,
+};
 pub use client::{
     AcmeAccountCreateRequest, AcmeClient, AcmeClientError, AcmeExternalAccountBinding,
 };
