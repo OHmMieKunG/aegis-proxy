@@ -21,7 +21,9 @@
 
 ## Current activation gates
 
-The schema reserves TCP listeners, trusted-proxy settings, middleware objects, endpoint weights, and multiple endpoints. Until their assigned implementation phases, validation rejects non-default use instead of silently ignoring security or routing intent. TCP TLS passthrough remains gated by [ADR 0016](adr/0016-clienthello-parser.md); no handwritten ClientHello parser is implied.
+The schema defines bounded Phase 4 upstream DNS, health, retry, circuit, drain, weighting, and algorithm policies. During incremental implementation, validation rejects each non-default policy until its runtime state machine is installed; configuration never silently accepts an inactive policy. TCP listeners, trusted-proxy settings, and middleware objects remain gated by their assigned phases. TCP TLS passthrough follows the accepted Rustls-capture design in [ADR 0016](adr/0016-clienthello-parser.md); no handwritten ClientHello parser is implied.
+
+Configured egress denies override allows. Literal addresses are checked during validation. Configured DNS answers must later pass the same policy at refresh and immediately before connection; adding the schema fields alone does not enable DNS egress.
 
 ## Commands
 

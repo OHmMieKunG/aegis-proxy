@@ -210,7 +210,6 @@ async fn proxies_unary_and_streaming_grpc_with_trailers() {
         trusted_proxies: TrustedProxyConfig::default(),
         upstream_groups: vec![UpstreamGroupConfig {
             id: "grpc".into(),
-            algorithm: "round_robin".into(),
             allowed_cidrs: vec!["127.0.0.1/32".parse().expect("CIDR")],
             endpoints: vec![EndpointConfig {
                 id: "grpc-1".into(),
@@ -221,6 +220,7 @@ async fn proxies_unary_and_streaming_grpc_with_trailers() {
                 server_name: Some("upstream.test".into()),
                 ca_bundle: Some(format!("file://{}", upstream_ca_path.display())),
             }],
+            ..UpstreamGroupConfig::default()
         }],
         middlewares: std::collections::BTreeMap::new(),
         routes: vec![RouteConfig {

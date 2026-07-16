@@ -206,17 +206,222 @@ pub struct UpstreamGroupConfig {
     /// Stable identifier.
     pub id: String,
     /// Balancing algorithm.
-    #[serde(default = "default_algorithm")]
-    pub algorithm: String,
+    #[serde(default)]
+    pub algorithm: BalancingAlgorithm,
     /// Explicit egress allowlist.
     #[serde(default)]
     pub allowed_cidrs: Vec<IpNet>,
+    /// Explicit egress denylist. Denies override allows.
+    #[serde(default)]
+    pub denied_cidrs: Vec<IpNet>,
+    /// DNS resolution policy for configured endpoint names.
+    #[serde(default)]
+    pub dns: DnsConfig,
+    /// Optional active health-check policy.
+    #[serde(default)]
+    pub health: Option<HealthCheckConfig>,
+    /// Passive failure classification and hysteresis.
+    #[serde(default)]
+    pub passive_health: PassiveHealthConfig,
+    /// Retry attempt budget.
+    #[serde(default)]
+    pub retry: RetryConfig,
+    /// Optional group circuit-breaker policy.
+    #[serde(default)]
+    pub circuit_breaker: Option<CircuitBreakerConfig>,
+    /// Maximum time removed endpoints may drain existing work.
+    #[serde(default = "default_drain_timeout_secs")]
+    pub drain_timeout_secs: u64,
     /// Endpoints.
     pub endpoints: Vec<EndpointConfig>,
 }
 
-fn default_algorithm() -> String {
-    "round_robin".into()
+impl Default for UpstreamGroupConfig {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            algorithm: BalancingAlgorithm::default(),
+            allowed_cidrs: Vec::new(),
+            denied_cidrs: Vec::new(),
+            dns: DnsConfig::default(),
+            health: None,
+            passive_health: PassiveHealthConfig::default(),
+            retry: RetryConfig::default(),
+            circuit_breaker: None,
+            drain_timeout_secs: default_drain_timeout_secs(),
+            endpoints: Vec::new(),
+        }
+    }
+}
+
+/// Supported endpoint-selection algorithms.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BalancingAlgorithm {
+    /// Equal-share rotating selection.
+    #[default]
+    RoundRobin,
+    /// Smooth weighted round robin.
+    SmoothWeightedRoundRobin,
+    /// Pseudo-random eligible endpoint.
+    Random,
+    /// Select the less busy of two pseudo-random candidates.
+    PowerOfTwo,
+}
+
+/// DNS bounds for configured endpoint names.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DnsConfig {
+    /// Maximum accepted A/AAAA or SRV answers per lookup.
+    pub max_answers: usize,
+    /// Maximum lookup duration.
+    pub lookup_timeout_secs: u64,
+    /// Minimum refresh TTL applied to an answer.
+    pub min_ttl_secs: u64,
+    /// Maximum refresh TTL applied to an answer.
+    pub max_ttl_secs: u64,
+    /// Maximum time a last allowed answer may remain after refresh failure.
+    pub stale_timeout_secs: u64,
+}
+
+impl Default for DnsConfig {
+    fn default() -> Self {
+        Self {
+            max_answers: 16,
+            lookup_timeout_secs: 3,
+            min_ttl_secs: 5,
+            max_ttl_secs: 300,
+            stale_timeout_secs: 300,
+        }
+    }
+}
+
+/// Active upstream health-check policy.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HealthCheckConfig {
+    /// Probe protocol.
+    pub kind: HealthCheckKind,
+    /// HTTP method for HTTP probes.
+    pub method: String,
+    /// Canonical HTTP path for HTTP probes.
+    pub path: String,
+    /// Accepted HTTP status codes.
+    pub expected_statuses: Vec<u16>,
+    /// Time between probes.
+    pub interval_secs: u64,
+    /// Per-probe deadline.
+    pub timeout_secs: u64,
+    /// Consecutive failures required for unhealthy state.
+    pub unhealthy_threshold: u32,
+    /// Consecutive successes required for healthy state.
+    pub healthy_threshold: u32,
+}
+
+impl Default for HealthCheckConfig {
+    fn default() -> Self {
+        Self {
+            kind: HealthCheckKind::Http,
+            method: "GET".into(),
+            path: "/".into(),
+            expected_statuses: vec![200],
+            interval_secs: 10,
+            timeout_secs: 2,
+            unhealthy_threshold: 3,
+            healthy_threshold: 2,
+        }
+    }
+}
+
+/// Active health-check protocol.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HealthCheckKind {
+    /// HTTP request probe.
+    #[default]
+    Http,
+    /// TCP connection probe.
+    Tcp,
+}
+
+/// Passive endpoint-health policy.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PassiveHealthConfig {
+    /// Classified failures required inside the rolling window.
+    pub failure_threshold: u32,
+    /// Consecutive successes required for recovery.
+    pub healthy_threshold: u32,
+    /// Rolling failure-window duration.
+    pub window_secs: u64,
+    /// Maximum observations retained per endpoint.
+    pub max_samples: usize,
+}
+
+impl Default for PassiveHealthConfig {
+    fn default() -> Self {
+        Self {
+            failure_threshold: 5,
+            healthy_threshold: 2,
+            window_secs: 30,
+            max_samples: 64,
+        }
+    }
+}
+
+/// Upstream retry budget.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RetryConfig {
+    /// Total attempts, including the first request.
+    pub max_attempts: u32,
+    /// Total wall-clock attempt budget.
+    pub total_timeout_secs: u64,
+    /// Maximum replayable request body bytes.
+    pub replay_body_bytes: usize,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_attempts: 1,
+            total_timeout_secs: 30,
+            replay_body_bytes: 0,
+        }
+    }
+}
+
+/// Group circuit-breaker policy.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CircuitBreakerConfig {
+    /// Bounded rolling sample count.
+    pub sample_size: usize,
+    /// Minimum observations before opening is possible.
+    pub minimum_requests: usize,
+    /// Failure percentage that opens the circuit.
+    pub failure_percent: u8,
+    /// Open-state duration before half-open probes.
+    pub open_secs: u64,
+    /// Concurrent half-open probe budget.
+    pub half_open_requests: usize,
+}
+
+impl Default for CircuitBreakerConfig {
+    fn default() -> Self {
+        Self {
+            sample_size: 100,
+            minimum_requests: 20,
+            failure_percent: 50,
+            open_secs: 10,
+            half_open_requests: 1,
+        }
+    }
+}
+
+fn default_drain_timeout_secs() -> u64 {
+    30
 }
 
 /// Upstream endpoint.
@@ -604,10 +809,15 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                 "upstream_groups[{group_index}].allowed_cidrs exceeds 256 entries"
             )));
         }
-        if group.algorithm != "round_robin" {
+        if group.denied_cidrs.len() > 256 {
             return Err(ConfigError::Invalid(format!(
-                "unsupported upstream algorithm {}",
-                group.algorithm
+                "upstream_groups[{group_index}].denied_cidrs exceeds 256 entries"
+            )));
+        }
+        validate_upstream_policy(group_index, group)?;
+        if group.algorithm != BalancingAlgorithm::RoundRobin {
+            return Err(ConfigError::Invalid(format!(
+                "upstream_groups[{group_index}].algorithm is not activated until Phase 4 pool selection"
             )));
         }
         let mut endpoint_ids = HashSet::new();
@@ -684,9 +894,14 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                     endpoint.id
                 ))
             })?;
-            validate_egress_ip(ip, &group.allowed_cidrs).map_err(|reason| {
-                ConfigError::Invalid(format!("endpoint {} is not allowed: {reason}", endpoint.id))
-            })?;
+            validate_egress_ip(ip, &group.allowed_cidrs, &group.denied_cidrs).map_err(
+                |reason| {
+                    ConfigError::Invalid(format!(
+                        "endpoint {} is not allowed: {reason}",
+                        endpoint.id
+                    ))
+                },
+            )?;
         }
     }
     let listener_ids: HashSet<&str> = config.listeners.iter().map(|l| l.id.as_str()).collect();
@@ -753,6 +968,147 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         }
     }
     conflict::validate_route_conflicts(&config.routes)?;
+    Ok(())
+}
+
+fn validate_upstream_policy(
+    group_index: usize,
+    group: &UpstreamGroupConfig,
+) -> Result<(), ConfigError> {
+    let field = |name: &str| format!("upstream_groups[{group_index}].{name}");
+    if group.dns.max_answers == 0
+        || group.dns.max_answers > 64
+        || group.dns.lookup_timeout_secs == 0
+        || group.dns.lookup_timeout_secs > 30
+        || group.dns.min_ttl_secs == 0
+        || group.dns.min_ttl_secs > group.dns.max_ttl_secs
+        || group.dns.max_ttl_secs > 86_400
+        || group.dns.stale_timeout_secs > 3_600
+    {
+        return Err(ConfigError::Invalid(format!(
+            "{} contains an unsafe answer, timeout, TTL, or stale bound",
+            field("dns")
+        )));
+    }
+    if group.drain_timeout_secs == 0 || group.drain_timeout_secs > 3_600 {
+        return Err(ConfigError::Invalid(format!(
+            "{} is outside 1..=3600",
+            field("drain_timeout_secs")
+        )));
+    }
+    let passive = &group.passive_health;
+    if passive.failure_threshold == 0
+        || passive.failure_threshold > 100
+        || passive.healthy_threshold == 0
+        || passive.healthy_threshold > 100
+        || passive.window_secs == 0
+        || passive.window_secs > 3_600
+        || passive.max_samples == 0
+        || passive.max_samples > 1_024
+        || passive.failure_threshold as usize > passive.max_samples
+    {
+        return Err(ConfigError::Invalid(format!(
+            "{} contains an unsafe threshold, window, or sample bound",
+            field("passive_health")
+        )));
+    }
+    let retry = &group.retry;
+    if retry.max_attempts == 0
+        || retry.max_attempts > 5
+        || retry.total_timeout_secs == 0
+        || retry.total_timeout_secs > 300
+        || retry.replay_body_bytes > 1024 * 1024
+    {
+        return Err(ConfigError::Invalid(format!(
+            "{} contains an unsafe attempt, time, or replay-body bound",
+            field("retry")
+        )));
+    }
+    if retry.max_attempts != 1 || retry.replay_body_bytes != 0 {
+        return Err(ConfigError::Invalid(format!(
+            "{} is not activated until the Phase 4 replay state machine is installed",
+            field("retry")
+        )));
+    }
+    if let Some(health) = &group.health {
+        if health.interval_secs == 0
+            || health.interval_secs > 3_600
+            || health.timeout_secs == 0
+            || health.timeout_secs >= health.interval_secs
+            || health.unhealthy_threshold == 0
+            || health.unhealthy_threshold > 100
+            || health.healthy_threshold == 0
+            || health.healthy_threshold > 100
+        {
+            return Err(ConfigError::Invalid(format!(
+                "{} contains an unsafe interval, timeout, or threshold",
+                field("health")
+            )));
+        }
+        match health.kind {
+            HealthCheckKind::Http => {
+                let method = Method::from_bytes(health.method.as_bytes()).map_err(|_| {
+                    ConfigError::Invalid(format!("{}.method is invalid", field("health")))
+                })?;
+                if !matches!(method, Method::GET | Method::HEAD) {
+                    return Err(ConfigError::Invalid(format!(
+                        "{}.method must be GET or HEAD",
+                        field("health")
+                    )));
+                }
+                validate_path(
+                    &format!("upstream group {} health", group.id),
+                    &health.path,
+                    false,
+                )?;
+                if health.expected_statuses.is_empty()
+                    || health.expected_statuses.len() > 32
+                    || health
+                        .expected_statuses
+                        .iter()
+                        .any(|status| !(100..=599).contains(status))
+                    || health
+                        .expected_statuses
+                        .iter()
+                        .collect::<HashSet<_>>()
+                        .len()
+                        != health.expected_statuses.len()
+                {
+                    return Err(ConfigError::Invalid(format!(
+                        "{}.expected_statuses must contain 1..=32 unique HTTP statuses",
+                        field("health")
+                    )));
+                }
+            }
+            HealthCheckKind::Tcp => {}
+        }
+        return Err(ConfigError::Invalid(format!(
+            "{} is not activated until the Phase 4 health supervisor is installed",
+            field("health")
+        )));
+    }
+    if let Some(circuit) = &group.circuit_breaker {
+        if circuit.sample_size == 0
+            || circuit.sample_size > 10_000
+            || circuit.minimum_requests == 0
+            || circuit.minimum_requests > circuit.sample_size
+            || circuit.failure_percent == 0
+            || circuit.failure_percent > 100
+            || circuit.open_secs == 0
+            || circuit.open_secs > 3_600
+            || circuit.half_open_requests == 0
+            || circuit.half_open_requests > 100
+        {
+            return Err(ConfigError::Invalid(format!(
+                "{} contains an unsafe sample, threshold, or half-open bound",
+                field("circuit_breaker")
+            )));
+        }
+        return Err(ConfigError::Invalid(format!(
+            "{} is not activated until the Phase 4 circuit state machine is installed",
+            field("circuit_breaker")
+        )));
+    }
     Ok(())
 }
 
@@ -932,7 +1288,12 @@ fn validate_unique_strings(
     Ok(())
 }
 
-fn validate_egress_ip(ip: IpAddr, allowed: &[IpNet]) -> Result<(), &'static str> {
+/// Validate one resolved upstream address against the configured egress policy.
+pub fn validate_egress_ip(
+    ip: IpAddr,
+    allowed: &[IpNet],
+    denied: &[IpNet],
+) -> Result<(), &'static str> {
     if ip.is_unspecified() || ip.is_multicast() {
         return Err("unspecified and multicast addresses are forbidden");
     }
@@ -942,6 +1303,9 @@ fn validate_egress_ip(ip: IpAddr, allowed: &[IpNet]) -> Result<(), &'static str>
     };
     if link_local {
         return Err("link-local addresses are forbidden");
+    }
+    if denied.iter().any(|network| network.contains(&ip)) {
+        return Err("address is explicitly denied");
     }
     let private = match ip {
         IpAddr::V4(ip) => ip.is_private() || ip.is_loopback(),
@@ -1065,11 +1429,14 @@ mod tests {
     #[test]
     fn egress_policy_requires_explicit_private_network() {
         let loopback: IpAddr = "127.0.0.1".parse().expect("IP");
-        assert!(validate_egress_ip(loopback, &[]).is_err());
+        assert!(validate_egress_ip(loopback, &[], &[]).is_err());
         let allowed = ["127.0.0.1/32".parse().expect("CIDR")];
-        assert!(validate_egress_ip(loopback, &allowed).is_ok());
+        assert!(validate_egress_ip(loopback, &allowed, &[]).is_ok());
+        assert!(validate_egress_ip(loopback, &allowed, &allowed).is_err());
         let metadata: IpAddr = "169.254.169.254".parse().expect("IP");
-        assert!(validate_egress_ip(metadata, &["169.254.0.0/16".parse().expect("CIDR")]).is_err());
+        assert!(
+            validate_egress_ip(metadata, &["169.254.0.0/16".parse().expect("CIDR")], &[]).is_err()
+        );
     }
 
     #[test]
@@ -1110,7 +1477,6 @@ mod tests {
         let mut config = base_config();
         config.upstream_groups.push(UpstreamGroupConfig {
             id: "app".into(),
-            algorithm: "round_robin".into(),
             allowed_cidrs: vec!["127.0.0.1/32".parse().expect("CIDR")],
             endpoints: vec![EndpointConfig {
                 id: "app-1".into(),
@@ -1119,6 +1485,7 @@ mod tests {
                 server_name: None,
                 ca_bundle: None,
             }],
+            ..UpstreamGroupConfig::default()
         });
         assert!(validate(&config).is_err());
         config.upstream_groups[0].endpoints[0].server_name = Some("upstream.test".into());
@@ -1223,7 +1590,6 @@ mod tests {
     fn add_http_upstream(config: &mut Config) {
         config.upstream_groups.push(UpstreamGroupConfig {
             id: "app".into(),
-            algorithm: "round_robin".into(),
             allowed_cidrs: vec!["127.0.0.1/32".parse().expect("CIDR")],
             endpoints: vec![EndpointConfig {
                 id: "app-1".into(),
@@ -1232,6 +1598,7 @@ mod tests {
                 server_name: None,
                 ca_bundle: None,
             }],
+            ..UpstreamGroupConfig::default()
         });
     }
 
@@ -1272,5 +1639,74 @@ mod tests {
         let endpoint = config.upstream_groups[0].endpoints[0].clone();
         config.upstream_groups[0].endpoints.push(endpoint);
         assert!(validate(&config).is_err());
+    }
+
+    #[test]
+    fn bounds_phase4_upstream_policy_before_activation() {
+        let mut group = UpstreamGroupConfig {
+            id: "app".into(),
+            ..UpstreamGroupConfig::default()
+        };
+        assert!(validate_upstream_policy(0, &group).is_ok());
+
+        group.dns.max_answers = 0;
+        assert!(
+            validate_upstream_policy(0, &group)
+                .expect_err("zero DNS answers must fail")
+                .to_string()
+                .contains("upstream_groups[0].dns")
+        );
+        group.dns = DnsConfig::default();
+
+        group.retry.max_attempts = 6;
+        assert!(
+            validate_upstream_policy(0, &group)
+                .expect_err("excess attempts must fail")
+                .to_string()
+                .contains("unsafe")
+        );
+        group.retry.max_attempts = 2;
+        assert!(
+            validate_upstream_policy(0, &group)
+                .expect_err("inactive retries must fail")
+                .to_string()
+                .contains("not activated")
+        );
+        group.retry = RetryConfig::default();
+
+        group.health = Some(HealthCheckConfig::default());
+        assert!(
+            validate_upstream_policy(0, &group)
+                .expect_err("inactive health checks must fail")
+                .to_string()
+                .contains("not activated")
+        );
+        group.health.as_mut().expect("health").timeout_secs = 10;
+        assert!(
+            validate_upstream_policy(0, &group)
+                .expect_err("probe timeout must be below interval")
+                .to_string()
+                .contains("unsafe")
+        );
+        group.health = None;
+
+        group.circuit_breaker = Some(CircuitBreakerConfig::default());
+        assert!(
+            validate_upstream_policy(0, &group)
+                .expect_err("inactive circuit must fail")
+                .to_string()
+                .contains("not activated")
+        );
+        group
+            .circuit_breaker
+            .as_mut()
+            .expect("circuit")
+            .minimum_requests = 101;
+        assert!(
+            validate_upstream_policy(0, &group)
+                .expect_err("sample bounds must fail")
+                .to_string()
+                .contains("unsafe")
+        );
     }
 }

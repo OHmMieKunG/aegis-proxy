@@ -146,9 +146,64 @@
       "properties": {
         "id": { "$ref": "#/$defs/id" },
         "url": { "type": "string", "format": "uri", "maxLength": 2048, "pattern": "^https?://" },
-        "weight": { "type": "integer", "minimum": 1, "default": 1 },
+        "weight": { "type": "integer", "minimum": 1, "maximum": 10000, "default": 1 },
         "server_name": { "$ref": "#/$defs/dnsName" },
         "ca_bundle": { "$ref": "#/$defs/secretRef" }
+      }
+    },
+    "dnsPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_answers": { "type": "integer", "minimum": 1, "maximum": 64, "default": 16 },
+        "lookup_timeout_secs": { "type": "integer", "minimum": 1, "maximum": 30, "default": 3 },
+        "min_ttl_secs": { "type": "integer", "minimum": 1, "maximum": 86400, "default": 5 },
+        "max_ttl_secs": { "type": "integer", "minimum": 1, "maximum": 86400, "default": 300 },
+        "stale_timeout_secs": { "type": "integer", "minimum": 0, "maximum": 3600, "default": 300 }
+      }
+    },
+    "healthCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "enum": ["http", "tcp"], "default": "http" },
+        "method": { "enum": ["GET", "HEAD"], "default": "GET" },
+        "path": { "type": "string", "minLength": 1, "maxLength": 2048, "pattern": "^/", "default": "/" },
+        "expected_statuses": { "type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true, "items": { "type": "integer", "minimum": 100, "maximum": 599 }, "default": [200] },
+        "interval_secs": { "type": "integer", "minimum": 1, "maximum": 3600, "default": 10 },
+        "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 3599, "default": 2 },
+        "unhealthy_threshold": { "type": "integer", "minimum": 1, "maximum": 100, "default": 3 },
+        "healthy_threshold": { "type": "integer", "minimum": 1, "maximum": 100, "default": 2 }
+      }
+    },
+    "passiveHealth": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "failure_threshold": { "type": "integer", "minimum": 1, "maximum": 100, "default": 5 },
+        "healthy_threshold": { "type": "integer", "minimum": 1, "maximum": 100, "default": 2 },
+        "window_secs": { "type": "integer", "minimum": 1, "maximum": 3600, "default": 30 },
+        "max_samples": { "type": "integer", "minimum": 1, "maximum": 1024, "default": 64 }
+      }
+    },
+    "retryPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_attempts": { "type": "integer", "minimum": 1, "maximum": 5, "default": 1 },
+        "total_timeout_secs": { "type": "integer", "minimum": 1, "maximum": 300, "default": 30 },
+        "replay_body_bytes": { "type": "integer", "minimum": 0, "maximum": 1048576, "default": 0 }
+      }
+    },
+    "circuitBreaker": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sample_size": { "type": "integer", "minimum": 1, "maximum": 10000, "default": 100 },
+        "minimum_requests": { "type": "integer", "minimum": 1, "maximum": 10000, "default": 20 },
+        "failure_percent": { "type": "integer", "minimum": 1, "maximum": 100, "default": 50 },
+        "open_secs": { "type": "integer", "minimum": 1, "maximum": 3600, "default": 10 },
+        "half_open_requests": { "type": "integer", "minimum": 1, "maximum": 100, "default": 1 }
       }
     },
     "upstreamGroup": {
@@ -157,8 +212,15 @@
       "required": ["id", "endpoints"],
       "properties": {
         "id": { "$ref": "#/$defs/id" },
-        "algorithm": { "const": "round_robin", "default": "round_robin" },
+        "algorithm": { "enum": ["round_robin", "smooth_weighted_round_robin", "random", "power_of_two"], "default": "round_robin" },
         "allowed_cidrs": { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/cidr" } },
+        "denied_cidrs": { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/cidr" } },
+        "dns": { "$ref": "#/$defs/dnsPolicy" },
+        "health": { "$ref": "#/$defs/healthCheck" },
+        "passive_health": { "$ref": "#/$defs/passiveHealth" },
+        "retry": { "$ref": "#/$defs/retryPolicy" },
+        "circuit_breaker": { "$ref": "#/$defs/circuitBreaker" },
+        "drain_timeout_secs": { "type": "integer", "minimum": 1, "maximum": 3600, "default": 30 },
         "endpoints": {
           "type": "array",
           "minItems": 1,

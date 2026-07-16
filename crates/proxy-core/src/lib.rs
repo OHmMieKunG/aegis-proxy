@@ -794,7 +794,6 @@ mod tests {
             trusted_proxies: TrustedProxyConfig::default(),
             upstream_groups: vec![UpstreamGroupConfig {
                 id: "app".into(),
-                algorithm: "round_robin".into(),
                 allowed_cidrs: vec!["127.0.0.1/32".parse().expect("CIDR")],
                 endpoints: vec![EndpointConfig {
                     id: "app-1".into(),
@@ -803,6 +802,7 @@ mod tests {
                     server_name: None,
                     ca_bundle: None,
                 }],
+                ..UpstreamGroupConfig::default()
             }],
             middlewares: BTreeMap::new(),
             routes: vec![route],

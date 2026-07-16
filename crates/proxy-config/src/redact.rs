@@ -63,7 +63,6 @@ mod tests {
             trusted_proxies: TrustedProxyConfig::default(),
             upstream_groups: vec![UpstreamGroupConfig {
                 id: "app".into(),
-                algorithm: "round_robin".into(),
                 allowed_cidrs: vec![],
                 endpoints: vec![EndpointConfig {
                     id: "app-1".into(),
@@ -72,6 +71,7 @@ mod tests {
                     server_name: Some("upstream.test".into()),
                     ca_bundle: Some("file:///CANARY_CA".into()),
                 }],
+                ..UpstreamGroupConfig::default()
             }],
             middlewares: BTreeMap::new(),
             routes: vec![],
