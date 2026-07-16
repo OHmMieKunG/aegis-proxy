@@ -211,6 +211,11 @@ async fn proxies_unary_and_streaming_grpc_with_trailers() {
         upstream_groups: vec![UpstreamGroupConfig {
             id: "grpc".into(),
             allowed_cidrs: vec!["127.0.0.1/32".parse().expect("CIDR")],
+            retry: aegisproxy_config::RetryConfig {
+                max_attempts: 2,
+                replay_body_bytes: 1_024,
+                ..aegisproxy_config::RetryConfig::default()
+            },
             endpoints: vec![EndpointConfig {
                 id: "grpc-1".into(),
                 url: format!("https://{upstream_addr}")

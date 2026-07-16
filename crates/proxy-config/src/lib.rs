@@ -1050,12 +1050,6 @@ fn validate_upstream_policy(
             field("retry")
         )));
     }
-    if retry.max_attempts != 1 || retry.replay_body_bytes != 0 {
-        return Err(ConfigError::Invalid(format!(
-            "{} is not activated until the Phase 4 replay state machine is installed",
-            field("retry")
-        )));
-    }
     if let Some(health) = &group.health {
         if health.interval_secs == 0
             || health.interval_secs > 3_600
@@ -1720,12 +1714,8 @@ mod tests {
                 .contains("unsafe")
         );
         group.retry.max_attempts = 2;
-        assert!(
-            validate_upstream_policy(0, &group)
-                .expect_err("inactive retries must fail")
-                .to_string()
-                .contains("not activated")
-        );
+        group.retry.replay_body_bytes = 1_024;
+        validate_upstream_policy(0, &group).expect("active retries must validate");
         group.retry = RetryConfig::default();
 
         group.health = Some(HealthCheckConfig::default());

@@ -8,7 +8,7 @@ use std::{
 };
 
 use aegisproxy_config::{
-    BalancingAlgorithm, EndpointConfig, PassiveHealthConfig, UpstreamGroupConfig,
+    BalancingAlgorithm, EndpointConfig, PassiveHealthConfig, RetryConfig, UpstreamGroupConfig,
 };
 use hyper::body::{Body, Frame, SizeHint};
 use thiserror::Error;
@@ -150,6 +150,7 @@ pub(crate) struct UpstreamPool {
     passive_health: Arc<PassiveHealthConfig>,
     active_health: bool,
     circuit: Option<Arc<CircuitBreaker>>,
+    retry: RetryConfig,
 }
 
 impl UpstreamPool {
@@ -175,6 +176,7 @@ impl UpstreamPool {
             passive_health: Arc::new(group.passive_health.clone()),
             active_health: group.health.is_some(),
             circuit: group.circuit_breaker.clone().map(CircuitBreaker::new),
+            retry: group.retry.clone(),
         })
     }
 
@@ -206,6 +208,10 @@ impl UpstreamPool {
 
     pub(crate) fn endpoints(&self) -> &[Arc<EndpointRuntime>] {
         &self.endpoints
+    }
+
+    pub(crate) fn retry_policy(&self) -> &RetryConfig {
+        &self.retry
     }
 
     fn eligible_indices(&self) -> Vec<usize> {

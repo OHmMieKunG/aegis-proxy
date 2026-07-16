@@ -678,7 +678,11 @@ impl ProxyService {
         if request.headers().contains_key(UPGRADE) && !websocket {
             return error_response(StatusCode::BAD_REQUEST, "invalid upgrade request\n");
         }
-        let client_upgrade = websocket.then(|| hyper::upgrade::on(&mut request));
+        let mut client_upgrade = websocket.then(|| hyper::upgrade::on(&mut request));
+        let grpc = request
+            .headers()
+            .get(hyper::header::CONTENT_TYPE)
+            .is_some_and(|value| is_grpc_content_type(value.as_bytes()));
         let Some(route) = self
             .route_index
             .select(&self.config, &request, &self.listener_id)
@@ -691,14 +695,7 @@ impl ProxyService {
         let Some(pool) = self.pools.get(group_id) else {
             return error_response(StatusCode::BAD_GATEWAY, "upstream group missing\n");
         };
-        let Ok(selected) = pool.select() else {
-            return error_response(StatusCode::SERVICE_UNAVAILABLE, "upstream unavailable\n");
-        };
-        let endpoint = selected.config();
-        let key = endpoint_key(group_id, &endpoint.id);
-        let Some(client) = self.clients.get(&key) else {
-            return error_response(StatusCode::BAD_GATEWAY, "upstream client missing\n");
-        };
+        let retry = pool.retry_policy();
         if request
             .headers()
             .get(hyper::header::CONTENT_LENGTH)
@@ -709,23 +706,8 @@ impl ProxyService {
             return error_response(StatusCode::PAYLOAD_TOO_LARGE, "request body too large\n");
         }
         let (mut parts, body) = request.into_parts();
-        let mut upstream_uri = endpoint.url.clone();
-        let base_path = endpoint.url.path().trim_end_matches('/');
-        let request_path = parts.uri.path();
-        let joined_path = if base_path.is_empty() {
-            request_path.to_owned()
-        } else if request_path == "/" {
-            format!("{base_path}/")
-        } else {
-            format!("{base_path}/{}", request_path.trim_start_matches('/'))
-        };
-        upstream_uri.set_path(&joined_path);
-        upstream_uri.set_query(parts.uri.query());
-        let Ok(uri) = upstream_uri.as_str().parse::<Uri>() else {
-            return error_response(StatusCode::BAD_GATEWAY, "invalid upstream URI\n");
-        };
-        parts.uri = uri;
-        parts.version = hyper::Version::HTTP_11;
+        let request_path = parts.uri.path().to_owned();
+        let request_query = parts.uri.query().map(str::to_owned);
         strip_hop_by_hop_headers(&mut parts.headers, websocket, preserve_te_trailers);
         for name in [
             "forwarded",
@@ -738,83 +720,195 @@ impl ProxyService {
         ] {
             parts.headers.remove(name);
         }
-        if let Some(authority) = endpoint_authority(endpoint) {
-            parts.headers.insert(HOST, authority);
-        }
-        let request = Request::from_parts(
-            parts,
-            Limited::new(body, self.limits.max_request_body).boxed(),
-        );
-        let result = match tokio::time::timeout(
-            std::time::Duration::from_secs(self.limits.response_header_timeout_secs),
-            client.request(request),
-        )
-        .await
-        {
-            Ok(result) => result,
-            Err(_) => {
-                selected.record_failure();
-                return error_response(
-                    StatusCode::GATEWAY_TIMEOUT,
-                    "upstream response timed out\n",
-                );
-            }
+        let retryable_method = is_idempotent_retry_method(&parts.method);
+        let body_size = hyper::body::Body::size_hint(&body).exact();
+        let may_retry = retry.max_attempts > 1
+            && retryable_method
+            && !websocket
+            && !grpc
+            && body_size.is_some_and(|size| size <= retry.replay_body_bytes as u64);
+        let max_attempts = if may_retry { retry.max_attempts } else { 1 };
+        let (replay_body, mut streaming_body) = if may_retry {
+            let collected = match Limited::new(body, self.limits.max_request_body)
+                .collect()
+                .await
+            {
+                Ok(collected) => collected.to_bytes(),
+                Err(_) => {
+                    return error_response(StatusCode::PAYLOAD_TOO_LARGE, "request body failed\n");
+                }
+            };
+            (Some(collected), None)
+        } else {
+            (
+                None,
+                Some(Limited::new(body, self.limits.max_request_body).boxed()),
+            )
         };
-        match result {
-            Ok(mut response) => {
-                let body_guard = if response.status() == StatusCode::SWITCHING_PROTOCOLS {
-                    let Some(client_upgrade) = client_upgrade else {
-                        selected.record_failure();
+        let method = parts.method;
+        let headers = parts.headers;
+        let total_timeout = if max_attempts > 1 {
+            retry.total_timeout_secs
+        } else {
+            self.limits.response_header_timeout_secs
+        };
+        let retry_deadline = tokio::time::Instant::now() + Duration::from_secs(total_timeout);
+        for attempt in 1..=max_attempts {
+            let Ok(selected) = pool.select() else {
+                return error_response(StatusCode::SERVICE_UNAVAILABLE, "upstream unavailable\n");
+            };
+            let endpoint = selected.config();
+            let key = endpoint_key(group_id, &endpoint.id);
+            let Some(client) = self.clients.get(&key) else {
+                return error_response(StatusCode::BAD_GATEWAY, "upstream client missing\n");
+            };
+            let Some(uri) = upstream_uri(endpoint, &request_path, request_query.as_deref()) else {
+                return error_response(StatusCode::BAD_GATEWAY, "invalid upstream URI\n");
+            };
+            let mut request_headers = headers.clone();
+            if let Some(authority) = endpoint_authority(endpoint) {
+                request_headers.insert(HOST, authority);
+            }
+            let request_body = match &replay_body {
+                Some(body) => full_body(body),
+                None => match streaming_body.take() {
+                    Some(body) => body,
+                    None => {
                         return error_response(
                             StatusCode::BAD_GATEWAY,
-                            "unexpected upstream upgrade\n",
+                            "request body is unavailable\n",
                         );
-                    };
-                    selected.record_success();
-                    let upstream_upgrade = hyper::upgrade::on(&mut response);
-                    let shutdown = self.shutdown.clone();
-                    self.upgrade_tasks.spawn(async move {
-                        let _selected = selected;
-                        let Ok((client, upstream)) =
-                            tokio::try_join!(client_upgrade, upstream_upgrade)
-                        else {
-                            return;
+                    }
+                },
+            };
+            let mut upstream_request = match Request::builder()
+                .method(method.clone())
+                .uri(uri)
+                .version(hyper::Version::HTTP_11)
+                .body(request_body)
+            {
+                Ok(request) => request,
+                Err(_) => {
+                    return error_response(StatusCode::BAD_GATEWAY, "invalid upstream request\n");
+                }
+            };
+            *upstream_request.headers_mut() = request_headers;
+            let remaining = retry_deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return error_response(
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "upstream retry budget exhausted\n",
+                );
+            }
+            let attempt_timeout =
+                Duration::from_secs(self.limits.response_header_timeout_secs).min(remaining);
+            let result =
+                match tokio::time::timeout(attempt_timeout, client.request(upstream_request)).await
+                {
+                    Ok(result) => result,
+                    Err(_) => {
+                        selected.record_failure();
+                        if attempt < max_attempts {
+                            continue;
+                        }
+                        return error_response(
+                            StatusCode::GATEWAY_TIMEOUT,
+                            "upstream response timed out\n",
+                        );
+                    }
+                };
+            match result {
+                Ok(mut response) => {
+                    let body_guard = if response.status() == StatusCode::SWITCHING_PROTOCOLS {
+                        let Some(client_upgrade) = client_upgrade.take() else {
+                            selected.record_failure();
+                            return error_response(
+                                StatusCode::BAD_GATEWAY,
+                                "unexpected upstream upgrade\n",
+                            );
                         };
-                        let mut client = TokioIo::new(client);
-                        let mut upstream = TokioIo::new(upstream);
-                        tokio::select! {
-                            _ = shutdown.cancelled() => {}
-                            _ = tokio::io::copy_bidirectional(&mut client, &mut upstream) => {}
+                        selected.record_success();
+                        let upstream_upgrade = hyper::upgrade::on(&mut response);
+                        let shutdown = self.shutdown.clone();
+                        self.upgrade_tasks.spawn(async move {
+                            let _selected = selected;
+                            let Ok((client, upstream)) =
+                                tokio::try_join!(client_upgrade, upstream_upgrade)
+                            else {
+                                return;
+                            };
+                            let mut client = TokioIo::new(client);
+                            let mut upstream = TokioIo::new(upstream);
+                            tokio::select! {
+                                _ = shutdown.cancelled() => {}
+                                _ = tokio::io::copy_bidirectional(&mut client, &mut upstream) => {}
+                            }
+                        });
+                        strip_hop_by_hop_headers(response.headers_mut(), true, false);
+                        None
+                    } else {
+                        if response.status().is_server_error() {
+                            selected.record_failure();
+                        } else {
+                            selected.record_success();
+                        }
+                        strip_hop_by_hop_headers(response.headers_mut(), false, false);
+                        Some(selected)
+                    };
+                    return response.map(|body| {
+                        let body = body.map_err(|error| Box::new(error) as BoxError);
+                        match body_guard {
+                            Some(endpoint) => GuardedBody::new(body, endpoint).boxed(),
+                            None => body.boxed(),
                         }
                     });
-                    strip_hop_by_hop_headers(response.headers_mut(), true, false);
-                    None
-                } else {
-                    if response.status().is_server_error() {
-                        selected.record_failure();
-                    } else {
-                        selected.record_success();
-                    }
-                    strip_hop_by_hop_headers(response.headers_mut(), false, false);
-                    Some(selected)
-                };
-                response.map(|body| {
-                    let body = body.map_err(|error| Box::new(error) as BoxError);
-                    match body_guard {
-                        Some(endpoint) => GuardedBody::new(body, endpoint).boxed(),
-                        None => body.boxed(),
-                    }
-                })
-            }
-            Err(error) => {
-                if error.is_connect() {
-                    selected.record_failure();
                 }
-                tracing::debug!(peer = %self.peer, %error, "upstream request failed");
-                error_response(StatusCode::BAD_GATEWAY, "upstream request failed\n")
+                Err(error) => {
+                    if error.is_connect() {
+                        selected.record_failure();
+                        if attempt < max_attempts {
+                            continue;
+                        }
+                    }
+                    tracing::debug!(peer = %self.peer, %error, "upstream request failed");
+                    return error_response(StatusCode::BAD_GATEWAY, "upstream request failed\n");
+                }
             }
         }
+        error_response(StatusCode::BAD_GATEWAY, "upstream attempts exhausted\n")
     }
+}
+
+fn is_idempotent_retry_method(method: &hyper::Method) -> bool {
+    matches!(
+        *method,
+        hyper::Method::GET
+            | hyper::Method::HEAD
+            | hyper::Method::OPTIONS
+            | hyper::Method::PUT
+            | hyper::Method::DELETE
+    )
+}
+
+fn is_grpc_content_type(value: &[u8]) -> bool {
+    value
+        .get(..b"application/grpc".len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"application/grpc"))
+}
+
+fn upstream_uri(endpoint: &EndpointConfig, request_path: &str, query: Option<&str>) -> Option<Uri> {
+    let mut uri = endpoint.url.clone();
+    let base_path = endpoint.url.path().trim_end_matches('/');
+    let joined_path = if base_path.is_empty() {
+        request_path.to_owned()
+    } else if request_path == "/" {
+        format!("{base_path}/")
+    } else {
+        format!("{base_path}/{}", request_path.trim_start_matches('/'))
+    };
+    uri.set_path(&joined_path);
+    uri.set_query(query);
+    uri.as_str().parse().ok()
 }
 
 fn reject_unsafe_request_target<B>(request: &Request<B>) -> Option<StatusCode> {
@@ -955,6 +1049,13 @@ mod tests {
             .expect("test request is valid")
     }
 
+    #[test]
+    fn recognizes_grpc_content_types_without_case_bypass() {
+        assert!(is_grpc_content_type(b"application/grpc"));
+        assert!(is_grpc_content_type(b"Application/Grpc+Proto"));
+        assert!(!is_grpc_content_type(b"application/json"));
+    }
+
     fn select_route<'a, B>(
         config: &'a Config,
         request: &Request<B>,
@@ -1047,13 +1148,18 @@ mod tests {
     }
 
     async fn proxy_get(address: SocketAddr) -> Vec<u8> {
+        proxy_request(
+            address,
+            b"GET / HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n",
+        )
+        .await
+    }
+
+    async fn proxy_request(address: SocketAddr, request: &[u8]) -> Vec<u8> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let mut client = connect_to_proxy(address).await;
-        client
-            .write_all(b"GET / HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n")
-            .await
-            .expect("write request");
+        client.write_all(request).await.expect("write request");
         let mut response = Vec::new();
         client
             .read_to_end(&mut response)
@@ -1851,6 +1957,77 @@ mod tests {
         shutdown.cancel();
         proxy_task.await.expect("proxy task").expect("proxy result");
         upstream_task.abort();
+    }
+
+    #[tokio::test]
+    async fn retries_bounded_idempotent_body_on_connect_failure() {
+        let reserved = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("reserve failed endpoint");
+        let failed_addr = reserved.local_addr().expect("failed endpoint address");
+        drop(reserved);
+        let (healthy_addr, healthy_task) = identified_upstream(b"healthy").await;
+        let (proxy_addr, shutdown, proxy_task) = start_test_proxy(failed_addr, |config| {
+            let group = &mut config.upstream_groups[0];
+            group.retry.max_attempts = 2;
+            group.retry.replay_body_bytes = 16;
+            group.endpoints.push(EndpointConfig {
+                id: "app-2".into(),
+                url: format!("http://{healthy_addr}")
+                    .parse()
+                    .expect("endpoint URL"),
+                weight: 1,
+                server_name: None,
+                ca_bundle: None,
+            });
+        })
+        .await;
+
+        let response = proxy_request(
+            proxy_addr,
+            b"PUT / HTTP/1.1\r\nHost: example.test\r\nContent-Length: 4\r\nConnection: close\r\n\r\ndata",
+        )
+        .await;
+        assert!(response.starts_with(b"HTTP/1.1 200"));
+        assert!(response.ends_with(b"healthy"));
+        shutdown.cancel();
+        proxy_task.await.expect("proxy task").expect("proxy result");
+        healthy_task.abort();
+    }
+
+    #[tokio::test]
+    async fn does_not_retry_non_idempotent_request() {
+        let reserved = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("reserve failed endpoint");
+        let failed_addr = reserved.local_addr().expect("failed endpoint address");
+        drop(reserved);
+        let (healthy_addr, healthy_task) = identified_upstream(b"unexpected").await;
+        let (proxy_addr, shutdown, proxy_task) = start_test_proxy(failed_addr, |config| {
+            let group = &mut config.upstream_groups[0];
+            group.retry.max_attempts = 2;
+            group.retry.replay_body_bytes = 16;
+            group.endpoints.push(EndpointConfig {
+                id: "app-2".into(),
+                url: format!("http://{healthy_addr}")
+                    .parse()
+                    .expect("endpoint URL"),
+                weight: 1,
+                server_name: None,
+                ca_bundle: None,
+            });
+        })
+        .await;
+
+        let response = proxy_request(
+            proxy_addr,
+            b"POST / HTTP/1.1\r\nHost: example.test\r\nContent-Length: 4\r\nConnection: close\r\n\r\ndata",
+        )
+        .await;
+        assert!(response.starts_with(b"HTTP/1.1 502"));
+        shutdown.cancel();
+        proxy_task.await.expect("proxy task").expect("proxy result");
+        healthy_task.abort();
     }
 
     #[tokio::test]
