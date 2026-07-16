@@ -217,7 +217,7 @@ pub struct TrustedProxyConfig {
 }
 
 /// Upstream group.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct UpstreamGroupConfig {
     /// Stable identifier.
@@ -442,7 +442,7 @@ fn default_drain_timeout_secs() -> u64 {
 }
 
 /// Upstream endpoint.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EndpointConfig {
     /// Stable identifier.

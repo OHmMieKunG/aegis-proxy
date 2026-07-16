@@ -60,16 +60,62 @@ impl RuntimeSnapshot {
         revision: impl Into<Arc<str>>,
         process_shutdown: &CancellationToken,
     ) -> Result<Arc<Self>, ProxyError> {
+        Self::prepare_reusing(config, revision, process_shutdown, None).await
+    }
+
+    async fn prepare_reusing(
+        config: Arc<Config>,
+        revision: impl Into<Arc<str>>,
+        process_shutdown: &CancellationToken,
+        previous: Option<&RuntimeSnapshot>,
+    ) -> Result<Arc<Self>, ProxyError> {
         aegisproxy_config::validate(&config)?;
         let route_index = Arc::new(RouteIndex::compile(&config));
         let preparation_config = Arc::clone(&config);
+        let previous_upstreams = previous.map(|previous| {
+            (
+                Arc::clone(&previous.config),
+                Arc::clone(&previous.upstream_clients),
+                Arc::clone(&previous.upstream_pools),
+                Arc::clone(&previous.dns_endpoints),
+            )
+        });
         let (tls_acceptors, upstream_clients, upstream_pools, dns_endpoints) =
             tokio::task::spawn_blocking(move || {
-                let (clients, dns_endpoints) = build_upstream_clients(&preparation_config)?;
+                let (mut clients, mut dns_endpoints) = build_upstream_clients(&preparation_config)?;
+                let mut pools = build_upstream_pools(&preparation_config)?;
+                if let Some((previous_config, previous_clients, previous_pools, previous_dns)) =
+                    previous_upstreams
+                {
+                    for group in &preparation_config.upstream_groups {
+                        if !previous_config
+                            .upstream_groups
+                            .iter()
+                            .any(|previous| previous == group)
+                        {
+                            continue;
+                        }
+                        if let Some(previous_pool) = previous_pools.get(&group.id) {
+                            Arc::make_mut(&mut pools)
+                                .insert(group.id.clone(), Arc::clone(previous_pool));
+                        }
+                        for endpoint in &group.endpoints {
+                            let key = super::endpoint_key(&group.id, &endpoint.id);
+                            if let Some(previous_client) = previous_clients.get(&key) {
+                                Arc::make_mut(&mut clients)
+                                    .insert(key.clone(), previous_client.clone());
+                            }
+                            if let Some(previous_dns) = previous_dns.get(&key) {
+                                Arc::make_mut(&mut dns_endpoints)
+                                    .insert(key, Arc::clone(previous_dns));
+                            }
+                        }
+                    }
+                }
                 Ok::<_, ProxyError>((
                     prepare_tls(&preparation_config)?,
                     clients,
-                    build_upstream_pools(&preparation_config)?,
+                    pools,
                     dns_endpoints,
                 ))
             })
@@ -248,10 +294,11 @@ impl ActivationCoordinator {
         if !hot_reload_compatible(&current.config, &candidate_config) {
             return Err(ActivationError::RestartRequired);
         }
-        let candidate = RuntimeSnapshot::prepare(
+        let candidate = RuntimeSnapshot::prepare_reusing(
             Arc::new(candidate_config),
             Arc::<str>::from(candidate_id.clone()),
             &self.process_shutdown,
+            Some(&current),
         )
         .await?;
         let revisions = Arc::clone(&self.revisions);
@@ -263,7 +310,7 @@ impl ActivationCoordinator {
         .await
         .map_err(|error| ProxyError::Preparation(error.to_string()))??;
 
-        let retired = self.runtime.publish(candidate);
+        let retired = self.runtime.publish(Arc::clone(&candidate));
         if let Err(error) = self.mark_probation(&candidate_id).await {
             return Err(self
                 .restore_after_publication(&candidate_id, retired, error)
@@ -279,7 +326,8 @@ impl ActivationCoordinator {
                 .restore_after_publication(&candidate_id, retired, error)
                 .await);
         }
-        retire_pools(&retired);
+        retire_replaced_pools(&retired, &candidate);
+        retired.stop_background().await;
         Ok(ActivationResult {
             active: candidate_id,
             previous: journal.previous.map(|previous| previous.id),
@@ -346,8 +394,15 @@ fn hot_reload_compatible(current: &Config, candidate: &Config) -> bool {
         })
 }
 
-fn retire_pools(snapshot: &RuntimeSnapshot) {
-    for pool in snapshot.upstream_pools.values() {
+fn retire_replaced_pools(retired: &RuntimeSnapshot, active: &RuntimeSnapshot) {
+    for (group_id, pool) in retired.upstream_pools.iter() {
+        if active
+            .upstream_pools
+            .get(group_id)
+            .is_some_and(|active_pool| Arc::ptr_eq(pool, active_pool))
+        {
+            continue;
+        }
         for endpoint in pool.endpoints() {
             let _ = pool.begin_drain(&endpoint.config().id);
         }
@@ -361,8 +416,8 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use aegisproxy_config::{
-        AdminConfig, Config, LimitsConfig, ListenerConfig, RuntimeConfig, TlsConfig,
-        TrustedProxyConfig, revision::RevisionStore,
+        AdminConfig, Config, EndpointConfig, LimitsConfig, ListenerConfig, RuntimeConfig,
+        TlsConfig, TrustedProxyConfig, UpstreamGroupConfig, revision::RevisionStore,
     };
 
     use super::*;
@@ -399,6 +454,25 @@ mod tests {
         ))
     }
 
+    fn config_with_upstream(port: u16, upstream_port: u16) -> Arc<Config> {
+        let mut config = (*config(port)).clone();
+        config.upstream_groups.push(UpstreamGroupConfig {
+            id: "app".into(),
+            allowed_cidrs: vec!["127.0.0.1/32".parse().expect("CIDR")],
+            endpoints: vec![EndpointConfig {
+                id: "app-1".into(),
+                url: format!("http://127.0.0.1:{upstream_port}")
+                    .parse()
+                    .expect("upstream URL"),
+                weight: 1,
+                server_name: None,
+                ca_bundle: None,
+            }],
+            ..UpstreamGroupConfig::default()
+        });
+        Arc::new(config)
+    }
+
     #[tokio::test]
     async fn publication_is_one_atomic_pointer_swap() {
         let shutdown = CancellationToken::new();
@@ -413,6 +487,69 @@ mod tests {
         assert_eq!(&*retired.revision, "first");
         assert_eq!(&*handle.revision(), "second");
         retired.stop_background().await;
+    }
+
+    #[tokio::test]
+    async fn reuses_only_complete_unchanged_upstream_groups() {
+        let shutdown = CancellationToken::new();
+        let first = RuntimeSnapshot::prepare(config_with_upstream(8080, 9000), "first", &shutdown)
+            .await
+            .expect("first");
+        let mut same_config = (*first.config).clone();
+        same_config.runtime.config_poll_secs = 2;
+        let same = RuntimeSnapshot::prepare_reusing(
+            Arc::new(same_config),
+            "same",
+            &shutdown,
+            Some(&first),
+        )
+        .await
+        .expect("same");
+        assert!(Arc::ptr_eq(
+            first.upstream_pools.get("app").expect("first pool"),
+            same.upstream_pools.get("app").expect("same pool")
+        ));
+        assert!(Arc::ptr_eq(
+            first
+                .dns_endpoints
+                .get("app/app-1")
+                .expect("first DNS endpoint"),
+            same.dns_endpoints
+                .get("app/app-1")
+                .expect("same DNS endpoint")
+        ));
+
+        let changed = RuntimeSnapshot::prepare_reusing(
+            config_with_upstream(8080, 9001),
+            "changed",
+            &shutdown,
+            Some(&same),
+        )
+        .await
+        .expect("changed");
+        assert!(!Arc::ptr_eq(
+            same.upstream_pools.get("app").expect("same pool"),
+            changed.upstream_pools.get("app").expect("changed pool")
+        ));
+        retire_replaced_pools(&same, &changed);
+        assert!(
+            same.upstream_pools
+                .get("app")
+                .expect("retired pool")
+                .select()
+                .is_err()
+        );
+        assert!(
+            changed
+                .upstream_pools
+                .get("app")
+                .expect("active pool")
+                .select()
+                .is_ok()
+        );
+        first.stop_background().await;
+        same.stop_background().await;
+        changed.stop_background().await;
     }
 
     #[tokio::test]
