@@ -14,6 +14,7 @@ Phase 0 inventory; versions are locked in `Cargo.lock` and must be re-reviewed o
 | tokio-rustls | Async Rustls accept/connect adapters | `aws_lc_rs`, `tls12` | MIT/Apache-2.0 | AWS-LC native build | manual Tokio adapter | Review with Rustls |
 | rustls-webpki/webpki-roots | Certificate validation and public roots | `aws-lc-rs`, `std` | ISC/MPL-2.0 | AWS-LC native build | native roots | Review with Rustls |
 | rcgen (dev) | Ephemeral TLS test certificates | `aws_lc_rs`, `crypto`, `pem` | MIT/Apache-2.0 | AWS-LC native build | checked-in private fixtures | Test-only, review with Rustls |
+| zeroize | Clear owned secret buffers on drop | `std` | Apache-2.0/MIT | Safe API; compiler optimization limits documented | manual volatile clearing | Review with secret-boundary changes |
 | axum | Private admin REST API | Phase 8 | MIT | Safe first-party policy | raw hyper | Add only Phase 8 |
 | tracing/tracing-subscriber | Structured logs | JSON/env filter | MIT | None expected | log | Keep exporter bounded |
 | clap | CLI parsing | derive | MIT/Apache-2.0 | None expected | std::env | Stable CLI contract |
