@@ -1179,12 +1179,6 @@ fn validate_upstream_policy(
             field("drain_timeout_secs")
         )));
     }
-    if group.drain_timeout_secs != default_drain_timeout_secs() {
-        return Err(ConfigError::Invalid(format!(
-            "{} is not activated until the Phase 4 drain coordinator is installed",
-            field("drain_timeout_secs")
-        )));
-    }
     let passive = &group.passive_health;
     if passive.failure_threshold == 0
         || passive.failure_threshold > 100
@@ -2000,12 +1994,9 @@ mod tests {
         group.dns = DnsConfig::default();
 
         group.drain_timeout_secs = 10;
-        assert!(
-            validate_upstream_policy(0, &group)
-                .expect_err("inactive drain policy must fail")
-                .to_string()
-                .contains("not activated")
-        );
+        validate_upstream_policy(0, &group).expect("bounded drain policy");
+        group.drain_timeout_secs = 0;
+        assert!(validate_upstream_policy(0, &group).is_err());
         group.drain_timeout_secs = default_drain_timeout_secs();
 
         group.retry.max_attempts = 6;

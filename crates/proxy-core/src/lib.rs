@@ -167,6 +167,22 @@ pub async fn run(config: Arc<Config>, shutdown: CancellationToken) -> Result<(),
         &shutdown,
     );
     while tasks.join_next().await.is_some() {}
+    for pool in upstream_pools.values() {
+        let handles: Vec<_> = pool
+            .endpoints()
+            .iter()
+            .filter_map(|endpoint| {
+                pool.begin_drain(&endpoint.config().id)
+                    .ok()
+                    .map(|handle| (endpoint.config().id.clone(), handle))
+            })
+            .collect();
+        for (endpoint_id, handle) in handles {
+            if !handle.wait().await {
+                tracing::warn!(endpoint = %endpoint_id, "upstream drain deadline reached");
+            }
+        }
+    }
     health_tasks.wait().await;
     dns_tasks.wait().await;
     Ok(())

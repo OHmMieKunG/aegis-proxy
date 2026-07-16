@@ -5,6 +5,7 @@ use std::{
         atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     task::{Context, Poll},
+    time::Duration,
 };
 
 use aegisproxy_config::{
@@ -28,6 +29,8 @@ pub(crate) enum PoolError {
     Unavailable,
     #[error("upstream circuit is open")]
     CircuitOpen,
+    #[error("upstream endpoint does not exist")]
+    UnknownEndpoint,
 }
 
 #[derive(Debug)]
@@ -70,6 +73,29 @@ pub(crate) struct SelectedEndpoint {
     passive_health: Arc<PassiveHealthConfig>,
     active_health: bool,
     circuit_permit: Option<CircuitPermit>,
+}
+
+#[derive(Debug)]
+pub(crate) struct DrainingEndpoint {
+    endpoint: Arc<EndpointRuntime>,
+    timeout: Duration,
+}
+
+impl DrainingEndpoint {
+    pub(crate) async fn wait(self) -> bool {
+        let timeout = self.timeout;
+        self.wait_for(timeout).await
+    }
+
+    async fn wait_for(self, timeout: Duration) -> bool {
+        tokio::time::timeout(timeout, async {
+            while self.endpoint.active() != 0 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .is_ok()
+    }
 }
 
 impl SelectedEndpoint {
@@ -151,6 +177,7 @@ pub(crate) struct UpstreamPool {
     active_health: bool,
     circuit: Option<Arc<CircuitBreaker>>,
     retry: RetryConfig,
+    drain_timeout: Duration,
 }
 
 impl UpstreamPool {
@@ -177,6 +204,7 @@ impl UpstreamPool {
             active_health: group.health.is_some(),
             circuit: group.circuit_breaker.clone().map(CircuitBreaker::new),
             retry: group.retry.clone(),
+            drain_timeout: Duration::from_secs(group.drain_timeout_secs),
         })
     }
 
@@ -212,6 +240,20 @@ impl UpstreamPool {
 
     pub(crate) fn retry_policy(&self) -> &RetryConfig {
         &self.retry
+    }
+
+    pub(crate) fn begin_drain(&self, endpoint_id: &str) -> Result<DrainingEndpoint, PoolError> {
+        let endpoint = self
+            .endpoints
+            .iter()
+            .find(|endpoint| endpoint.config().id == endpoint_id)
+            .cloned()
+            .ok_or(PoolError::UnknownEndpoint)?;
+        endpoint.health.mark_draining();
+        Ok(DrainingEndpoint {
+            endpoint,
+            timeout: self.drain_timeout,
+        })
     }
 
     fn eligible_indices(&self) -> Vec<usize> {
@@ -386,6 +428,28 @@ mod tests {
         assert_eq!(pool.endpoints[0].active(), 1);
         drop(selected);
         assert_eq!(pool.endpoints[0].active(), 0);
+    }
+
+    #[tokio::test]
+    async fn drain_excludes_new_work_and_waits_for_active_guard() {
+        let mut config = group(BalancingAlgorithm::RoundRobin, &[1, 1]);
+        config.drain_timeout_secs = 7;
+        let pool = UpstreamPool::new(&config).expect("pool");
+        let selected = pool.select().expect("selection");
+        assert_eq!(selected.config().id, "endpoint-0");
+        let draining = pool.begin_drain("endpoint-0").expect("drain handle");
+        for _ in 0..4 {
+            assert_eq!(pool.select().expect("selection").config().id, "endpoint-1");
+        }
+        assert!(!draining.wait_for(Duration::from_millis(1)).await);
+
+        let draining = pool.begin_drain("endpoint-0").expect("drain handle");
+        drop(selected);
+        assert!(draining.wait().await);
+        assert!(matches!(
+            pool.begin_drain("missing"),
+            Err(PoolError::UnknownEndpoint)
+        ));
     }
 
     #[test]
