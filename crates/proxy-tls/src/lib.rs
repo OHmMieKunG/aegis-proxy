@@ -4,11 +4,16 @@
 
 mod acceptor;
 mod client;
+mod generation;
 mod selector;
 mod store;
 
 pub use acceptor::{server_config, tls_acceptor};
 pub use client::client_config;
+pub use generation::{
+    CertificateImport, StoredCertificate, import_certificate, inspect_certificate,
+    list_certificates, scan_expiring_certificates,
+};
 pub use selector::CertificateResolver;
 pub use store::{Identity, load_identity};
 pub use tokio_rustls::{TlsAcceptor, server::TlsStream};
@@ -39,4 +44,10 @@ pub enum TlsError {
     /// An upstream trust store was empty or rejected a certificate.
     #[error("invalid upstream TLS trust store: {0}")]
     TrustStore(String),
+    /// Certificate generation storage failed without exposing secret contents.
+    #[error("certificate store I/O failed: {0}")]
+    StoreIo(#[from] std::io::Error),
+    /// Certificate generation metadata or layout was invalid.
+    #[error("invalid certificate store: {0}")]
+    StoreFormat(String),
 }

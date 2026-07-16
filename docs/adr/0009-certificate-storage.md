@@ -17,7 +17,7 @@ Age-encrypted files; OS keyring only; plaintext PEM; external vault required.
 
 ## Decision
 
-Use age-encrypted generation files with externally supplied decryption identity and atomic `current` pointer.
+Use age-encrypted generation files with externally supplied decryption identity and atomic `current` pointer. Phase 2 imports activate a new certificate ID by atomically renaming its complete staged directory and reject replacement; later rotation must retain old generations and provide platform-correct pointer replacement.
 
 ## Rationale
 
@@ -33,7 +33,7 @@ Modes, core-dump policy, zeroizing wrappers, canary tests, and separate recovery
 
 ## Reliability implications
 
-Old generation remains through renewal/storage failure.
+Initial import is all-or-nothing. Old generations remain through later renewal/storage failure once rotation is introduced.
 
 ## Operational implications
 

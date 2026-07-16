@@ -67,14 +67,18 @@ name = "aegisproxy-tls"
 version = "0.1.0"
 dependencies = [
  "aegisproxy-secrets",
+ "age",
  "arc-swap",
  "rcgen",
  "rustls",
  "rustls-pemfile",
  "rustls-webpki",
+ "serde",
  "thiserror 2.0.18",
  "tokio-rustls",
+ "toml 0.8.23",
  "webpki-roots",
+ "x509-parser",
 ]
 
 [[package]]
