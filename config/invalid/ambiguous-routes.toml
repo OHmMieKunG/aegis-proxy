@@ -1,0 +1,30 @@
+schema_version = 1
+
+[[listeners]]
+id = "public"
+bind = "127.0.0.1:8080"
+protocol = "http"
+
+[[upstream_groups]]
+id = "app"
+allowed_cidrs = ["127.0.0.1/32"]
+
+[[upstream_groups.endpoints]]
+id = "app-1"
+url = "http://127.0.0.1:9000"
+
+[[routes]]
+id = "blue"
+listeners = ["public"]
+hosts = ["example.test"]
+path_prefixes = ["/api"]
+headers = [{ name = "x-blue" }]
+upstream_group = "app"
+
+[[routes]]
+id = "green"
+listeners = ["public"]
+hosts = ["example.test"]
+path_prefixes = ["/api"]
+headers = [{ name = "x-green" }]
+upstream_group = "app"

@@ -1,0 +1,239 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aegisproxy.invalid/schema/config-v1.json",
+  "title": "AegisProxy configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "runtime": { "$ref": "#/$defs/runtime" },
+    "limits": { "$ref": "#/$defs/limits" },
+    "listeners": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "items": { "$ref": "#/$defs/listener" }
+    },
+    "tls": { "$ref": "#/$defs/tls" },
+    "certificates": {
+      "type": "array",
+      "maxItems": 1024,
+      "items": { "$ref": "#/$defs/certificate" }
+    },
+    "trusted_proxies": { "$ref": "#/$defs/trustedProxies" },
+    "upstream_groups": {
+      "type": "array",
+      "maxItems": 1024,
+      "items": { "$ref": "#/$defs/upstreamGroup" }
+    },
+    "middlewares": {
+      "type": "object",
+      "maxProperties": 1024,
+      "propertyNames": { "$ref": "#/$defs/id" },
+      "additionalProperties": { "$ref": "#/$defs/middleware" }
+    },
+    "routes": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": { "$ref": "#/$defs/route" }
+    },
+    "admin": { "$ref": "#/$defs/admin" }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 63,
+      "pattern": "^[a-z][a-z0-9_-]*$"
+    },
+    "secretRef": {
+      "type": "string",
+      "minLength": 7,
+      "maxLength": 4096,
+      "pattern": "^(env://|file://).+"
+    },
+    "cidr": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 64,
+      "pattern": "^[0-9A-Fa-f:.]+/[0-9]{1,3}$"
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "state_dir": { "type": "string", "minLength": 1, "maxLength": 4096, "default": "./state" },
+        "shutdown_grace_secs": { "type": "integer", "minimum": 1, "maximum": 3600, "default": 30 },
+        "config_poll_secs": { "type": "integer", "minimum": 1, "maximum": 300, "default": 1 }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_connections": { "type": "integer", "minimum": 1, "maximum": 1000000, "default": 4096 },
+        "max_header_bytes": { "type": "integer", "minimum": 8192, "maximum": 1048576, "default": 32768 },
+        "max_headers": { "type": "integer", "minimum": 1, "maximum": 1024, "default": 100 },
+        "max_request_target": { "type": "integer", "minimum": 1024, "maximum": 65536, "default": 8192 },
+        "max_http2_streams": { "type": "integer", "minimum": 1, "maximum": 10000, "default": 128 },
+        "max_request_body": { "type": "integer", "minimum": 1, "maximum": 1073741824, "default": 33554432 },
+        "request_header_timeout_secs": { "type": "integer", "minimum": 1, "maximum": 300, "default": 10 },
+        "response_header_timeout_secs": { "type": "integer", "minimum": 1, "maximum": 3600, "default": 30 }
+      }
+    },
+    "listener": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "bind", "protocol"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "bind": { "type": "string", "minLength": 3, "maxLength": 128 },
+        "protocol": { "enum": ["http", "https", "tcp"] },
+        "certificates": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/id" }
+        }
+      }
+    },
+    "tls": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "minimum_version": { "enum": ["1.2", "1.3"], "default": "1.2" },
+        "max_handshakes": { "type": "integer", "minimum": 1, "maximum": 100000, "default": 256 },
+        "handshake_timeout_secs": { "type": "integer", "minimum": 1, "maximum": 300, "default": 10 },
+        "identity": { "$ref": "#/$defs/secretRef" }
+      }
+    },
+    "dnsName": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 253,
+      "pattern": "^(\\*\\.)?[a-z0-9](?:[a-z0-9.-]*[a-z0-9])$"
+    },
+    "certificate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "hosts", "certificate_chain", "private_key"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "hosts": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/dnsName" }
+        },
+        "certificate_chain": { "$ref": "#/$defs/secretRef" },
+        "private_key": { "$ref": "#/$defs/secretRef" }
+      }
+    },
+    "trustedProxies": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cidrs": { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/cidr" } },
+        "trusted_hops": { "type": "integer", "minimum": 0, "maximum": 32, "default": 0 }
+      }
+    },
+    "endpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "url"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "url": { "type": "string", "format": "uri", "maxLength": 2048, "pattern": "^https?://" },
+        "weight": { "type": "integer", "minimum": 1, "default": 1 },
+        "server_name": { "$ref": "#/$defs/dnsName" },
+        "ca_bundle": { "$ref": "#/$defs/secretRef" }
+      }
+    },
+    "upstreamGroup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "endpoints"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "algorithm": { "const": "round_robin", "default": "round_robin" },
+        "allowed_cidrs": { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/cidr" } },
+        "endpoints": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "items": { "$ref": "#/$defs/endpoint" }
+        }
+      }
+    },
+    "headerMatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9!#$%&'*+.^_`|~-]+$" },
+        "value": { "type": "string", "maxLength": 1024 }
+      }
+    },
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "listeners", "upstream_group"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "listeners": { "type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
+        "hosts": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/dnsName" } },
+        "paths": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 2048, "pattern": "^/" } },
+        "path_prefixes": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 2048, "pattern": "^/" } },
+        "methods": { "type": "array", "maxItems": 32, "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Z0-9!#$%&'*+.^_`|~-]+$" } },
+        "headers": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/headerMatch" } },
+        "default": { "type": "boolean", "default": false },
+        "priority": { "type": "integer", "minimum": -2147483648, "maximum": 2147483647, "default": 0 },
+        "middlewares": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
+        "upstream_group": { "$ref": "#/$defs/id" }
+      }
+    },
+    "middleware": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": {
+            "type": { "const": "security_headers" },
+            "hsts": { "type": ["string", "null"], "maxLength": 1024 },
+            "content_security_policy": { "type": ["string", "null"], "maxLength": 8192 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "requests_per_second", "burst"],
+          "properties": {
+            "type": { "const": "rate_limit" },
+            "requests_per_second": { "type": "integer", "minimum": 1 },
+            "burst": { "type": "integer", "minimum": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "location", "status"],
+          "properties": {
+            "type": { "const": "redirect" },
+            "location": { "type": "string", "maxLength": 2048 },
+            "status": { "enum": [301, 302, 303, 307, 308] }
+          }
+        }
+      ]
+    },
+    "admin": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "unix_socket": { "type": ["string", "null"], "maxLength": 4096 }
+      }
+    }
+  }
+}

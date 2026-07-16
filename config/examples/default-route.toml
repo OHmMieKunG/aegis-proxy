@@ -1,0 +1,22 @@
+schema_version = 1
+
+[[listeners]]
+id = "public"
+bind = "127.0.0.1:8080"
+protocol = "http"
+
+[[upstream_groups]]
+id = "maintenance"
+algorithm = "round_robin"
+allowed_cidrs = ["127.0.0.1/32"]
+
+[[upstream_groups.endpoints]]
+id = "maintenance-1"
+url = "http://127.0.0.1:9000"
+weight = 1
+
+[[routes]]
+id = "fallback"
+listeners = ["public"]
+default = true
+upstream_group = "maintenance"
