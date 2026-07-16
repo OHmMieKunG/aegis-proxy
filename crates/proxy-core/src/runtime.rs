@@ -12,7 +12,7 @@ use aegisproxy_config::{
     Config,
     revision::{RevisionError, RevisionStore},
 };
-use aegisproxy_tls::TlsAcceptor;
+use aegisproxy_tls::{TlsAcceptor, acme::HttpChallengeRegistry};
 use arc_swap::ArcSwap;
 use thiserror::Error;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
@@ -168,6 +168,7 @@ impl RuntimeSnapshot {
 #[derive(Clone)]
 pub struct RuntimeHandle {
     current: Arc<ArcSwap<RuntimeSnapshot>>,
+    http_challenges: HttpChallengeRegistry,
 }
 
 impl fmt::Debug for RuntimeHandle {
@@ -183,6 +184,7 @@ impl RuntimeHandle {
     pub(crate) fn new(initial: Arc<RuntimeSnapshot>) -> Self {
         Self {
             current: Arc::new(ArcSwap::from(initial)),
+            http_challenges: HttpChallengeRegistry::default(),
         }
     }
 
@@ -197,6 +199,12 @@ impl RuntimeHandle {
     /// Return the active immutable revision identifier.
     pub fn revision(&self) -> Arc<str> {
         Arc::clone(&self.current.load().revision)
+    }
+
+    /// Return the process-wide HTTP-01 registry retained across configuration reloads.
+    #[must_use]
+    pub fn http_challenges(&self) -> HttpChallengeRegistry {
+        self.http_challenges.clone()
     }
 }
 

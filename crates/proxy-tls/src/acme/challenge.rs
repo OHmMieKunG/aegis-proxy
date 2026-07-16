@@ -33,6 +33,7 @@ pub enum HttpChallengeError {
 #[derive(Debug)]
 struct Challenge {
     generation: u64,
+    listener_id: String,
     identifier: String,
     key_authorization: Arc<[u8]>,
     expires_at: Instant,
@@ -62,12 +63,13 @@ impl HttpChallengeRegistry {
     /// Install one exact, time-limited token response.
     pub fn install(
         &self,
+        listener_id: &str,
         identifier: &str,
         token: &str,
         key_authorization: &[u8],
         lifetime: Duration,
     ) -> Result<HttpChallengeLease, HttpChallengeError> {
-        validate_material(identifier, token, key_authorization, lifetime)?;
+        validate_material(listener_id, identifier, token, key_authorization, lifetime)?;
         let mut state = self
             .state
             .lock()
@@ -85,6 +87,7 @@ impl HttpChallengeRegistry {
             token.to_owned(),
             Challenge {
                 generation,
+                listener_id: listener_id.to_owned(),
                 identifier: identifier.to_owned(),
                 key_authorization: Arc::from(key_authorization),
                 expires_at: Instant::now() + lifetime,
@@ -100,6 +103,7 @@ impl HttpChallengeRegistry {
     /// Resolve only the exact ACME system path. Query strings are not accepted.
     pub fn response_for_request(
         &self,
+        listener_id: &str,
         identifier: &str,
         path: &str,
     ) -> Result<Option<Arc<[u8]>>, HttpChallengeError> {
@@ -120,7 +124,9 @@ impl HttpChallengeRegistry {
         Ok(state
             .challenges
             .get(token)
-            .filter(|challenge| challenge.identifier == identifier)
+            .filter(|challenge| {
+                challenge.listener_id == listener_id && challenge.identifier == identifier
+            })
             .map(|challenge| Arc::clone(&challenge.key_authorization)))
     }
 
@@ -153,12 +159,14 @@ impl Drop for HttpChallengeLease {
 }
 
 fn validate_material(
+    listener_id: &str,
     identifier: &str,
     token: &str,
     key_authorization: &[u8],
     lifetime: Duration,
 ) -> Result<(), HttpChallengeError> {
-    if !valid_identifier(identifier)
+    if !valid_listener_id(listener_id)
+        || !valid_identifier(identifier)
         || !valid_token(token)
         || key_authorization.is_empty()
         || key_authorization.len() > MAX_KEY_AUTHORIZATION_BYTES
@@ -170,6 +178,17 @@ fn validate_material(
         return Err(HttpChallengeError::Invalid);
     }
     Ok(())
+}
+
+fn valid_listener_id(listener_id: &str) -> bool {
+    listener_id
+        .as_bytes()
+        .first()
+        .is_some_and(u8::is_ascii_lowercase)
+        && listener_id.len() <= 63
+        && listener_id.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+        })
 }
 
 fn valid_identifier(identifier: &str) -> bool {
@@ -211,12 +230,14 @@ mod tests {
     const TOKEN: &str = "abc_DEF-123";
     const KEY_AUTHORIZATION: &[u8] = b"abc_DEF-123.thumbprint";
     const IDENTIFIER: &str = "example.test";
+    const LISTENER: &str = "web";
 
     #[test]
     fn exact_path_resolves_until_lease_drop() {
         let registry = HttpChallengeRegistry::default();
         let lease = registry
             .install(
+                LISTENER,
                 IDENTIFIER,
                 TOKEN,
                 KEY_AUTHORIZATION,
@@ -226,33 +247,39 @@ mod tests {
         let path = format!("{HTTP_CHALLENGE_PREFIX}{TOKEN}");
         assert_eq!(
             registry
-                .response_for_request(IDENTIFIER, &path)
+                .response_for_request(LISTENER, IDENTIFIER, &path)
                 .expect("lookup")
                 .as_deref(),
             Some(KEY_AUTHORIZATION)
         );
         assert!(
             registry
-                .response_for_request(IDENTIFIER, &format!("{path}/extra"))
+                .response_for_request(LISTENER, IDENTIFIER, &format!("{path}/extra"))
                 .expect("lookup")
                 .is_none()
         );
         assert!(
             registry
-                .response_for_request(IDENTIFIER, &format!("{path}?query=1"))
+                .response_for_request(LISTENER, IDENTIFIER, &format!("{path}?query=1"))
                 .expect("lookup")
                 .is_none()
         );
         assert!(
             registry
-                .response_for_request("other.test", &path)
+                .response_for_request(LISTENER, "other.test", &path)
+                .expect("lookup")
+                .is_none()
+        );
+        assert!(
+            registry
+                .response_for_request("other", IDENTIFIER, &path)
                 .expect("lookup")
                 .is_none()
         );
         drop(lease);
         assert!(
             registry
-                .response_for_request(IDENTIFIER, &path)
+                .response_for_request(LISTENER, IDENTIFIER, &path)
                 .expect("lookup")
                 .is_none()
         );
@@ -263,6 +290,7 @@ mod tests {
         let registry = HttpChallengeRegistry::default();
         let _lease = registry
             .install(
+                LISTENER,
                 IDENTIFIER,
                 TOKEN,
                 KEY_AUTHORIZATION,
@@ -271,6 +299,7 @@ mod tests {
             .expect("install challenge");
         assert!(matches!(
             registry.install(
+                LISTENER,
                 IDENTIFIER,
                 TOKEN,
                 KEY_AUTHORIZATION,
@@ -280,6 +309,7 @@ mod tests {
         ));
         assert!(matches!(
             registry.install(
+                LISTENER,
                 IDENTIFIER,
                 "../token",
                 KEY_AUTHORIZATION,
@@ -288,11 +318,18 @@ mod tests {
             Err(HttpChallengeError::Invalid)
         ));
         assert!(matches!(
-            registry.install(IDENTIFIER, "token", b"bad\r\n", Duration::from_secs(60)),
+            registry.install(
+                LISTENER,
+                IDENTIFIER,
+                "token",
+                b"bad\r\n",
+                Duration::from_secs(60)
+            ),
             Err(HttpChallengeError::Invalid)
         ));
         assert!(matches!(
             registry.install(
+                LISTENER,
                 "*.example.test",
                 "token",
                 KEY_AUTHORIZATION,
@@ -308,6 +345,7 @@ mod tests {
         for index in 0..MAX_CHALLENGES {
             let lease = registry
                 .install(
+                    LISTENER,
                     IDENTIFIER,
                     &format!("token{index}"),
                     KEY_AUTHORIZATION,
@@ -325,6 +363,7 @@ mod tests {
             .for_each(|challenge| challenge.expires_at = Instant::now());
         let lease = registry
             .install(
+                LISTENER,
                 IDENTIFIER,
                 "fresh",
                 KEY_AUTHORIZATION,

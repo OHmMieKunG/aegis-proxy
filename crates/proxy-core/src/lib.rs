@@ -17,7 +17,11 @@ use aegisproxy_config::{
     ListenerConfig,
     revision::{RevisionError, RevisionStore},
 };
-use aegisproxy_tls::{CertificateResolver, Identity, TlsAcceptor, load_identity, tls_acceptor};
+use aegisproxy_tls::{
+    CertificateResolver, Identity, TlsAcceptor,
+    acme::{HttpChallengeError, HttpChallengeRegistry},
+    load_identity, tls_acceptor,
+};
 use http_body_util::{BodyExt, Full, Limited, combinators::BoxBody};
 use hyper::service::Service;
 use hyper::{
@@ -912,6 +916,7 @@ struct PinnedProxyService {
     shutdown: CancellationToken,
     upgrade_tasks: TaskTracker,
     tls_server_name: Option<String>,
+    http_challenges: HttpChallengeRegistry,
 }
 
 impl Service<Request<Incoming>> for ProxyService {
@@ -933,6 +938,7 @@ impl Service<Request<Incoming>> for ProxyService {
             shutdown: service.shutdown,
             upgrade_tasks: service.upgrade_tasks,
             tls_server_name: service.tls_server_name,
+            http_challenges: service.runtime.http_challenges(),
         };
         Box::pin(async move { Ok(pinned.forward(request).await) })
     }
@@ -980,6 +986,19 @@ impl PinnedProxyService {
                 StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
                 "request headers too large\n",
             );
+        }
+        match http_challenge_response(&self.http_challenges, &self.listener_id, &request) {
+            Ok(Some(response)) => return response,
+            Ok(None) => {}
+            Err(HttpChallengeError::Unavailable) => {
+                return error_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "ACME challenge service unavailable\n",
+                );
+            }
+            Err(_) => {
+                return error_response(StatusCode::BAD_REQUEST, "invalid ACME challenge\n");
+            }
         }
         let websocket = is_websocket_upgrade(&request);
         let preserve_te_trailers = request.version() == hyper::Version::HTTP_2
@@ -1336,6 +1355,38 @@ pub fn error_response(status: StatusCode, message: &'static str) -> Response<Res
         .unwrap_or_else(|_| Response::new(full_body(b"proxy error\n")))
 }
 
+fn http_challenge_response<B>(
+    registry: &HttpChallengeRegistry,
+    listener_id: &str,
+    request: &Request<B>,
+) -> Result<Option<Response<ResponseBody>>, HttpChallengeError> {
+    let Ok(identifier) = request_host(request) else {
+        return Ok(None);
+    };
+    let Some(body) =
+        registry.response_for_request(listener_id, &identifier, request.uri().path())?
+    else {
+        return Ok(None);
+    };
+    if request.method() != hyper::Method::GET {
+        return Ok(Some(error_response(
+            StatusCode::METHOD_NOT_ALLOWED,
+            "ACME challenge requires GET\n",
+        )));
+    }
+    let mut response = Response::new(full_body(body.as_ref()));
+    *response.status_mut() = StatusCode::OK;
+    response.headers_mut().insert(
+        hyper::header::CONTENT_TYPE,
+        HeaderValue::from_static("application/octet-stream"),
+    );
+    response.headers_mut().insert(
+        hyper::header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store"),
+    );
+    Ok(Some(response))
+}
+
 fn full_body(bytes: &[u8]) -> ResponseBody {
     Full::new(bytes::Bytes::copy_from_slice(bytes))
         .map_err(|never: Infallible| match never {})
@@ -1366,6 +1417,61 @@ mod tests {
         assert!(is_grpc_content_type(b"application/grpc"));
         assert!(is_grpc_content_type(b"Application/Grpc+Proto"));
         assert!(!is_grpc_content_type(b"application/json"));
+    }
+
+    #[tokio::test]
+    async fn serves_only_active_http01_host_listener_and_token() {
+        let registry = HttpChallengeRegistry::default();
+        let _lease = registry
+            .install(
+                "public",
+                "example.test",
+                "token_123",
+                b"token_123.thumbprint",
+                Duration::from_secs(60),
+            )
+            .expect("install challenge");
+        let challenge = request(
+            "GET",
+            "example.test",
+            "/.well-known/acme-challenge/token_123",
+        );
+        let response = http_challenge_response(&registry, "public", &challenge)
+            .expect("challenge lookup")
+            .expect("active response");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .into_body()
+                .collect()
+                .await
+                .expect("response body")
+                .to_bytes(),
+            &b"token_123.thumbprint"[..]
+        );
+        assert!(
+            http_challenge_response(&registry, "other", &challenge)
+                .expect("lookup")
+                .is_none()
+        );
+        let wrong_host = request("GET", "other.test", "/.well-known/acme-challenge/token_123");
+        assert!(
+            http_challenge_response(&registry, "public", &wrong_host)
+                .expect("lookup")
+                .is_none()
+        );
+        let post = request(
+            "POST",
+            "example.test",
+            "/.well-known/acme-challenge/token_123",
+        );
+        assert_eq!(
+            http_challenge_response(&registry, "public", &post)
+                .expect("lookup")
+                .expect("method response")
+                .status(),
+            StatusCode::METHOD_NOT_ALLOWED
+        );
     }
 
     fn select_route<'a, B>(
