@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 aegisproxy-config = { path = "../proxy-config" }
 aegisproxy-tls = { path = "../proxy-tls" }
+arc-swap = "1"
 bytes = "1"
 http-body-util = "0.1"
 hickory-resolver = { version = "0.26.1", default-features = false, features = ["system-config", "tokio"] }

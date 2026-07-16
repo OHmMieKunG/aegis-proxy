@@ -43,6 +43,7 @@ dependencies = [
  "aegisproxy-config",
  "aegisproxy-tls",
  "age",
+ "arc-swap",
  "bytes",
  "futures-util",
  "hickory-resolver",

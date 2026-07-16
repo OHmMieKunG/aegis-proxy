@@ -3,6 +3,7 @@
 //! Data-plane HTTP forwarding primitives.
 
 mod route;
+mod runtime;
 mod tcp;
 mod upstream;
 
@@ -42,6 +43,8 @@ use upstream::{
 
 pub use route::RouteIndex;
 use route::{PathError, canonical_host, canonicalize_request_path, request_host};
+pub use runtime::RuntimeHandle;
+use runtime::RuntimeSnapshot;
 use tcp::{TcpListenerContext, accept_loop as tcp_accept_loop};
 
 /// Boxed body error.
@@ -72,27 +75,15 @@ pub enum ProxyError {
 
 /// Run configured public listeners until cancellation.
 pub async fn run(config: Arc<Config>, shutdown: CancellationToken) -> Result<(), ProxyError> {
-    aegisproxy_config::validate(&config)?;
-    let route_index = Arc::new(RouteIndex::compile(&config));
-    let preparation_config = Arc::clone(&config);
-    let (mut tls_acceptors, upstream_clients, upstream_pools, dns_endpoints) =
-        tokio::task::spawn_blocking(move || {
-            let (clients, dns_endpoints) = build_upstream_clients(&preparation_config)?;
-            Ok::<_, ProxyError>((
-                prepare_tls(&preparation_config)?,
-                clients,
-                build_upstream_pools(&preparation_config)?,
-                dns_endpoints,
-            ))
-        })
-        .await
-        .map_err(|error| ProxyError::Preparation(error.to_string()))??;
-    let dns_resolver = prepare_dns(
-        &dns_endpoints.values().cloned().collect::<Vec<_>>(),
-        config.limits.max_dns_lookups,
-    )
-    .await
-    .map_err(|error| ProxyError::Preparation(error.to_string()))?;
+    let snapshot = RuntimeSnapshot::prepare(config, "startup", &shutdown).await?;
+    let runtime = RuntimeHandle::new(Arc::clone(&snapshot));
+    let snapshot = runtime.load();
+    let config = Arc::clone(&snapshot.config);
+    let route_index = Arc::clone(&snapshot.route_index);
+    let mut tls_acceptors = snapshot.tls_acceptors.clone();
+    let upstream_clients = Arc::clone(&snapshot.upstream_clients);
+    let upstream_pools = Arc::clone(&snapshot.upstream_pools);
+    let dns_endpoints = Arc::clone(&snapshot.dns_endpoints);
     let handshake_permits = Arc::new(Semaphore::new(config.tls.max_handshakes));
     let mut tasks = tokio::task::JoinSet::new();
     for listener in &config.listeners {
@@ -153,19 +144,6 @@ pub async fn run(config: Arc<Config>, shutdown: CancellationToken) -> Result<(),
             "no public listeners configured",
         )));
     }
-    let health_tasks = start_active_health_checks(
-        &config,
-        &upstream_clients,
-        &upstream_pools,
-        &dns_endpoints,
-        &shutdown,
-    )?;
-    let dns_tasks = start_dns_refreshes(
-        &dns_endpoints.values().cloned().collect::<Vec<_>>(),
-        dns_resolver,
-        config.limits.max_dns_lookups,
-        &shutdown,
-    );
     while tasks.join_next().await.is_some() {}
     for pool in upstream_pools.values() {
         let handles: Vec<_> = pool
@@ -183,8 +161,7 @@ pub async fn run(config: Arc<Config>, shutdown: CancellationToken) -> Result<(),
             }
         }
     }
-    health_tasks.wait().await;
-    dns_tasks.wait().await;
+    snapshot.stop_background().await;
     Ok(())
 }
 
