@@ -112,7 +112,10 @@ impl AcmeIssuedCertificate {
 enum AcmeChallengeResponse {
     Http01(String),
     Dns01(String),
-    TlsAlpn01([u8; 32]),
+    TlsAlpn01 {
+        key_authorization: String,
+        digest: [u8; 32],
+    },
 }
 
 impl fmt::Debug for AcmeChallengeMaterial {
@@ -161,7 +164,21 @@ impl AcmeChallengeMaterial {
     #[must_use]
     pub fn tls_alpn_digest(&self) -> Option<&[u8; 32]> {
         match &self.response {
-            AcmeChallengeResponse::TlsAlpn01(value) => Some(value),
+            AcmeChallengeResponse::TlsAlpn01 { digest, .. } => Some(digest),
+            _ => None,
+        }
+    }
+
+    /// TLS-ALPN-01 key authorization, when this is TLS-ALPN-01 material.
+    ///
+    /// This exists for challenge responders which generate their own temporary
+    /// certificate. Debug output remains redacted.
+    #[must_use]
+    pub fn tls_alpn_key_authorization(&self) -> Option<&str> {
+        match &self.response {
+            AcmeChallengeResponse::TlsAlpn01 {
+                key_authorization, ..
+            } => Some(key_authorization),
             _ => None,
         }
     }
@@ -302,11 +319,17 @@ impl AcmeOrder {
                     AcmeChallengeResponse::Dns01(key_authorization.dns_value())
                 }
                 AcmeChallengeKind::TlsAlpn01 => {
+                    if key_authorization.as_str().len() > MAX_KEY_AUTHORIZATION_BYTES {
+                        return Err(AcmeOrderError::Protocol);
+                    }
                     let digest = key_authorization.digest();
                     let digest = digest.as_ref();
                     let digest: [u8; 32] =
                         digest.try_into().map_err(|_| AcmeOrderError::Protocol)?;
-                    AcmeChallengeResponse::TlsAlpn01(digest)
+                    AcmeChallengeResponse::TlsAlpn01 {
+                        key_authorization: key_authorization.as_str().to_owned(),
+                        digest,
+                    }
                 }
             };
             material.push(AcmeChallengeMaterial {
@@ -602,6 +625,23 @@ mod tests {
         assert!(!debug.contains("key-auth-canary"));
         assert_eq!(material.http_key_authorization(), Some("key-auth-canary"));
         assert_eq!(material.dns_value(), None);
+
+        let material = AcmeChallengeMaterial {
+            identifier: "tls.example.test".into(),
+            token: "tls-token-canary".into(),
+            response: AcmeChallengeResponse::TlsAlpn01 {
+                key_authorization: "tls-key-auth-canary".into(),
+                digest: [7; 32],
+            },
+        };
+        let debug = format!("{material:?}");
+        assert!(!debug.contains("tls-token-canary"));
+        assert!(!debug.contains("tls-key-auth-canary"));
+        assert_eq!(
+            material.tls_alpn_key_authorization(),
+            Some("tls-key-auth-canary")
+        );
+        assert_eq!(material.tls_alpn_digest(), Some(&[7; 32]));
     }
 
     #[test]
