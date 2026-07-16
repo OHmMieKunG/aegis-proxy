@@ -87,7 +87,7 @@ pub(crate) fn identity_from_pem(
     })
 }
 
-fn parse_certificates(pem: &[u8]) -> Result<Vec<CertificateDer<'static>>, TlsError> {
+pub(crate) fn parse_certificates(pem: &[u8]) -> Result<Vec<CertificateDer<'static>>, TlsError> {
     let mut certificates = Vec::new();
     for item in rustls_pemfile::read_all(&mut Cursor::new(pem)) {
         match item.map_err(|error| TlsError::Pem(error.to_string()))? {

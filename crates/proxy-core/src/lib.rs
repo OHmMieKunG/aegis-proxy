@@ -16,6 +16,7 @@ use hyper::{
     body::Incoming,
     header::{CONNECTION, HOST, HeaderValue, UPGRADE},
 };
+use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::{
     client::legacy::{Client, connect::HttpConnector},
     rt::{TokioExecutor, TokioIo, TokioTimer},
@@ -33,6 +34,8 @@ use tokio_util::task::TaskTracker;
 pub type BoxError = Box<dyn Error + Send + Sync>;
 /// Boxed response body used by the server and upstream client.
 pub type ResponseBody = BoxBody<bytes::Bytes, BoxError>;
+type UpstreamClient = Client<HttpsConnector<HttpConnector>, ResponseBody>;
+type UpstreamClients = Arc<HashMap<String, UpstreamClient>>;
 
 /// Proxy runtime error.
 #[derive(Debug, Error)]
@@ -55,9 +58,14 @@ pub enum ProxyError {
 pub async fn run(config: Arc<Config>, shutdown: CancellationToken) -> Result<(), ProxyError> {
     aegisproxy_config::validate(&config)?;
     let preparation_config = Arc::clone(&config);
-    let mut tls_acceptors = tokio::task::spawn_blocking(move || prepare_tls(&preparation_config))
-        .await
-        .map_err(|error| ProxyError::Preparation(error.to_string()))??;
+    let (mut tls_acceptors, upstream_clients) = tokio::task::spawn_blocking(move || {
+        Ok::<_, ProxyError>((
+            prepare_tls(&preparation_config)?,
+            build_upstream_clients(&preparation_config)?,
+        ))
+    })
+    .await
+    .map_err(|error| ProxyError::Preparation(error.to_string()))??;
     let handshake_permits = Arc::new(Semaphore::new(config.tls.max_handshakes));
     let mut tasks = tokio::task::JoinSet::new();
     for listener in config
@@ -72,16 +80,20 @@ pub async fn run(config: Arc<Config>, shutdown: CancellationToken) -> Result<(),
         let shutdown = shutdown.clone();
         let limits = config.limits.clone();
         let handshake_permits = Arc::clone(&handshake_permits);
+        let upstream_clients = Arc::clone(&upstream_clients);
         tracing::info!(listener = %listener_id, bind = %listener.bind, protocol = %listener.protocol, "listener started");
         tasks.spawn(async move {
             accept_loop(
                 tcp,
-                listener_id,
-                config,
-                limits,
-                tls_acceptor,
-                handshake_permits,
-                shutdown,
+                ListenerContext {
+                    listener_id,
+                    config,
+                    limits,
+                    tls_acceptor,
+                    handshake_permits,
+                    upstream_clients,
+                    shutdown,
+                },
             )
             .await
         });
@@ -94,6 +106,50 @@ pub async fn run(config: Arc<Config>, shutdown: CancellationToken) -> Result<(),
     }
     while tasks.join_next().await.is_some() {}
     Ok(())
+}
+
+fn build_upstream_clients(config: &Config) -> Result<UpstreamClients, ProxyError> {
+    let mut clients = HashMap::new();
+    for endpoint in config
+        .upstream_groups
+        .iter()
+        .flat_map(|group| group.endpoints.iter())
+    {
+        let server_name = endpoint
+            .server_name
+            .as_deref()
+            .map(|server_name| {
+                rustls::pki_types::ServerName::try_from(server_name.to_owned()).map_err(|_| {
+                    ProxyError::Preparation(format!(
+                        "endpoint {} has invalid server_name",
+                        endpoint.id
+                    ))
+                })
+            })
+            .transpose()?;
+        let tls_config = aegisproxy_tls::client_config(endpoint.ca_bundle.as_deref())?;
+        let connector = HttpsConnectorBuilder::new()
+            .with_tls_config(tls_config)
+            .https_or_http()
+            .with_server_name_resolver(move |uri: &Uri| {
+                server_name.clone().map(Ok).unwrap_or_else(|| {
+                    rustls::pki_types::ServerName::try_from(
+                        uri.host().unwrap_or_default().to_owned(),
+                    )
+                })
+            })
+            .enable_http1()
+            .enable_http2()
+            .build();
+        let client = Client::builder(TokioExecutor::new()).build(connector);
+        if clients.insert(endpoint.id.clone(), client).is_some() {
+            return Err(ProxyError::Preparation(format!(
+                "duplicate upstream endpoint {}",
+                endpoint.id
+            )));
+        }
+    }
+    Ok(Arc::new(clients))
 }
 
 fn prepare_tls(config: &Config) -> Result<HashMap<String, TlsAcceptor>, ProxyError> {
@@ -140,15 +196,27 @@ fn prepare_tls(config: &Config) -> Result<HashMap<String, TlsAcceptor>, ProxyErr
     Ok(acceptors)
 }
 
-async fn accept_loop(
-    listener: TcpListener,
+#[derive(Clone)]
+struct ListenerContext {
     listener_id: String,
     config: Arc<Config>,
     limits: LimitsConfig,
     tls_acceptor: Option<TlsAcceptor>,
     handshake_permits: Arc<Semaphore>,
+    upstream_clients: UpstreamClients,
     shutdown: CancellationToken,
-) {
+}
+
+async fn accept_loop(listener: TcpListener, context: ListenerContext) {
+    let ListenerContext {
+        listener_id,
+        config,
+        limits,
+        tls_acceptor,
+        handshake_permits,
+        upstream_clients,
+        shutdown,
+    } = context;
     let permits = Arc::new(Semaphore::new(limits.max_connections));
     let mut connections = tokio::task::JoinSet::new();
     let upgrade_tasks = TaskTracker::new();
@@ -185,30 +253,30 @@ async fn accept_loop(
         let limits = limits.clone();
         let listener_id = listener_id.clone();
         let tls_acceptor = tls_acceptor.clone();
+        let upstream_clients = Arc::clone(&upstream_clients);
         let upgrade_tasks = upgrade_tasks.clone();
         connections.spawn(async move {
             let _permit = permit;
+            let connection = ConnectionContext {
+                peer,
+                listener_id,
+                config,
+                limits,
+                shutdown,
+                upgrade_tasks,
+                upstream_clients,
+                tls_server_name: None,
+            };
             let result = match tls_acceptor {
                 Some(acceptor) => {
                     let accepted = tokio::time::timeout(
-                        Duration::from_secs(config.tls.handshake_timeout_secs),
+                        Duration::from_secs(connection.config.tls.handshake_timeout_secs),
                         acceptor.accept(stream),
                     )
                     .await;
                     drop(handshake_permit);
                     match accepted {
-                        Ok(Ok(stream)) => {
-                            serve_tls_connection(
-                                stream,
-                                peer,
-                                listener_id,
-                                config,
-                                limits,
-                                shutdown,
-                                upgrade_tasks,
-                            )
-                            .await
-                        }
+                        Ok(Ok(stream)) => serve_tls_connection(stream, connection).await,
                         Ok(Err(error)) => Err(Box::new(error) as BoxError),
                         Err(_) => Err(Box::new(std::io::Error::new(
                             std::io::ErrorKind::TimedOut,
@@ -218,20 +286,9 @@ async fn accept_loop(
                 }
                 None => {
                     drop(handshake_permit);
-                    serve_http1_connection(
-                        stream,
-                        ConnectionContext {
-                            peer,
-                            listener_id,
-                            config,
-                            limits,
-                            shutdown,
-                            upgrade_tasks,
-                            tls_server_name: None,
-                        },
-                    )
-                    .await
-                    .map_err(|error| Box::new(error) as BoxError)
+                    serve_http1_connection(stream, connection)
+                        .await
+                        .map_err(|error| Box::new(error) as BoxError)
                 }
             };
             if let Err(error) = result {
@@ -261,29 +318,16 @@ struct ConnectionContext {
     limits: LimitsConfig,
     shutdown: CancellationToken,
     upgrade_tasks: TaskTracker,
+    upstream_clients: UpstreamClients,
     tls_server_name: Option<String>,
 }
 
 async fn serve_tls_connection(
     stream: aegisproxy_tls::TlsStream<TcpStream>,
-    peer: SocketAddr,
-    listener_id: String,
-    config: Arc<Config>,
-    limits: LimitsConfig,
-    shutdown: CancellationToken,
-    upgrade_tasks: TaskTracker,
+    mut context: ConnectionContext,
 ) -> Result<(), BoxError> {
     let protocol = stream.get_ref().1.alpn_protocol().map(<[u8]>::to_vec);
-    let server_name = stream.get_ref().1.server_name().map(str::to_owned);
-    let context = ConnectionContext {
-        peer,
-        listener_id,
-        config,
-        limits,
-        shutdown,
-        upgrade_tasks,
-        tls_server_name: server_name,
-    };
+    context.tls_server_name = stream.get_ref().1.server_name().map(str::to_owned);
     if protocol.as_deref() == Some(b"h2") {
         serve_http2_connection(stream, context)
             .await
@@ -303,14 +347,13 @@ where
     I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let io = TokioIo::new(stream);
-    let client = Client::builder(TokioExecutor::new()).build_http();
     let max_header_bytes = context.limits.max_header_bytes;
     let service = ProxyService {
         config: context.config,
         peer: context.peer,
         listener_id: context.listener_id,
         limits: context.limits,
-        client,
+        clients: context.upstream_clients,
         shutdown: context.shutdown.clone(),
         upgrade_tasks: context.upgrade_tasks,
         tls_server_name: context.tls_server_name,
@@ -341,13 +384,12 @@ where
     I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let io = TokioIo::new(stream);
-    let client = Client::builder(TokioExecutor::new()).build_http();
     let service = ProxyService {
         config: context.config,
         peer: context.peer,
         listener_id: context.listener_id,
         limits: context.limits,
-        client,
+        clients: context.upstream_clients,
         shutdown: context.shutdown.clone(),
         upgrade_tasks: context.upgrade_tasks,
         tls_server_name: context.tls_server_name,
@@ -372,7 +414,7 @@ struct ProxyService {
     peer: SocketAddr,
     listener_id: String,
     limits: LimitsConfig,
-    client: Client<HttpConnector, ResponseBody>,
+    clients: UpstreamClients,
     shutdown: CancellationToken,
     upgrade_tasks: TaskTracker,
     tls_server_name: Option<String>,
@@ -442,12 +484,9 @@ impl ProxyService {
         let Some(endpoint) = group.endpoints.first() else {
             return error_response(StatusCode::BAD_GATEWAY, "upstream unavailable\n");
         };
-        if endpoint.url.scheme() != "http" {
-            return error_response(
-                StatusCode::NOT_IMPLEMENTED,
-                "upstream TLS is not enabled in Phase 1\n",
-            );
-        }
+        let Some(client) = self.clients.get(&endpoint.id) else {
+            return error_response(StatusCode::BAD_GATEWAY, "upstream client missing\n");
+        };
         if request
             .headers()
             .get(hyper::header::CONTENT_LENGTH)
@@ -507,7 +546,7 @@ impl ProxyService {
         );
         let result = match tokio::time::timeout(
             std::time::Duration::from_secs(self.limits.response_header_timeout_secs),
-            self.client.request(request),
+            client.request(request),
         )
         .await
         {
@@ -798,6 +837,7 @@ mod tests {
                     url: "http://127.0.0.1:9000".parse().expect("url"),
                     weight: 1,
                     server_name: None,
+                    ca_bundle: None,
                 }],
             }],
             middlewares: HashMap::new(),
@@ -853,6 +893,97 @@ mod tests {
                 Err(error) => panic!("proxy did not become ready: {error}"),
             }
         }
+    }
+
+    async fn https_h2_upstream_response(server_name: &str) -> Vec<u8> {
+        use rustls::{ServerConfig, crypto::aws_lc_rs, pki_types::PrivateKeyDer};
+        use std::{
+            fs,
+            sync::atomic::{AtomicU64, Ordering},
+        };
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
+        let generated = rcgen::generate_simple_self_signed(vec!["upstream.test".into()])
+            .expect("generate upstream identity");
+        let certificate_pem = generated.cert.pem();
+        let private_key = PrivateKeyDer::Pkcs8(generated.signing_key.serialize_der().into());
+        let mut server_config =
+            ServerConfig::builder_with_provider(Arc::new(aws_lc_rs::default_provider()))
+                .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
+                .expect("TLS versions")
+                .with_no_client_auth()
+                .with_single_cert(vec![generated.cert.der().clone()], private_key)
+                .expect("server identity");
+        server_config.alpn_protocols = vec![b"h2".to_vec()];
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("upstream bind");
+        let upstream_addr = upstream.local_addr().expect("upstream address");
+        let upstream_task = tokio::spawn(async move {
+            let (stream, _) = upstream.accept().await.expect("upstream accept");
+            let Ok(stream) = acceptor.accept(stream).await else {
+                return;
+            };
+            assert_eq!(stream.get_ref().1.alpn_protocol(), Some(b"h2".as_slice()));
+            let service = hyper::service::service_fn(|request: Request<Incoming>| async move {
+                assert_eq!(request.version(), hyper::Version::HTTP_2);
+                Ok::<_, Infallible>(Response::new(Full::new(bytes::Bytes::from_static(b"ok"))))
+            });
+            hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+                .serve_connection(TokioIo::new(stream), service)
+                .await
+                .expect("serve HTTP/2 upstream");
+        });
+        let sequence = NEXT_FILE.fetch_add(1, Ordering::Relaxed);
+        let ca_path = std::env::temp_dir().join(format!(
+            "aegisproxy-upstream-ca-{}-{sequence}.pem",
+            std::process::id()
+        ));
+        fs::write(&ca_path, certificate_pem).expect("write CA");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&ca_path, fs::Permissions::from_mode(0o600)).expect("secure CA");
+        }
+        let (proxy_addr, shutdown, proxy_task) = start_test_proxy(upstream_addr, |config| {
+            let endpoint = &mut config.upstream_groups[0].endpoints[0];
+            endpoint.url = format!("https://{upstream_addr}")
+                .parse()
+                .expect("HTTPS endpoint");
+            endpoint.server_name = Some(server_name.to_owned());
+            endpoint.ca_bundle = Some(format!("file://{}", ca_path.display()));
+        })
+        .await;
+        let mut client = connect_to_proxy(proxy_addr).await;
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("client request");
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("client response");
+        shutdown.cancel();
+        proxy_task.await.expect("proxy task").expect("proxy run");
+        upstream_task.await.expect("upstream task");
+        fs::remove_file(ca_path).expect("remove CA");
+        response
+    }
+
+    #[tokio::test]
+    async fn verifies_custom_ca_and_proxies_https_over_http2() {
+        let response = https_h2_upstream_response("upstream.test").await;
+        assert!(response.starts_with(b"HTTP/1.1 200 OK"));
+        assert!(response.ends_with(b"ok"));
+    }
+
+    #[tokio::test]
+    async fn rejects_wrong_upstream_tls_name() {
+        let response = https_h2_upstream_response("wrong.test").await;
+        assert!(response.starts_with(b"HTTP/1.1 502 Bad Gateway"));
     }
 
     async fn tls_request(http2: bool, authority: &str) -> (Vec<u8>, StatusCode, bytes::Bytes) {

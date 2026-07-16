@@ -210,6 +210,9 @@ pub struct EndpointConfig {
     /// Optional upstream TLS SNI/Host name.
     #[serde(default)]
     pub server_name: Option<String>,
+    /// Optional PEM CA-bundle secret reference. When set, it replaces public roots.
+    #[serde(default)]
+    pub ca_bundle: Option<String>,
 }
 
 fn default_weight() -> u32 {
@@ -521,6 +524,41 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                     endpoint.id
                 )));
             }
+            match (endpoint.url.scheme(), endpoint.server_name.as_deref()) {
+                ("https", Some(server_name)) if !server_name.starts_with("*.") => {
+                    valid_certificate_host(server_name)?;
+                }
+                ("https", _) => {
+                    return Err(ConfigError::Invalid(format!(
+                        "HTTPS endpoint {} requires an exact server_name",
+                        endpoint.id
+                    )));
+                }
+                ("http", Some(_)) => {
+                    return Err(ConfigError::Invalid(format!(
+                        "HTTP endpoint {} cannot set server_name",
+                        endpoint.id
+                    )));
+                }
+                _ => {}
+            }
+            match (endpoint.url.scheme(), endpoint.ca_bundle.as_deref()) {
+                ("https", Some(reference)) => {
+                    SecretRef::parse(reference).map_err(|error| {
+                        ConfigError::Invalid(format!(
+                            "endpoint {} has invalid CA bundle reference: {error}",
+                            endpoint.id
+                        ))
+                    })?;
+                }
+                ("http", Some(_)) => {
+                    return Err(ConfigError::Invalid(format!(
+                        "HTTP endpoint {} cannot set ca_bundle",
+                        endpoint.id
+                    )));
+                }
+                _ => {}
+            }
             let host = endpoint.url.host_str().unwrap_or_default();
             let ip = host.parse::<IpAddr>().map_err(|_| {
                 ConfigError::Invalid(format!(
@@ -752,6 +790,36 @@ mod tests {
         let mut config = base_config();
         config.listeners[0].protocol = "https".into();
         config.listeners[0].certificates = vec!["missing".into()];
+        assert!(validate(&config).is_err());
+    }
+
+    #[test]
+    fn validates_upstream_tls_policy() {
+        let mut config = base_config();
+        config.upstream_groups.push(UpstreamGroupConfig {
+            id: "app".into(),
+            algorithm: "round_robin".into(),
+            allowed_cidrs: vec!["127.0.0.1/32".parse().expect("CIDR")],
+            endpoints: vec![EndpointConfig {
+                id: "app-1".into(),
+                url: "https://127.0.0.1:8443".parse().expect("URL"),
+                weight: 1,
+                server_name: None,
+                ca_bundle: None,
+            }],
+        });
+        assert!(validate(&config).is_err());
+        config.upstream_groups[0].endpoints[0].server_name = Some("upstream.test".into());
+        config.upstream_groups[0].endpoints[0].ca_bundle = Some("inline-ca".into());
+        assert!(validate(&config).is_err());
+        config.upstream_groups[0].endpoints[0].ca_bundle = Some(format!(
+            "file://{}",
+            std::env::temp_dir().join("upstream-ca.pem").display()
+        ));
+        let result = validate(&config);
+        assert!(result.is_ok(), "{result:?}");
+        config.upstream_groups[0].endpoints[0].url = "http://127.0.0.1:8080".parse().expect("URL");
+        config.upstream_groups[0].endpoints[0].server_name = None;
         assert!(validate(&config).is_err());
     }
 }

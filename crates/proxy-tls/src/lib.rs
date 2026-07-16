@@ -3,10 +3,12 @@
 //! TLS identity loading, certificate selection, and server configuration.
 
 mod acceptor;
+mod client;
 mod selector;
 mod store;
 
 pub use acceptor::{server_config, tls_acceptor};
+pub use client::client_config;
 pub use selector::CertificateResolver;
 pub use store::{Identity, load_identity};
 pub use tokio_rustls::{TlsAcceptor, server::TlsStream};
@@ -34,4 +36,7 @@ pub enum TlsError {
     /// Rustls server policy construction failed.
     #[error("invalid TLS server policy: {0}")]
     Policy(String),
+    /// An upstream trust store was empty or rejected a certificate.
+    #[error("invalid upstream TLS trust store: {0}")]
+    TrustStore(String),
 }

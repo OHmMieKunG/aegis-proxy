@@ -12,6 +12,8 @@ Phase 0 inventory; versions are locked in `Cargo.lock` and must be re-reviewed o
 | url/ipnet | URL and CIDR parsing | serde | MIT/Apache-2.0 | None expected | custom parsers | Keep standard parsers |
 | rustls/rustls-pemfile | TLS and certificate parsing | Phase 2 selected provider | Apache-2.0/MIT/ISC | Crypto provider/native build reviewed | OpenSSL | Security advisory gate |
 | tokio-rustls | Async Rustls accept/connect adapters | `aws_lc_rs`, `tls12` | MIT/Apache-2.0 | AWS-LC native build | manual Tokio adapter | Review with Rustls |
+| hyper-rustls | Verified pooled HTTPS/H2 upstream connections | `aws-lc-rs`, `http1`, `http2`, `tls12`, `webpki-tokio` | Apache-2.0/ISC/MIT | Rustls/AWS-LC native build | custom connector | Review with Hyper and Rustls |
+| webpki-roots | Mozilla-derived default upstream trust anchors | default | MPL-2.0 | Static data; no native code | OS trust store | Review root updates with Rustls releases |
 | rustls-webpki | Certificate metadata, path, validity, and name validation | `aws-lc-rs`, `std` | ISC | AWS-LC native build | Rustls verifier internals | Review with Rustls |
 | rcgen (dev) | Ephemeral TLS test certificates | `aws_lc_rs`, `crypto`, `pem` | MIT/Apache-2.0 | AWS-LC native build | checked-in private fixtures | Test-only, review with Rustls |
 | zeroize | Clear owned secret buffers on drop | `std` | Apache-2.0/MIT | Safe API; compiler optimization limits documented | manual volatile clearing | Review with secret-boundary changes |

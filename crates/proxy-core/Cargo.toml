@@ -11,7 +11,9 @@ aegisproxy-tls = { path = "../proxy-tls" }
 bytes = "1"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["full"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "http1", "http2", "tls12", "webpki-tokio"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "http2", "server", "server-auto", "tokio"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["rt"] }
@@ -20,5 +22,4 @@ tracing = "0.1"
 [dev-dependencies]
 age = { version = "0.11.2", default-features = false }
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "crypto", "pem"] }
-rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs", "tls12"] }

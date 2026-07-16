@@ -17,7 +17,7 @@ Rustls curated policy; library defaults; OpenSSL configuration.
 
 ## Decision
 
-Define an explicit Rustls policy with configurable minimum version, ALPN, SNI selection, verified upstream roots, and typed CA bundles.
+Define an explicit Rustls policy with configurable minimum version, ALPN, SNI selection, verified upstream roots, and typed per-endpoint CA bundles. An explicit CA bundle replaces public roots for that endpoint.
 
 ## Rationale
 
@@ -25,7 +25,7 @@ Library defaults can drift and do not express route/tenant certificate rules.
 
 ## Consequences
 
-Legacy clients may fail; certificate/hostname validation is project-owned.
+Legacy clients may fail; certificate/hostname validation is project-owned. Upstream connection pools are separated by endpoint so trust and SNI policies cannot cross-contaminate.
 
 ## Security implications
 
