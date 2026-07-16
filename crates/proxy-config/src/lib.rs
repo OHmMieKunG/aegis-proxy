@@ -9,6 +9,7 @@ use std::{
     path::Path,
 };
 
+use aegisproxy_secrets::SecretRef;
 use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -32,6 +33,12 @@ pub struct Config {
     /// Public/admin listeners.
     #[serde(default)]
     pub listeners: Vec<ListenerConfig>,
+    /// Global TLS policy.
+    #[serde(default)]
+    pub tls: TlsConfig,
+    /// Bring-your-own certificate identities.
+    #[serde(default)]
+    pub certificates: Vec<CertificateConfig>,
     /// Trusted forwarding peers.
     #[serde(default)]
     pub trusted_proxies: TrustedProxyConfig,
@@ -112,6 +119,45 @@ pub struct ListenerConfig {
     pub bind: SocketAddr,
     /// `http`, `https`, or `tcp`.
     pub protocol: String,
+    /// Certificate identities available on an HTTPS listener.
+    #[serde(default)]
+    pub certificates: Vec<String>,
+}
+
+/// Global TLS policy.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TlsConfig {
+    /// Minimum accepted TLS version: `1.2` or `1.3`.
+    pub minimum_version: String,
+    /// Maximum concurrent handshakes.
+    pub max_handshakes: usize,
+    /// Handshake timeout in seconds.
+    pub handshake_timeout_secs: u64,
+}
+
+impl Default for TlsConfig {
+    fn default() -> Self {
+        Self {
+            minimum_version: "1.2".into(),
+            max_handshakes: 256,
+            handshake_timeout_secs: 10,
+        }
+    }
+}
+
+/// Bring-your-own certificate and private-key references.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CertificateConfig {
+    /// Stable identity.
+    pub id: String,
+    /// Exact or single-label wildcard DNS names served by this identity.
+    pub hosts: Vec<String>,
+    /// PEM certificate-chain secret reference.
+    pub certificate_chain: String,
+    /// PEM private-key secret reference.
+    pub private_key: String,
 }
 
 /// Trusted reverse proxies.
@@ -281,6 +327,62 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             "at least one listener is required".into(),
         ));
     }
+    if !matches!(config.tls.minimum_version.as_str(), "1.2" | "1.3") {
+        return Err(ConfigError::Invalid(
+            "tls.minimum_version must be 1.2 or 1.3".into(),
+        ));
+    }
+    if config.tls.max_handshakes == 0
+        || config.tls.max_handshakes > 100_000
+        || config.tls.handshake_timeout_secs == 0
+        || config.tls.handshake_timeout_secs > 300
+    {
+        return Err(ConfigError::Invalid(
+            "TLS handshake limits are outside safe bounds".into(),
+        ));
+    }
+    if config.certificates.len() > 1024 {
+        return Err(ConfigError::Invalid(
+            "certificate count exceeds 1024".into(),
+        ));
+    }
+    let mut certificate_ids = HashSet::new();
+    let mut certificate_hosts = HashSet::new();
+    for certificate in &config.certificates {
+        valid_id(&certificate.id)?;
+        if !certificate_ids.insert(certificate.id.as_str()) {
+            return Err(ConfigError::Invalid(format!(
+                "duplicate certificate id {}",
+                certificate.id
+            )));
+        }
+        if certificate.hosts.is_empty() || certificate.hosts.len() > 64 {
+            return Err(ConfigError::Invalid(format!(
+                "certificate {} must contain 1..=64 hosts",
+                certificate.id
+            )));
+        }
+        for host in &certificate.hosts {
+            valid_certificate_host(host)?;
+            if !certificate_hosts.insert(host.as_str()) {
+                return Err(ConfigError::Invalid(format!(
+                    "certificate host {host} is assigned more than once"
+                )));
+            }
+        }
+        SecretRef::parse(&certificate.certificate_chain).map_err(|_| {
+            ConfigError::Invalid(format!(
+                "certificate {} has an invalid chain secret reference",
+                certificate.id
+            ))
+        })?;
+        SecretRef::parse(&certificate.private_key).map_err(|_| {
+            ConfigError::Invalid(format!(
+                "certificate {} has an invalid key secret reference",
+                certificate.id
+            ))
+        })?;
+    }
     if config.limits.max_connections == 0 || config.limits.max_connections > 1_000_000 {
         return Err(ConfigError::Invalid(
             "limits.max_connections is outside 1..=1000000".into(),
@@ -330,6 +432,27 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             return Err(ConfigError::Invalid(format!(
                 "unsupported listener protocol {}",
                 listener.protocol
+            )));
+        }
+        if listener.protocol == "https" {
+            if listener.certificates.is_empty() {
+                return Err(ConfigError::Invalid(format!(
+                    "HTTPS listener {} has no certificates",
+                    listener.id
+                )));
+            }
+            for certificate in &listener.certificates {
+                if !certificate_ids.contains(certificate.as_str()) {
+                    return Err(ConfigError::Invalid(format!(
+                        "listener {} references unknown certificate {}",
+                        listener.id, certificate
+                    )));
+                }
+            }
+        } else if !listener.certificates.is_empty() {
+            return Err(ConfigError::Invalid(format!(
+                "non-HTTPS listener {} cannot reference certificates",
+                listener.id
             )));
         }
     }
@@ -478,6 +601,39 @@ fn valid_id(value: &str) -> Result<(), ConfigError> {
     Ok(())
 }
 
+fn valid_certificate_host(value: &str) -> Result<(), ConfigError> {
+    if value.is_empty()
+        || value.len() > 253
+        || value != value.to_ascii_lowercase()
+        || value.ends_with('.')
+        || value.contains(':')
+    {
+        return Err(ConfigError::Invalid(format!(
+            "invalid certificate host {value:?}"
+        )));
+    }
+    let name = value.strip_prefix("*.").unwrap_or(value);
+    if value.contains('*') && !value.starts_with("*.") || name.split('.').count() < 2 {
+        return Err(ConfigError::Invalid(format!(
+            "invalid certificate wildcard {value:?}"
+        )));
+    }
+    if name.split('.').any(|label| {
+        label.is_empty()
+            || label.len() > 63
+            || label.starts_with('-')
+            || label.ends_with('-')
+            || !label
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    }) {
+        return Err(ConfigError::Invalid(format!(
+            "invalid certificate host {value:?}"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -491,7 +647,10 @@ mod tests {
                 id: "public".into(),
                 bind: "127.0.0.1:8080".parse().expect("test address"),
                 protocol: "http".into(),
+                certificates: vec![],
             }],
+            tls: TlsConfig::default(),
+            certificates: vec![],
             trusted_proxies: TrustedProxyConfig::default(),
             upstream_groups: vec![],
             middlewares: HashMap::new(),
@@ -507,6 +666,7 @@ mod tests {
             id: "other".into(),
             bind: config.listeners[0].bind,
             protocol: "http".into(),
+            certificates: vec![],
         });
         assert!(validate(&config).is_err());
     }
@@ -540,5 +700,37 @@ mod tests {
         assert!(validate_egress_ip(loopback, &allowed).is_ok());
         let metadata: IpAddr = "169.254.169.254".parse().expect("IP");
         assert!(validate_egress_ip(metadata, &["169.254.0.0/16".parse().expect("CIDR")]).is_err());
+    }
+
+    #[test]
+    fn rejects_inline_certificate_secrets() {
+        let mut config = base_config();
+        config.certificates.push(CertificateConfig {
+            id: "site".into(),
+            hosts: vec!["example.test".into()],
+            certificate_chain: "-----BEGIN CERTIFICATE-----".into(),
+            private_key: "env://TLS_KEY".into(),
+        });
+        assert!(validate(&config).is_err());
+    }
+
+    #[test]
+    fn rejects_unsafe_certificate_wildcards() {
+        let mut config = base_config();
+        config.certificates.push(CertificateConfig {
+            id: "site".into(),
+            hosts: vec!["*.*.example.test".into()],
+            certificate_chain: "env://TLS_CERT".into(),
+            private_key: "env://TLS_KEY".into(),
+        });
+        assert!(validate(&config).is_err());
+    }
+
+    #[test]
+    fn requires_known_certificate_on_https_listener() {
+        let mut config = base_config();
+        config.listeners[0].protocol = "https".into();
+        config.listeners[0].certificates = vec!["missing".into()];
+        assert!(validate(&config).is_err());
     }
 }

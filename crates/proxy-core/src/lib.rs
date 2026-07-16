@@ -546,7 +546,10 @@ mod tests {
                 id: "public".into(),
                 bind: "127.0.0.1:8080".parse().expect("address"),
                 protocol: "http".into(),
+                certificates: vec![],
             }],
+            tls: aegisproxy_config::TlsConfig::default(),
+            certificates: vec![],
             trusted_proxies: TrustedProxyConfig::default(),
             upstream_groups: vec![UpstreamGroupConfig {
                 id: "app".into(),
