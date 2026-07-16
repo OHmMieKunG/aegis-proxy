@@ -1488,12 +1488,12 @@ Work is sequential unless a phase explicitly identifies a parallel documentation
 ### Phase 5: Dynamic reload and last-known-good rollback
 
 - **Objectives:** Versioned candidate workflow, immutable snapshot swap, file polling/SIGHUP reload, atomic rollback and crash recovery.
-- **Exact deliverables/files:** `proxy-config/revision.rs`, activation coordinator/runtime snapshot, `config activate/revisions/rollback`, `/v1/config*`, state journal/layout, upgrade/crash fixtures.
+- **Exact deliverables/files:** `proxy-config/revision.rs`, activation coordinator/runtime snapshot, offline `config revisions`, file/SIGHUP activation, state journal/layout, upgrade/crash fixtures. Authenticated `config activate/rollback` and `/v1/config*` consume this activation model in Phase 8; an offline command must not switch a live pointer without prepared runtime publication and durable audit.
 - **Dependencies:** ArcSwap, fs2 or narrowly scoped file-lock primitive if standard locking is insufficient; Phases 3–4.
 - **Security controls:** Serialized compare-and-swap activation, source hash/audit, prepare-before-commit, path/mode validation, maximum revisions/retention, no silent fallback.
 - **Tests:** Concurrent stale writers, invalid candidate, listener/secret/cert preparation failure, repeated same hash, crash injection before/after fsync/rename/pointer switch, in-flight long stream across reload, removed/transport-changed endpoint idle-client eviction and active-work drain deadline, automatic rollback where post-activation probe fails.
 - **Acceptance criteria:** Failed candidate leaves byte-identical active revision/hash; restart after each injected crash selects either old or fully committed new state, never partial; removed/transport-changed endpoints receive no new work, close idle clients, and drain active work only to the configured deadline; activation meets benchmarked reload budget without accepted-request loss.
-- **Known risks:** OS/filesystem atomicity and listener changes. **Exit:** documented supported filesystems plus successful crash/reload campaign. **Deferred:** multi-node rollout and signed fleet snapshots.
+- **Known risks:** OS/filesystem atomicity and listener changes. **Exit:** documented supported filesystems plus successful crash/reload campaign. **Deferred:** authenticated mutation CLI/API to Phase 8; multi-node rollout and signed fleet snapshots.
 
 ### Phase 6: ACME certificate automation
 
