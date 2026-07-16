@@ -8,7 +8,7 @@ Phase 0 inventory; versions are locked in `Cargo.lock` and must be re-reviewed o
 | hyper | HTTP protocol/client/server | `full` in initial spike; reduce before release | MIT | No first-party unsafe policy exception | Pingora | Pin lockfile, protocol regression tests |
 | http | Canonical HTTP method/header validation shared by config and proxy boundaries | default | MIT/Apache-2.0 | No native code; transitive unsafe review | custom parsers | Review with Hyper releases |
 | hyper-util | Tokio adapters, client pooling | Client/server HTTP1/2/Tokio features | MIT | Transitive audit | direct hyper | Review with hyper |
-| http-body-util | Streaming body combinators | default | MIT | None expected | custom body types | Review with hyper |
+| http-body/http-body-util | Bounded streaming body traits, combinators, collectors, and length limiter | default | MIT | No native code; transitive unsafe review | hand-written body polling | Review with Hyper releases; retain ACME oversized-body regression |
 | serde/toml | Typed strict config and preview | derive | MIT/Apache-2.0 | Proc macros; audited | JSON-only | Lockfile/advisory gate |
 | url/ipnet | URL and CIDR parsing | serde | MIT/Apache-2.0 | None expected | custom parsers | Keep standard parsers |
 | rustls/rustls-pemfile | TLS and certificate parsing | Phase 2 selected provider | Apache-2.0/MIT/ISC | Crypto provider/native build reviewed | OpenSSL | Security advisory gate |

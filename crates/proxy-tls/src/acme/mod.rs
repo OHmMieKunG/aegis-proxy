@@ -4,6 +4,7 @@ mod account;
 mod challenge;
 mod client;
 mod scheduler;
+mod transport;
 
 pub use account::{
     AcmeAccountError, StoredAcmeAccount, StoredAcmeEnvironment, decrypt_account_credentials,

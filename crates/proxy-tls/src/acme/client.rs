@@ -1,9 +1,12 @@
-use std::{fmt, net::IpAddr, path::Path};
+use std::{fmt, net::IpAddr};
 
 use instant_acme::{Account, AccountCredentials, ExternalAccountKey, NewAccount};
+use serde::Deserialize;
 use thiserror::Error;
 use url::Url;
 use zeroize::Zeroizing;
+
+use super::transport::account_builder;
 
 const MAX_ACCOUNT_CREDENTIAL_BYTES: usize = 64 * 1024;
 const MAX_DIRECTORY_URL_BYTES: usize = 2 * 1024;
@@ -89,7 +92,7 @@ impl AcmeClient {
     /// Create an account and return bounded serialized credentials for immediate encryption.
     pub async fn create(
         request: AcmeAccountCreateRequest<'_>,
-        ca_bundle: Option<&Path>,
+        ca_bundle: Option<&str>,
     ) -> Result<(Self, Zeroizing<Vec<u8>>), AcmeClientError> {
         validate_create_request(&request)?;
         let contact = request.account_email.map(|email| format!("mailto:{email}"));
@@ -105,11 +108,9 @@ impl AcmeClient {
         let external_account = request
             .external_account
             .map(|binding| ExternalAccountKey::new(binding.key_id.to_owned(), binding.hmac_key));
-        let builder = match ca_bundle {
-            Some(path) => Account::builder_with_root(path),
-            None => Account::builder(),
-        }
-        .map_err(|_| AcmeClientError::Initialization)?;
+        let builder = account_builder(request.directory_url, ca_bundle)
+            .await
+            .map_err(|_| AcmeClientError::Initialization)?;
         let (account, credentials) = builder
             .create(
                 &new_account,
@@ -129,14 +130,13 @@ impl AcmeClient {
     /// Restore one account using system trust or one explicit test/private CA root.
     pub async fn restore(
         credentials_json: &[u8],
-        ca_bundle: Option<&Path>,
+        ca_bundle: Option<&str>,
     ) -> Result<Self, AcmeClientError> {
+        let directory_url = credential_directory(credentials_json)?;
         let credentials = validate_credentials(credentials_json)?;
-        let builder = match ca_bundle {
-            Some(path) => Account::builder_with_root(path),
-            None => Account::builder(),
-        }
-        .map_err(|_| AcmeClientError::Initialization)?;
+        let builder = account_builder(&directory_url, ca_bundle)
+            .await
+            .map_err(|_| AcmeClientError::Initialization)?;
         let account = builder
             .from_credentials(credentials)
             .await
@@ -151,21 +151,31 @@ impl AcmeClient {
     }
 }
 
+#[derive(Deserialize)]
+struct AccountCredentialMetadata {
+    directory: Option<String>,
+}
+
+fn credential_directory(bytes: &[u8]) -> Result<Url, AcmeClientError> {
+    if bytes.is_empty() || bytes.len() > MAX_ACCOUNT_CREDENTIAL_BYTES {
+        return Err(AcmeClientError::Credentials);
+    }
+    let metadata: AccountCredentialMetadata =
+        serde_json::from_slice(bytes).map_err(|_| AcmeClientError::Credentials)?;
+    let directory = metadata
+        .directory
+        .filter(|value| value.len() <= MAX_DIRECTORY_URL_BYTES)
+        .ok_or(AcmeClientError::Credentials)?;
+    let directory = Url::parse(&directory).map_err(|_| AcmeClientError::Credentials)?;
+    validate_directory_url(&directory).map_err(|_| AcmeClientError::Credentials)?;
+    Ok(directory)
+}
+
 fn validate_create_request(request: &AcmeAccountCreateRequest<'_>) -> Result<(), AcmeClientError> {
     if !request.terms_of_service_agreed {
         return Err(AcmeClientError::Policy);
     }
-    let directory = request.directory_url;
-    if directory.as_str().len() > MAX_DIRECTORY_URL_BYTES
-        || directory.username() != ""
-        || directory.password().is_some()
-        || directory.query().is_some()
-        || directory.fragment().is_some()
-        || directory.host_str().is_none()
-        || !valid_directory_transport(directory)
-    {
-        return Err(AcmeClientError::Input);
-    }
+    validate_directory_url(request.directory_url)?;
     if let Some(email) = request.account_email
         && (email.is_empty()
             || email.len() > MAX_ACCOUNT_EMAIL_BYTES
@@ -181,6 +191,20 @@ fn validate_create_request(request: &AcmeAccountCreateRequest<'_>) -> Result<(),
             || binding.key_id.bytes().any(|byte| byte.is_ascii_control())
             || binding.hmac_key.is_empty()
             || binding.hmac_key.len() > MAX_EXTERNAL_ACCOUNT_KEY_BYTES)
+    {
+        return Err(AcmeClientError::Input);
+    }
+    Ok(())
+}
+
+fn validate_directory_url(directory: &Url) -> Result<(), AcmeClientError> {
+    if directory.as_str().len() > MAX_DIRECTORY_URL_BYTES
+        || directory.username() != ""
+        || directory.password().is_some()
+        || directory.query().is_some()
+        || directory.fragment().is_some()
+        || directory.host_str().is_none()
+        || !valid_directory_transport(directory)
     {
         return Err(AcmeClientError::Input);
     }
@@ -227,6 +251,24 @@ mod tests {
             .err()
             .expect("malformed credentials must fail");
         assert_eq!(error.to_string(), "invalid ACME account credentials");
+
+        let missing_directory = br#"{
+            "id":"https://acme.test/account/1",
+            "key_pkcs8":"AQID"
+        }"#;
+        assert_eq!(
+            credential_directory(missing_directory),
+            Err(AcmeClientError::Credentials)
+        );
+        let unsafe_directory = br#"{
+            "id":"https://acme.test/account/1",
+            "key_pkcs8":"AQID",
+            "directory":"http://metadata.test/directory"
+        }"#;
+        assert_eq!(
+            credential_directory(unsafe_directory),
+            Err(AcmeClientError::Credentials)
+        );
     }
 
     #[test]
