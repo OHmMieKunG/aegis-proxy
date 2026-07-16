@@ -20,6 +20,19 @@ struct CertificateMaps {
     wildcard: HashMap<String, Arc<CertifiedKey>>,
 }
 
+/// Fully validated certificate maps ready for an infallible atomic publication.
+pub struct PreparedCertificateMaps(CertificateMaps);
+
+impl std::fmt::Debug for PreparedCertificateMaps {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PreparedCertificateMaps")
+            .field("exact_names", &self.0.exact.len())
+            .field("wildcard_names", &self.0.wildcard.len())
+            .finish()
+    }
+}
+
 impl std::fmt::Debug for CertificateResolver {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let current = self.current.load();
@@ -51,9 +64,21 @@ impl CertificateResolver {
 
     /// Atomically replace all identities after fully validating the new map.
     pub fn replace(&self, identities: &[Identity]) -> Result<(), TlsError> {
-        let maps = build_maps(identities)?;
-        self.current.store(Arc::new(maps));
+        let prepared = Self::prepare_replacement(identities)?;
+        self.publish_prepared(prepared);
         Ok(())
+    }
+
+    /// Perform every fallible validation needed for a later replacement.
+    pub fn prepare_replacement(
+        identities: &[Identity],
+    ) -> Result<PreparedCertificateMaps, TlsError> {
+        build_maps(identities).map(PreparedCertificateMaps)
+    }
+
+    /// Publish an already validated replacement with one non-failing pointer swap.
+    pub fn publish_prepared(&self, prepared: PreparedCertificateMaps) {
+        self.current.store(Arc::new(prepared.0));
     }
 
     /// Select a key for a canonical lower-case DNS name.
@@ -165,5 +190,30 @@ mod tests {
         let new_key = resolver.resolve_name("api.example.test").expect("new key");
         assert!(!Arc::ptr_eq(&old_key, &new_key));
         assert!(!old_key.cert.is_empty());
+    }
+
+    #[test]
+    fn prepared_replacement_does_not_change_live_map_until_publish() {
+        let first = identity("first", "api.example.test", vec!["api.example.test".into()]);
+        let resolver = CertificateResolver::new(&[first]).expect("resolver");
+        let old_key = resolver.resolve_name("api.example.test").expect("old key");
+        let second = identity(
+            "second",
+            "api.example.test",
+            vec!["api.example.test".into()],
+        );
+        let prepared =
+            CertificateResolver::prepare_replacement(&[second]).expect("prepared replacement");
+        assert!(Arc::ptr_eq(
+            &old_key,
+            &resolver
+                .resolve_name("api.example.test")
+                .expect("still old")
+        ));
+        resolver.publish_prepared(prepared);
+        assert!(!Arc::ptr_eq(
+            &old_key,
+            &resolver.resolve_name("api.example.test").expect("new key")
+        ));
     }
 }

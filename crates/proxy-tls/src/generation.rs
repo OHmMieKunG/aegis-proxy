@@ -346,6 +346,29 @@ pub fn verify_stored_certificate(
     Ok(metadata)
 }
 
+/// Decrypt, revalidate, and load the active stored generation for runtime use.
+pub fn load_stored_identity(
+    state_dir: &Path,
+    id: &str,
+    identity: &str,
+) -> Result<crate::Identity, TlsError> {
+    let metadata = inspect_certificate(state_dir, id)?;
+    let generation_dir = fs::canonicalize(
+        state_dir
+            .join("certificates")
+            .join(id)
+            .join("generations")
+            .join(&metadata.generation),
+    )?;
+    crate::load_identity(
+        id.to_owned(),
+        metadata.hosts,
+        &file_reference(&generation_dir.join("chain.pem")),
+        &file_reference(&generation_dir.join("key.age")),
+        identity,
+    )
+}
+
 /// Return active certificates expiring at or before `now + warning_window`.
 pub fn scan_expiring_certificates(
     state_dir: &Path,
@@ -872,6 +895,14 @@ mod tests {
             verify_stored_certificate(&root, "managed-site", &file_reference(&identity_path))
                 .expect("verify rotated certificate"),
             second.certificate
+        );
+        let loaded = load_stored_identity(&root, "managed-site", &file_reference(&identity_path))
+            .expect("load rotated identity");
+        assert!(
+            crate::CertificateResolver::new(&[loaded])
+                .expect("resolver")
+                .resolve_name("example.test")
+                .is_some()
         );
 
         let (staging_certificate, staging_key) = managed_test_material(2020, 2032);

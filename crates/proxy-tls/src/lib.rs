@@ -14,9 +14,10 @@ pub use client::client_config;
 pub use generation::{
     CertificateImport, ManagedCertificateEnvironment, ManagedCertificateProvenance,
     StoredCertificate, import_certificate, inspect_certificate, list_certificates,
-    persist_managed_certificate, scan_expiring_certificates, verify_stored_certificate,
+    load_stored_identity, persist_managed_certificate, scan_expiring_certificates,
+    verify_stored_certificate,
 };
-pub use selector::CertificateResolver;
+pub use selector::{CertificateResolver, PreparedCertificateMaps};
 pub use store::{Identity, load_identity};
 pub use tokio_rustls::{TlsAcceptor, server::TlsStream};
 
