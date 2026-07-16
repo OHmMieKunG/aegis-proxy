@@ -356,7 +356,10 @@ fn read_bounded(path: &Path, max_bytes: usize) -> Result<Vec<u8>, TlsError> {
 }
 
 fn file_reference(path: &Path) -> String {
-    format!("file://{}", path.display())
+    let path = path.to_string_lossy();
+    #[cfg(windows)]
+    let path = path.strip_prefix(r"\\?\").unwrap_or(&path);
+    format!("file://{path}")
 }
 
 #[cfg(test)]
