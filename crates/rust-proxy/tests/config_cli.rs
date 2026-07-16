@@ -66,3 +66,19 @@ fn shipped_valid_and_invalid_corpus_has_expected_result() {
         assert!(!output.status.success(), "invalid fixture passed: {path}");
     }
 }
+
+#[test]
+fn last_known_good_requires_explicit_state_directory() {
+    let output = Command::new(env!("CARGO_BIN_EXE_rust-proxy"))
+        .args([
+            "run",
+            "--config",
+            "missing.toml",
+            "--resume-last-known-good",
+        ])
+        .output()
+        .expect("run recovery argument validation");
+    assert!(!output.status.success());
+    let error = String::from_utf8(output.stderr).expect("stderr UTF-8");
+    assert!(error.contains("--state-dir"));
+}
