@@ -106,24 +106,26 @@ async fn proxy_connection(
     let group_id = route
         .upstream_group
         .as_deref()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "TCP route has no upstream"))?;
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "TCP route has no upstream"))?
+        .to_owned();
     let pool = snapshot
         .upstream_pools
-        .get(group_id)
+        .get(&group_id)
+        .cloned()
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "TCP upstream group is missing"))?;
     let selected = pool
         .select()
         .map_err(|_| io::Error::new(io::ErrorKind::NotConnected, "TCP upstream unavailable"))?;
     let dns = snapshot
         .dns_endpoints
-        .get(&endpoint_key(group_id, &selected.config().id))
+        .get(&endpoint_key(&group_id, &selected.config().id))
+        .cloned()
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "TCP DNS endpoint is missing"))?;
-    let mut upstream = match connect_upstream(
-        dns,
-        Duration::from_secs(snapshot.config.limits.tcp_connect_timeout_secs),
-    )
-    .await
-    {
+    let connect_timeout = Duration::from_secs(snapshot.config.limits.tcp_connect_timeout_secs);
+    let idle_timeout = Duration::from_secs(snapshot.config.limits.tcp_idle_timeout_secs);
+    let lifetime = Duration::from_secs(snapshot.config.limits.tcp_connection_lifetime_secs);
+    drop(snapshot);
+    let mut upstream = match connect_upstream(&dns, connect_timeout).await {
         Ok(stream) => stream,
         Err(error) => {
             selected.record_failure();
@@ -131,25 +133,23 @@ async fn proxy_connection(
         }
     };
     if !prefix.is_empty() {
-        if let Err(error) = tokio::time::timeout(
-            Duration::from_secs(snapshot.config.limits.tcp_connect_timeout_secs),
-            upstream.write_all(&prefix),
-        )
-        .await
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "TCP prefix write timed out"))?
+        if let Err(error) = tokio::time::timeout(connect_timeout, upstream.write_all(&prefix))
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "TCP prefix write timed out"))?
         {
             selected.record_failure();
             return Err(error);
         }
     }
     selected.record_success();
-    relay(
-        &mut client,
-        &mut upstream,
-        Duration::from_secs(snapshot.config.limits.tcp_idle_timeout_secs),
-        Duration::from_secs(snapshot.config.limits.tcp_connection_lifetime_secs),
-    )
-    .await
+    let drain = selected.drain_token();
+    tokio::select! {
+        result = relay(&mut client, &mut upstream, idle_timeout, lifetime) => result,
+        () = drain.cancelled() => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "upstream drain deadline reached",
+        )),
+    }
 }
 
 async fn read_client_hello(client: &mut TcpStream) -> io::Result<(Vec<u8>, Option<String>)> {

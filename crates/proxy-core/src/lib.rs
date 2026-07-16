@@ -220,6 +220,7 @@ async fn serve_bound(
     shutdown: CancellationToken,
 ) -> Result<(), ProxyError> {
     let config = Arc::clone(&snapshot.config);
+    drop(snapshot);
     let handshake_permits = Arc::new(Semaphore::new(config.tls.max_handshakes));
     let mut tasks = tokio::task::JoinSet::new();
     for (listener, tcp) in listeners {
@@ -268,6 +269,7 @@ async fn serve_bound(
         )));
     }
     while tasks.join_next().await.is_some() {}
+    let snapshot = runtime.load();
     for pool in snapshot.upstream_pools.values() {
         let handles: Vec<_> = pool
             .endpoints()
@@ -719,6 +721,8 @@ async fn accept_loop(listener: TcpListener, context: ListenerContext) {
         };
         let snapshot = runtime.load();
         let tls_acceptor = snapshot.tls_acceptors.get(&listener_id).cloned();
+        let handshake_timeout_secs = snapshot.config.tls.handshake_timeout_secs;
+        drop(snapshot);
         let handshake_permit = if tls_acceptor.is_some() {
             let Ok(permit) = handshake_permits.clone().try_acquire_owned() else {
                 tracing::debug!(%peer, "TLS handshake limit reached");
@@ -748,7 +752,7 @@ async fn accept_loop(listener: TcpListener, context: ListenerContext) {
             let result = match tls_acceptor {
                 Some(acceptor) => {
                     let accepted = tokio::time::timeout(
-                        Duration::from_secs(snapshot.config.tls.handshake_timeout_secs),
+                        Duration::from_secs(handshake_timeout_secs),
                         acceptor.accept(stream),
                     )
                     .await;
@@ -898,7 +902,6 @@ struct ProxyService {
 
 #[derive(Clone)]
 struct PinnedProxyService {
-    _snapshot: Arc<RuntimeSnapshot>,
     config: Arc<Config>,
     route_index: Arc<RouteIndex>,
     peer: SocketAddr,
@@ -930,7 +933,6 @@ impl Service<Request<Incoming>> for ProxyService {
             shutdown: service.shutdown,
             upgrade_tasks: service.upgrade_tasks,
             tls_server_name: service.tls_server_name,
-            _snapshot: snapshot,
         };
         Box::pin(async move { Ok(pinned.forward(request).await) })
     }
@@ -1651,6 +1653,26 @@ mod tests {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::sync::oneshot;
 
+        let idle_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("idle upstream bind");
+        let idle_upstream = idle_listener.local_addr().expect("idle upstream address");
+        let (idle_closed_tx, idle_closed_rx) = oneshot::channel();
+        let idle_task = tokio::spawn(async move {
+            let (mut stream, _) = idle_listener.accept().await.expect("idle accept");
+            let mut request = [0_u8; 4096];
+            loop {
+                let count = stream.read(&mut request).await.expect("idle request");
+                if count == 0 {
+                    break;
+                }
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 4\r\n\r\nidle")
+                    .await
+                    .expect("idle response");
+            }
+            idle_closed_tx.send(()).expect("signal idle close");
+        });
         let first_listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("first upstream bind");
@@ -1723,9 +1745,19 @@ mod tests {
         {
             managed.runtime.config_poll_secs = 60;
         }
-        managed.upstream_groups[0].endpoints[0].url = format!("http://{first_upstream}")
+        managed.upstream_groups[0].endpoints[0].id = "app-idle".into();
+        managed.upstream_groups[0].endpoints[0].url = format!("http://{idle_upstream}")
             .parse()
-            .expect("first upstream");
+            .expect("idle upstream");
+        managed.upstream_groups[0].endpoints.push(EndpointConfig {
+            id: "app-stream".into(),
+            url: format!("http://{first_upstream}")
+                .parse()
+                .expect("stream upstream"),
+            weight: 1,
+            server_name: None,
+            ca_bundle: None,
+        });
         fs::write(
             &config_path,
             toml::to_string_pretty(&managed).expect("serialize first config"),
@@ -1733,6 +1765,7 @@ mod tests {
         .expect("write first config");
         let shutdown = CancellationToken::new();
         let proxy_task = tokio::spawn(run_managed(config_path.clone(), shutdown.clone()));
+        assert!(proxy_get(proxy_addr).await.ends_with(b"idle"));
         let mut in_flight = connect_to_proxy(proxy_addr).await;
         in_flight
             .write_all(b"GET / HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n")
@@ -1753,9 +1786,15 @@ mod tests {
         .expect("old snapshot response timed out");
         assert!(first_chunk.starts_with(b"HTTP/1.1 200 OK"));
 
-        managed.upstream_groups[0].endpoints[0].url = format!("http://{second_upstream}")
-            .parse()
-            .expect("second upstream");
+        managed.upstream_groups[0].endpoints = vec![EndpointConfig {
+            id: "app-new".into(),
+            url: format!("http://{second_upstream}")
+                .parse()
+                .expect("second upstream"),
+            weight: 1,
+            server_name: None,
+            ca_bundle: None,
+        }];
         fs::write(
             &config_path,
             toml::to_string_pretty(&managed).expect("serialize second config"),
@@ -1773,13 +1812,21 @@ mod tests {
         loop {
             let response = proxy_get(proxy_addr).await;
             assert!(response.starts_with(b"HTTP/1.1 200 OK"));
-            assert!(response.ends_with(b"first") || response.ends_with(b"second"));
+            assert!(
+                response.ends_with(b"idle")
+                    || response.ends_with(b"first")
+                    || response.ends_with(b"second")
+            );
             if response.ends_with(b"second") {
                 break;
             }
             assert!(tokio::time::Instant::now() < deadline, "reload timed out");
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+        tokio::time::timeout(Duration::from_secs(1), idle_closed_rx)
+            .await
+            .expect("retired idle upstream remained pooled")
+            .expect("idle-close signal dropped");
         release_tx.send(()).expect("release old snapshot stream");
         let mut old_tail = Vec::new();
         in_flight
@@ -1823,6 +1870,7 @@ mod tests {
             .expect("recovery task")
             .expect("last-known-good run");
         first_task.abort();
+        idle_task.await.expect("idle upstream task");
         second_task.abort();
         fs::remove_dir_all(root).expect("cleanup");
     }

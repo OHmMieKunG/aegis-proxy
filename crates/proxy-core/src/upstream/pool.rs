@@ -1,4 +1,5 @@
 use std::{
+    future::Future,
     pin::Pin,
     sync::{
         Arc, Mutex,
@@ -13,11 +14,13 @@ use aegisproxy_config::{
 };
 use hyper::body::{Body, Frame, SizeHint};
 use thiserror::Error;
+use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 
 use super::{
     circuit::{CircuitBreaker, CircuitPermit},
     health::{EndpointHealth, EndpointState},
 };
+use crate::BoxError;
 
 #[derive(Debug, Error)]
 pub(crate) enum PoolError {
@@ -38,6 +41,7 @@ pub(crate) struct EndpointRuntime {
     config: Arc<EndpointConfig>,
     health: EndpointHealth,
     active: AtomicUsize,
+    drain_cancel: CancellationToken,
 }
 
 impl EndpointRuntime {
@@ -51,6 +55,7 @@ impl EndpointRuntime {
             config: Arc::new(config),
             health: EndpointHealth::new(initial),
             active: AtomicUsize::new(0),
+            drain_cancel: CancellationToken::new(),
         }
     }
 
@@ -88,13 +93,17 @@ impl DrainingEndpoint {
     }
 
     async fn wait_for(self, timeout: Duration) -> bool {
-        tokio::time::timeout(timeout, async {
+        let drained = tokio::time::timeout(timeout, async {
             while self.endpoint.active() != 0 {
                 tokio::time::sleep(Duration::from_millis(1)).await;
             }
         })
         .await
-        .is_ok()
+        .is_ok();
+        if !drained {
+            self.endpoint.drain_cancel.cancel();
+        }
+        drained
     }
 }
 
@@ -120,6 +129,10 @@ impl SelectedEndpoint {
             .health
             .record_passive_failure(std::time::Instant::now(), &self.passive_health);
     }
+
+    pub(crate) fn drain_token(&self) -> CancellationToken {
+        self.endpoint.drain_cancel.clone()
+    }
 }
 
 impl Drop for SelectedEndpoint {
@@ -132,13 +145,16 @@ impl Drop for SelectedEndpoint {
 pub(crate) struct GuardedBody<B> {
     body: Pin<Box<B>>,
     _endpoint: SelectedEndpoint,
+    drain_cancelled: Pin<Box<WaitForCancellationFutureOwned>>,
 }
 
 impl<B> GuardedBody<B> {
     pub(crate) fn new(body: B, endpoint: SelectedEndpoint) -> Self {
+        let drain = endpoint.drain_token();
         Self {
             body: Box::pin(body),
             _endpoint: endpoint,
+            drain_cancelled: Box::pin(drain.cancelled_owned()),
         }
     }
 }
@@ -146,15 +162,27 @@ impl<B> GuardedBody<B> {
 impl<B> Body for GuardedBody<B>
 where
     B: Body,
+    B::Error: Into<BoxError>,
 {
     type Data = B::Data;
-    type Error = B::Error;
+    type Error = BoxError;
 
     fn poll_frame(
         mut self: Pin<&mut Self>,
         context: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        self.body.as_mut().poll_frame(context)
+        if self.drain_cancelled.as_mut().poll(context).is_ready() {
+            return Poll::Ready(Some(Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "upstream drain deadline reached",
+            )))));
+        }
+        match self.body.as_mut().poll_frame(context) {
+            Poll::Ready(Some(Err(error))) => Poll::Ready(Some(Err(error.into()))),
+            Poll::Ready(Some(Ok(frame))) => Poll::Ready(Some(Ok(frame))),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
     }
 
     fn is_end_stream(&self) -> bool {
@@ -450,6 +478,18 @@ mod tests {
             pool.begin_drain("missing"),
             Err(PoolError::UnknownEndpoint)
         ));
+    }
+
+    #[tokio::test]
+    async fn drain_deadline_cancels_guarded_response_body() {
+        use http_body_util::BodyExt;
+
+        let pool = UpstreamPool::new(&group(BalancingAlgorithm::RoundRobin, &[1])).expect("pool");
+        let selected = pool.select().expect("selection");
+        let body = GuardedBody::new(http_body_util::Empty::<bytes::Bytes>::new(), selected);
+        let draining = pool.begin_drain("endpoint-0").expect("drain handle");
+        assert!(!draining.wait_for(Duration::from_millis(1)).await);
+        assert!(body.collect().await.is_err());
     }
 
     #[test]

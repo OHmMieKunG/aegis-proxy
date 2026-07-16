@@ -17,6 +17,8 @@ use arc_swap::ArcSwap;
 use thiserror::Error;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
+use crate::upstream::DrainingEndpoint;
+
 use super::{
     DnsEndpoints, ProxyError, RouteIndex, UpstreamClients, UpstreamPools, build_upstream_clients,
     build_upstream_pools, prepare_dns, prepare_tls, start_active_health_checks,
@@ -301,6 +303,7 @@ impl ActivationCoordinator {
             Some(&current),
         )
         .await?;
+        drop(current);
         let revisions = Arc::clone(&self.revisions);
         let journal = tokio::task::spawn_blocking({
             let candidate_id = candidate_id.clone();
@@ -326,8 +329,10 @@ impl ActivationCoordinator {
                 .restore_after_publication(&candidate_id, retired, error)
                 .await);
         }
-        retire_replaced_pools(&retired, &candidate);
+        let drains = begin_replaced_pool_drains(&retired, &candidate);
         retired.stop_background().await;
+        drop(retired);
+        finish_drains(drains).await;
         Ok(ActivationResult {
             active: candidate_id,
             previous: journal.previous.map(|previous| previous.id),
@@ -394,7 +399,11 @@ fn hot_reload_compatible(current: &Config, candidate: &Config) -> bool {
         })
 }
 
-fn retire_replaced_pools(retired: &RuntimeSnapshot, active: &RuntimeSnapshot) {
+fn begin_replaced_pool_drains(
+    retired: &RuntimeSnapshot,
+    active: &RuntimeSnapshot,
+) -> Vec<(String, DrainingEndpoint)> {
+    let mut drains = Vec::new();
     for (group_id, pool) in retired.upstream_pools.iter() {
         if active
             .upstream_pools
@@ -404,7 +413,26 @@ fn retire_replaced_pools(retired: &RuntimeSnapshot, active: &RuntimeSnapshot) {
             continue;
         }
         for endpoint in pool.endpoints() {
-            let _ = pool.begin_drain(&endpoint.config().id);
+            if let Ok(handle) = pool.begin_drain(&endpoint.config().id) {
+                drains.push((endpoint.config().id.clone(), handle));
+            }
+        }
+    }
+    drains
+}
+
+async fn finish_drains(drains: Vec<(String, DrainingEndpoint)>) {
+    let mut tasks = tokio::task::JoinSet::new();
+    for (endpoint_id, drain) in drains {
+        tasks.spawn(async move { (endpoint_id, drain.wait().await) });
+    }
+    while let Some(result) = tasks.join_next().await {
+        match result {
+            Ok((endpoint_id, false)) => {
+                tracing::warn!(endpoint = %endpoint_id, "upstream drain deadline reached");
+            }
+            Ok((_, true)) => {}
+            Err(error) => tracing::error!(%error, "upstream drain task failed"),
         }
     }
 }
@@ -531,7 +559,7 @@ mod tests {
             same.upstream_pools.get("app").expect("same pool"),
             changed.upstream_pools.get("app").expect("changed pool")
         ));
-        retire_replaced_pools(&same, &changed);
+        let drains = begin_replaced_pool_drains(&same, &changed);
         assert!(
             same.upstream_pools
                 .get("app")
@@ -547,6 +575,7 @@ mod tests {
                 .select()
                 .is_ok()
         );
+        finish_drains(drains).await;
         first.stop_background().await;
         same.stop_background().await;
         changed.stop_background().await;
