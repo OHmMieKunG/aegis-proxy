@@ -24,6 +24,10 @@ pub const MAX_CONFIG_BYTES: usize = 2 * 1024 * 1024;
 
 const MAX_LISTENERS: usize = 128;
 const MAX_ROUTES: usize = 4_096;
+const MAX_UPSTREAM_GROUPS: usize = 1_024;
+const MAX_ENDPOINTS_PER_GROUP: usize = 256;
+const MAX_MIDDLEWARES: usize = 1_024;
+const MAX_TRUSTED_PROXY_CIDRS: usize = 256;
 const MAX_ROUTE_LISTENERS: usize = 32;
 const MAX_ROUTE_HOSTS: usize = 64;
 const MAX_ROUTE_EXACT_PATHS: usize = 64;
@@ -369,6 +373,48 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             "route count exceeds {MAX_ROUTES}"
         )));
     }
+    if config.runtime.state_dir.is_empty() || config.runtime.state_dir.len() > 4_096 {
+        return Err(ConfigError::Invalid(
+            "runtime.state_dir must contain 1..=4096 bytes".into(),
+        ));
+    }
+    if config.runtime.shutdown_grace_secs == 0
+        || config.runtime.shutdown_grace_secs > 3_600
+        || config.runtime.config_poll_secs == 0
+        || config.runtime.config_poll_secs > 300
+    {
+        return Err(ConfigError::Invalid(
+            "runtime shutdown/config polling durations are outside safe bounds".into(),
+        ));
+    }
+    if config.upstream_groups.len() > MAX_UPSTREAM_GROUPS {
+        return Err(ConfigError::Invalid(format!(
+            "upstream_groups exceeds {MAX_UPSTREAM_GROUPS} entries"
+        )));
+    }
+    if config.middlewares.len() > MAX_MIDDLEWARES {
+        return Err(ConfigError::Invalid(format!(
+            "middlewares exceeds {MAX_MIDDLEWARES} entries"
+        )));
+    }
+    if !config.middlewares.is_empty() {
+        return Err(ConfigError::Invalid(
+            "middlewares are not activated until Phase 7; refusing silent no-op policy".into(),
+        ));
+    }
+    if config.trusted_proxies.cidrs.len() > MAX_TRUSTED_PROXY_CIDRS
+        || config.trusted_proxies.trusted_hops > 32
+    {
+        return Err(ConfigError::Invalid(
+            "trusted_proxies exceeds configured CIDR or hop bounds".into(),
+        ));
+    }
+    if !config.trusted_proxies.cidrs.is_empty() || config.trusted_proxies.trusted_hops != 0 {
+        return Err(ConfigError::Invalid(
+            "trusted proxy reconstruction is not activated yet; inbound forwarding headers remain stripped"
+                .into(),
+        ));
+    }
     if !matches!(config.tls.minimum_version.as_str(), "1.2" | "1.3") {
         return Err(ConfigError::Invalid(
             "tls.minimum_version must be 1.2 or 1.3".into(),
@@ -476,7 +522,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
     }
     let mut ids = HashSet::new();
     let mut binds = HashSet::new();
-    for listener in &config.listeners {
+    for (listener_index, listener) in config.listeners.iter().enumerate() {
         valid_id(&listener.id)?;
         if !ids.insert(format!("listener:{}", listener.id)) {
             return Err(ConfigError::Invalid(format!(
@@ -496,6 +542,11 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                 listener.protocol
             )));
         }
+        if listener.protocol == "tcp" {
+            return Err(ConfigError::Invalid(format!(
+                "listeners[{listener_index}].protocol requests TCP before the Phase 4 passthrough gate"
+            )));
+        }
         if listener.protocol == "https" {
             if listener.certificates.is_empty() {
                 return Err(ConfigError::Invalid(format!(
@@ -503,11 +554,16 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                     listener.id
                 )));
             }
-            for certificate in &listener.certificates {
+            let mut listener_certificates = HashSet::new();
+            for (certificate_index, certificate) in listener.certificates.iter().enumerate() {
+                if !listener_certificates.insert(certificate.as_str()) {
+                    return Err(ConfigError::Invalid(format!(
+                        "listeners[{listener_index}].certificates[{certificate_index}] duplicates certificate {certificate}"
+                    )));
+                }
                 if !certificate_ids.contains(certificate.as_str()) {
                     return Err(ConfigError::Invalid(format!(
-                        "listener {} references unknown certificate {}",
-                        listener.id, certificate
+                        "listeners[{listener_index}].certificates[{certificate_index}] references unknown certificate {certificate}"
                     )));
                 }
             }
@@ -519,7 +575,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         }
     }
     let mut groups = HashSet::new();
-    for group in &config.upstream_groups {
+    for (group_index, group) in config.upstream_groups.iter().enumerate() {
         valid_id(&group.id)?;
         if !groups.insert(group.id.as_str()) {
             return Err(ConfigError::Invalid(format!(
@@ -533,6 +589,21 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                 group.id
             )));
         }
+        if group.endpoints.len() > MAX_ENDPOINTS_PER_GROUP {
+            return Err(ConfigError::Invalid(format!(
+                "upstream_groups[{group_index}].endpoints exceeds {MAX_ENDPOINTS_PER_GROUP} entries"
+            )));
+        }
+        if group.endpoints.len() != 1 {
+            return Err(ConfigError::Invalid(format!(
+                "upstream_groups[{group_index}].endpoints must contain exactly one endpoint until Phase 4 balancing"
+            )));
+        }
+        if group.allowed_cidrs.len() > 256 {
+            return Err(ConfigError::Invalid(format!(
+                "upstream_groups[{group_index}].allowed_cidrs exceeds 256 entries"
+            )));
+        }
         if group.algorithm != "round_robin" {
             return Err(ConfigError::Invalid(format!(
                 "unsupported upstream algorithm {}",
@@ -540,7 +611,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             )));
         }
         let mut endpoint_ids = HashSet::new();
-        for endpoint in &group.endpoints {
+        for (endpoint_index, endpoint) in group.endpoints.iter().enumerate() {
             valid_id(&endpoint.id)?;
             if !endpoint_ids.insert(endpoint.id.as_str()) {
                 return Err(ConfigError::Invalid(format!(
@@ -548,10 +619,9 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                     endpoint.id, group.id
                 )));
             }
-            if endpoint.weight == 0 {
+            if endpoint.weight != 1 {
                 return Err(ConfigError::Invalid(format!(
-                    "endpoint {} has zero weight",
-                    endpoint.id
+                    "upstream_groups[{group_index}].endpoints[{endpoint_index}].weight must be 1 until Phase 4 balancing"
                 )));
             }
             if !matches!(endpoint.url.scheme(), "http" | "https")
@@ -560,6 +630,16 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                 return Err(ConfigError::Invalid(format!(
                     "endpoint {} URL must be absolute http(s)",
                     endpoint.id
+                )));
+            }
+            if endpoint.url.as_str().len() > 2_048
+                || !endpoint.url.username().is_empty()
+                || endpoint.url.password().is_some()
+                || endpoint.url.query().is_some()
+                || endpoint.url.fragment().is_some()
+            {
+                return Err(ConfigError::Invalid(format!(
+                    "upstream_groups[{group_index}].endpoints[{endpoint_index}].url must be bounded and contain no credentials, query, or fragment"
                 )));
             }
             match (endpoint.url.scheme(), endpoint.server_name.as_deref()) {
@@ -616,7 +696,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         .map(|g| g.id.as_str())
         .collect();
     let mut route_ids = HashSet::new();
-    for route in &config.routes {
+    for (route_index, route) in config.routes.iter().enumerate() {
         valid_id(&route.id)?;
         if !route_ids.insert(route.id.as_str()) {
             return Err(ConfigError::Invalid(format!(
@@ -652,15 +732,13 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         }
         if !group_ids.contains(route.upstream_group.as_deref().unwrap_or_default()) {
             return Err(ConfigError::Invalid(format!(
-                "route {} references unknown upstream",
-                route.id
+                "routes[{route_index}].upstream_group references unknown upstream"
             )));
         }
-        for listener in &route.listeners {
+        for (listener_index, listener) in route.listeners.iter().enumerate() {
             if !listener_ids.contains(listener.as_str()) {
                 return Err(ConfigError::Invalid(format!(
-                    "route {} references unknown listener {}",
-                    route.id, listener
+                    "routes[{route_index}].listeners[{listener_index}] references unknown listener {listener}"
                 )));
             }
         }
@@ -1023,7 +1101,8 @@ mod tests {
         let mut config = base_config();
         config.listeners[0].protocol = "https".into();
         config.listeners[0].certificates = vec!["missing".into()];
-        assert!(validate(&config).is_err());
+        let error = validate(&config).expect_err("unknown certificate must fail");
+        assert!(error.to_string().contains("listeners[0].certificates[0]"));
     }
 
     #[test]
@@ -1139,5 +1218,59 @@ mod tests {
         route.paths.clear();
         route.path_prefixes = vec!["/api/".into()];
         assert!(validate_route_matchers(&route).is_err());
+    }
+
+    fn add_http_upstream(config: &mut Config) {
+        config.upstream_groups.push(UpstreamGroupConfig {
+            id: "app".into(),
+            algorithm: "round_robin".into(),
+            allowed_cidrs: vec!["127.0.0.1/32".parse().expect("CIDR")],
+            endpoints: vec![EndpointConfig {
+                id: "app-1".into(),
+                url: "http://127.0.0.1:9000".parse().expect("URL"),
+                weight: 1,
+                server_name: None,
+                ca_bundle: None,
+            }],
+        });
+    }
+
+    #[test]
+    fn reference_errors_include_exact_field_paths() {
+        let mut config = base_config();
+        add_http_upstream(&mut config);
+        let mut route = test_route();
+        route.listeners = vec!["missing".into()];
+        config.routes.push(route);
+        let error = validate(&config).expect_err("unknown listener must fail");
+        assert!(error.to_string().contains("routes[0].listeners[0]"));
+    }
+
+    #[test]
+    fn refuses_configured_features_before_runtime_support() {
+        let mut config = base_config();
+        config.listeners[0].protocol = "tcp".into();
+        assert!(validate(&config).is_err());
+
+        let mut config = base_config();
+        config.trusted_proxies.cidrs = vec!["127.0.0.1/32".parse().expect("CIDR")];
+        config.trusted_proxies.trusted_hops = 1;
+        assert!(validate(&config).is_err());
+
+        let mut config = base_config();
+        config.middlewares.insert(
+            "headers".into(),
+            MiddlewareConfig::SecurityHeaders {
+                hsts: None,
+                content_security_policy: None,
+            },
+        );
+        assert!(validate(&config).is_err());
+
+        let mut config = base_config();
+        add_http_upstream(&mut config);
+        let endpoint = config.upstream_groups[0].endpoints[0].clone();
+        config.upstream_groups[0].endpoints.push(endpoint);
+        assert!(validate(&config).is_err());
     }
 }
