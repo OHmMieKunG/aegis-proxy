@@ -3,6 +3,7 @@
 /.cargo/
 *.log
 *.pem
+!tests/pebble/pebble.minica.pem
 *.key
 *.crt
 *.p12
@@ -10,4 +11,3 @@
 .env
 .env.*
 !.env.example
-
