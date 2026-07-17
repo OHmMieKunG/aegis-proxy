@@ -30,6 +30,7 @@ const MAX_ENDPOINTS_PER_GROUP: usize = 256;
 const MAX_TOTAL_ENDPOINTS: usize = 4_096;
 const MAX_MIDDLEWARES: usize = 1_024;
 const MAX_TRUSTED_PROXY_CIDRS: usize = 256;
+const MAX_MIDDLEWARE_CIDRS: usize = 256;
 const MAX_ROUTE_LISTENERS: usize = 32;
 const MAX_ROUTE_HOSTS: usize = 64;
 const MAX_ROUTE_EXACT_PATHS: usize = 64;
@@ -632,6 +633,15 @@ pub enum MiddlewareConfig {
         requests_per_second: u64,
         /// Burst capacity.
         burst: u64,
+    },
+    /// Trusted-client IP policy. Deny entries take precedence.
+    IpPolicy {
+        /// Optional allowlist; empty means any address not denied.
+        #[serde(default)]
+        allow: Vec<IpNet>,
+        /// Explicit denylist.
+        #[serde(default)]
+        deny: Vec<IpNet>,
     },
     /// Fixed redirect.
     Redirect {
@@ -1265,6 +1275,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         validate_unique_strings(&route.id, "middleware", &route.middlewares)?;
         let mut redirects = 0_usize;
         let mut security_headers = 0_usize;
+        let mut ip_policies = 0_usize;
         for middleware in &route.middlewares {
             let Some(definition) = config.middlewares.get(middleware) else {
                 return Err(ConfigError::Invalid(format!(
@@ -1293,9 +1304,10 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                         route.id
                     )));
                 }
+                MiddlewareConfig::IpPolicy { .. } => ip_policies += 1,
             }
         }
-        if redirects > 1 || security_headers > 1 {
+        if redirects > 1 || security_headers > 1 || ip_policies > 1 {
             return Err(ConfigError::Invalid(format!(
                 "route {} contains an ambiguous duplicate middleware stage",
                 route.id
@@ -1406,6 +1418,22 @@ fn validate_middleware(id: &str, middleware: &MiddlewareConfig) -> Result<(), Co
             if !(1..=1_000_000).contains(requests_per_second) || !(1..=1_000_000).contains(burst) {
                 return Err(ConfigError::Invalid(format!(
                     "middleware {id} rate limit is outside safe bounds"
+                )));
+            }
+        }
+        MiddlewareConfig::IpPolicy { allow, deny } => {
+            if allow.len() > MAX_MIDDLEWARE_CIDRS
+                || deny.len() > MAX_MIDDLEWARE_CIDRS
+                || (allow.is_empty() && deny.is_empty())
+            {
+                return Err(ConfigError::Invalid(format!(
+                    "middleware {id} IP policy is empty or exceeds CIDR bounds"
+                )));
+            }
+            let mut cidrs = HashSet::new();
+            if allow.iter().chain(deny).any(|cidr| !cidrs.insert(cidr)) {
+                return Err(ConfigError::Invalid(format!(
+                    "middleware {id} IP policy contains duplicate CIDRs"
                 )));
             }
         }
@@ -2687,6 +2715,39 @@ mod tests {
         });
         validate(&config).expect("redirect terminal");
         config.routes[0].middlewares.clear();
+        assert!(validate(&config).is_err());
+    }
+
+    #[test]
+    fn bounds_ip_policy_cidrs_and_rejects_duplicates() {
+        let allowed: IpNet = "127.0.0.0/8".parse().expect("CIDR");
+        let policy = MiddlewareConfig::IpPolicy {
+            allow: vec![allowed],
+            deny: vec![],
+        };
+        validate_middleware("local", &policy).expect("bounded IP policy");
+        let duplicate = MiddlewareConfig::IpPolicy {
+            allow: vec![allowed],
+            deny: vec![allowed],
+        };
+        assert!(validate_middleware("local", &duplicate).is_err());
+
+        let mut config = base_config();
+        add_http_upstream(&mut config);
+        config.middlewares.insert("local".into(), policy);
+        let mut route = test_route();
+        route.middlewares = vec!["local".into()];
+        config.routes.push(route);
+        validate(&config).expect("route IP policy");
+
+        config.middlewares.insert(
+            "other".into(),
+            MiddlewareConfig::IpPolicy {
+                allow: vec![],
+                deny: vec!["192.0.2.0/24".parse().expect("CIDR")],
+            },
+        );
+        config.routes[0].middlewares.push("other".into());
         assert!(validate(&config).is_err());
     }
 
