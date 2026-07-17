@@ -1498,7 +1498,7 @@ Work is sequential unless a phase explicitly identifies a parallel documentation
 ### Phase 6: ACME certificate automation
 
 - **Objectives:** Automated issuance/renewal via HTTP-01, DNS-01 and safely gated TLS-ALPN-01; multiple CA directories/accounts; wildcard and failure-safe storage.
-- **Exact deliverables/files:** `proxy-tls/acme/{client,challenge,scheduler,account,dns_provider}.rs`, CLI renew/status, admin endpoints/status, Pebble and DNS test provider, ACME/rotation/revocation runbooks.
+- **Exact deliverables/files:** `proxy-tls/acme/{client,challenge,scheduler,account,dns_provider}.rs`, CLI renew/status and an internal status model, Pebble and DNS test provider, ACME/rotation/revocation runbooks. Authenticated administrative ACME endpoints consume that model in Phase 8, when the private transport, authentication, RBAC, mutation audit, and request limits exist; Phase 6 must not expose an ACME-specific ad hoc API.
 - **Dependencies:** `instant-acme` if Phase 0/current audit confirms required challenge/profile support; otherwise a minimal compatible client decision ADR. DNS providers are compile-time feature adapters with secret refs.
 - **Security controls:** Per-certificate lock, encrypted account/key material, domain/identifier allowlist, nonce/order validation by library, staged key/cert match, renewal jitter/backoff, CA rate awareness, challenge route isolation/cleanup, least-privileged DNS token.
 - **Tests:** Pebble issuance/renewal/failure for all enabled challenges, wildcard DNS-01, alternate/staging CA, account rollover, challenge collision, concurrent renewal/crash, wrong-name/key/chain rejection, working-certificate preservation.
