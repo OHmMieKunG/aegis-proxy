@@ -1247,6 +1247,19 @@ impl PinnedProxyService {
             }
         }
         request.extensions_mut().insert(identity.clone());
+        if middleware::rewrite::apply(
+            &self.config,
+            route,
+            &mut request,
+            self.limits.max_request_target,
+        )
+        .is_err()
+        {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "request rewrite failed\n",
+            );
+        }
         let Some(group_id) = route.upstream_group.as_deref() else {
             return error_response(StatusCode::BAD_GATEWAY, "route has no upstream\n");
         };
@@ -3050,6 +3063,57 @@ mod tests {
                 .await
                 .is_err()
         );
+        shutdown.cancel();
+        proxy_task.await.expect("proxy task").expect("proxy run");
+    }
+
+    #[tokio::test]
+    async fn rewrite_changes_only_the_upstream_request_target() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("upstream bind");
+        let upstream_addr = upstream.local_addr().expect("upstream address");
+        let upstream_task = tokio::spawn(async move {
+            let (mut stream, _) = upstream.accept().await.expect("upstream accept");
+            let mut request = [0_u8; 4096];
+            let count = stream.read(&mut request).await.expect("upstream read");
+            stream
+                .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+                .await
+                .expect("upstream response");
+            String::from_utf8(request[..count].to_vec()).expect("request text")
+        });
+        let (proxy_addr, shutdown, proxy_task) = start_test_proxy(upstream_addr, |config| {
+            config.middlewares.insert(
+                "rewrite".into(),
+                MiddlewareConfig::Rewrite {
+                    from_prefix: Some("/api".into()),
+                    to: "/internal".into(),
+                },
+            );
+            config.routes[0].path_prefixes = vec!["/api".into()];
+            config.routes[0].default = false;
+            config.routes[0].middlewares = vec!["rewrite".into()];
+        })
+        .await;
+        let mut client = connect_to_proxy(proxy_addr).await;
+        client
+            .write_all(
+                b"GET /api/users?page=2 HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .expect("client write");
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("client read");
+        assert!(response.starts_with(b"HTTP/1.1 204 No Content"));
+        let request = upstream_task.await.expect("upstream task");
+        assert!(request.starts_with("GET /internal/users?page=2 HTTP/1.1\r\n"));
         shutdown.cancel();
         proxy_task.await.expect("proxy task").expect("proxy run");
     }

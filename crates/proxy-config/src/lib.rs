@@ -678,6 +678,14 @@ pub enum MiddlewareConfig {
         #[serde(default = "default_auth_timeout_secs")]
         timeout_secs: u64,
     },
+    /// Post-authentication path rewrite. Query parameters are preserved.
+    Rewrite {
+        /// Optional segment-aware prefix to replace. Omit for an exact replacement.
+        #[serde(default)]
+        from_prefix: Option<String>,
+        /// Canonical replacement path or prefix.
+        to: String,
+    },
     /// Fixed redirect.
     Redirect {
         /// Destination URL.
@@ -1330,6 +1338,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         let mut rate_limits = 0_usize;
         let mut cors_policies = 0_usize;
         let mut authentication = 0_usize;
+        let mut rewrites = 0_usize;
         for middleware in &route.middlewares {
             let Some(definition) = config.middlewares.get(middleware) else {
                 return Err(ConfigError::Invalid(format!(
@@ -1366,6 +1375,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                         )));
                     }
                 }
+                MiddlewareConfig::Rewrite { .. } => rewrites += 1,
             }
         }
         if redirects > 1
@@ -1374,6 +1384,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             || rate_limits > 1
             || cors_policies > 1
             || authentication > 1
+            || rewrites > 1
         {
             return Err(ConfigError::Invalid(format!(
                 "route {} contains an ambiguous duplicate middleware stage",
@@ -1397,6 +1408,12 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         if redirects == 1 && authentication != 0 {
             return Err(ConfigError::Invalid(format!(
                 "route {} cannot authenticate a public redirect stage",
+                route.id
+            )));
+        }
+        if redirects == 1 && rewrites != 0 {
+            return Err(ConfigError::Invalid(format!(
+                "route {} cannot rewrite a terminal redirect",
                 route.id
             )));
         }
@@ -1633,6 +1650,17 @@ fn validate_middleware(id: &str, middleware: &MiddlewareConfig) -> Result<(), Co
                 }
             }
         }
+        MiddlewareConfig::Rewrite { from_prefix, to } => {
+            validate_rewrite_path(id, to, from_prefix.is_some())?;
+            if let Some(from_prefix) = from_prefix {
+                validate_rewrite_path(id, from_prefix, true)?;
+                if from_prefix == to {
+                    return Err(ConfigError::Invalid(format!(
+                        "middleware {id} rewrite does not change the path"
+                    )));
+                }
+            }
+        }
         MiddlewareConfig::Redirect {
             location,
             status,
@@ -1685,6 +1713,26 @@ fn validate_header_value(id: &str, field: &str, value: &str) -> Result<(), Confi
     {
         return Err(ConfigError::Invalid(format!(
             "middleware {id} has an invalid {field} header value"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_rewrite_path(id: &str, path: &str, prefix: bool) -> Result<(), ConfigError> {
+    let valid = !path.is_empty()
+        && path.len() <= MAX_PATH_BYTES
+        && path.is_ascii()
+        && path.starts_with('/')
+        && !path.contains('%')
+        && !path.contains('\\')
+        && !path.contains('?')
+        && !path.contains('#')
+        && !path.contains("//")
+        && (!prefix || path == "/" || !path.ends_with('/'))
+        && !path.split('/').any(|segment| matches!(segment, "." | ".."));
+    if !valid {
+        return Err(ConfigError::Invalid(format!(
+            "middleware {id} has a non-canonical rewrite path"
         )));
     }
     Ok(())
@@ -3026,6 +3074,35 @@ mod tests {
         route.middlewares = vec!["basic".into()];
         config.routes.push(route);
         assert!(validate(&config).is_err());
+    }
+
+    #[test]
+    fn validates_bounded_canonical_rewrites() {
+        let rewrite = MiddlewareConfig::Rewrite {
+            from_prefix: Some("/api".into()),
+            to: "/internal".into(),
+        };
+        validate_middleware("rewrite", &rewrite).expect("canonical rewrite");
+        assert!(
+            validate_middleware(
+                "rewrite",
+                &MiddlewareConfig::Rewrite {
+                    from_prefix: Some("/api/../admin".into()),
+                    to: "/internal".into(),
+                },
+            )
+            .is_err()
+        );
+        assert!(
+            validate_middleware(
+                "rewrite",
+                &MiddlewareConfig::Rewrite {
+                    from_prefix: None,
+                    to: "/fixed?leak=query".into(),
+                },
+            )
+            .is_err()
+        );
     }
 
     #[test]

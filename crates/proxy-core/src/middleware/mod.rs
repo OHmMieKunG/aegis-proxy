@@ -7,3 +7,4 @@ pub(crate) mod ip;
 pub(crate) mod normalize;
 pub(crate) mod rate;
 pub(crate) mod redirect;
+pub(crate) mod rewrite;
