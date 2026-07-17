@@ -28,9 +28,9 @@ The schema defines bounded Phase 4 upstream DNS, health, retry, circuit, drain, 
 
 Phase 6 ACME automation is active for explicit issuers and HTTP-01, DNS-01, or TLS-ALPN-01 certificate policies. The only DNS adapter is a compile-time Cloudflare adapter with an explicit zone ID and secret-reference token. Orders, DNS answers, challenge state, account state, renewal work, and certificate publication are bounded. There is no automatic challenge or CA fallback. See [ACME operations](operations/acme.md).
 
-Phase 7 route middleware includes a non-queuing `in_flight_limit` stage keyed by the trusted client identity. `max_requests` bounds the route policy, `max_per_client` must not exceed it, and `status` is restricted to 429 or 503. The aggregate configured route capacity cannot exceed 100000. Permits span upstream waits, response streaming, and WebSocket lifetime; cancellation releases them.
+Phase 7 route middleware is active through a compiled fixed-stage pipeline. It includes IP policy, edge and principal rate limits, non-queuing route/client in-flight limits, CORS, Basic and ForwardAuth, redirects, maintenance, rewrites, typed header/security policies, static custom errors, and bounded streaming compression. `max_requests` bounds an in-flight route policy, `max_per_client` must not exceed it, and `status` is restricted to 429 or 503. The aggregate configured route capacity cannot exceed 100000. Permits span upstream waits, response streaming, and WebSocket lifetime; cancellation releases them. See [the middleware contract](middleware.md) and the validated `config/examples/phase7.toml` fixture.
 
-Configuration never silently accepts an inactive policy. Trusted-proxy settings and middleware objects remain gated by their assigned phases. TCP routing uses the explicit model in [ADR 0027](adr/0027-tcp-routing-schema.md); bounded TLS ClientHello capture follows [ADR 0016](adr/0016-clienthello-parser.md), with no handwritten parser.
+Configuration never silently accepts an inactive policy. TCP routing uses the explicit model in [ADR 0027](adr/0027-tcp-routing-schema.md); bounded TLS ClientHello capture follows [ADR 0016](adr/0016-clienthello-parser.md), with no handwritten parser.
 
 Configured egress denies override allows. Literal addresses are checked during validation. Configured DNS answers pass the same policy at refresh and immediately before connection. A refresh failure retains the last allowed set only through its configured stale deadline; startup fails if the initial lookup has no fully allowed answer set.
 
@@ -41,6 +41,7 @@ rust-proxy validate --config config/examples/minimal.toml
 rust-proxy preview --config config/examples/tls.toml
 rust-proxy fmt --config config/examples/minimal.toml
 rust-proxy validate --config config/examples/tcp.toml
+rust-proxy validate --config config/examples/phase7.toml
 ```
 
 The preview output is deliberately not re-applicable because secret references are replaced. Formatting does not resolve or print secret values, but it preserves configured environment names and file paths and should be handled as operational configuration.
