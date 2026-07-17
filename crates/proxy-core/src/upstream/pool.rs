@@ -30,6 +30,8 @@ pub(crate) enum PoolError {
     ZeroWeight,
     #[error("no upstream endpoint is available")]
     Unavailable,
+    #[error("upstream group is at its in-flight limit")]
+    AtCapacity,
     #[error("upstream circuit is open")]
     CircuitOpen,
     #[error("upstream endpoint does not exist")]
@@ -75,6 +77,7 @@ impl EndpointRuntime {
 #[derive(Debug)]
 pub(crate) struct SelectedEndpoint {
     endpoint: Arc<EndpointRuntime>,
+    group_active: Arc<AtomicUsize>,
     passive_health: Arc<PassiveHealthConfig>,
     active_health: bool,
     circuit_permit: Option<CircuitPermit>,
@@ -138,6 +141,7 @@ impl SelectedEndpoint {
 impl Drop for SelectedEndpoint {
     fn drop(&mut self) {
         self.endpoint.active.fetch_sub(1, Ordering::AcqRel);
+        self.group_active.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -206,6 +210,8 @@ pub(crate) struct UpstreamPool {
     circuit: Option<Arc<CircuitBreaker>>,
     retry: RetryConfig,
     drain_timeout: Duration,
+    max_in_flight: usize,
+    active: Arc<AtomicUsize>,
 }
 
 impl UpstreamPool {
@@ -233,6 +239,8 @@ impl UpstreamPool {
             circuit: group.circuit_breaker.clone().map(CircuitBreaker::new),
             retry: group.retry.clone(),
             drain_timeout: Duration::from_secs(group.drain_timeout_secs),
+            max_in_flight: group.max_in_flight,
+            active: Arc::new(AtomicUsize::new(0)),
         })
     }
 
@@ -246,6 +254,11 @@ impl UpstreamPool {
         if eligible.is_empty() {
             return Err(PoolError::Unavailable);
         }
+        self.active
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                (active < self.max_in_flight).then_some(active + 1)
+            })
+            .map_err(|_| PoolError::AtCapacity)?;
         let selected = match self.algorithm {
             BalancingAlgorithm::RoundRobin => self.select_round_robin(&eligible),
             BalancingAlgorithm::SmoothWeightedRoundRobin => self.select_smooth(&eligible),
@@ -256,6 +269,7 @@ impl UpstreamPool {
         endpoint.active.fetch_add(1, Ordering::AcqRel);
         Ok(SelectedEndpoint {
             endpoint,
+            group_active: Arc::clone(&self.active),
             passive_health: Arc::clone(&self.passive_health),
             active_health: self.active_health,
             circuit_permit,
@@ -432,6 +446,17 @@ mod tests {
             endpoint.health.mark_unhealthy();
         }
         assert!(matches!(pool.select(), Err(PoolError::Unavailable)));
+    }
+
+    #[test]
+    fn group_in_flight_limit_releases_with_selection_guard() {
+        let mut config = group(BalancingAlgorithm::RoundRobin, &[1]);
+        config.max_in_flight = 1;
+        let pool = UpstreamPool::new(&config).expect("pool");
+        let selected = pool.select().expect("first selection");
+        assert!(matches!(pool.select(), Err(PoolError::AtCapacity)));
+        drop(selected);
+        assert!(pool.select().is_ok());
     }
 
     #[test]

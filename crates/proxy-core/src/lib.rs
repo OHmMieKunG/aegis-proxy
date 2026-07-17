@@ -3508,6 +3508,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn upstream_in_flight_limit_holds_until_response_body_finishes() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        use tokio::sync::oneshot;
+
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("upstream bind");
+        let upstream_addr = upstream.local_addr().expect("upstream address");
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let upstream_task = tokio::spawn(async move {
+            let (mut stream, _) = upstream.accept().await.expect("upstream accept");
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).await.expect("upstream read");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\n")
+                .await
+                .expect("upstream headers");
+            ready_tx.send(()).expect("signal response");
+            release_rx.await.expect("release body");
+            stream.write_all(b"first").await.expect("upstream body");
+        });
+        let (proxy_addr, shutdown, proxy_task) = start_test_proxy(upstream_addr, |config| {
+            config.upstream_groups[0].max_in_flight = 1;
+        })
+        .await;
+        let first = tokio::spawn(proxy_get(proxy_addr));
+        ready_rx.await.expect("first response started");
+        let second = tokio::time::timeout(Duration::from_secs(1), proxy_get(proxy_addr))
+            .await
+            .expect("capacity response");
+        assert!(second.starts_with(b"HTTP/1.1 503 Service Unavailable\r\n"));
+        release_tx.send(()).expect("release first body");
+        let first = first.await.expect("first client");
+        assert!(first.starts_with(b"HTTP/1.1 200 OK\r\n"));
+        assert!(first.ends_with(b"first"));
+        upstream_task.await.expect("upstream task");
+        shutdown.cancel();
+        proxy_task.await.expect("proxy task").expect("proxy run");
+    }
+
+    #[tokio::test]
     async fn rewrite_changes_only_the_upstream_request_target() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;

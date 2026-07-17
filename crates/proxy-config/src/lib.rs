@@ -396,6 +396,9 @@ pub struct UpstreamGroupConfig {
     /// Maximum time removed endpoints may drain existing work.
     #[serde(default = "default_drain_timeout_secs")]
     pub drain_timeout_secs: u64,
+    /// Maximum concurrent requests or raw connections for the group.
+    #[serde(default = "default_upstream_max_in_flight")]
+    pub max_in_flight: usize,
     /// Endpoints.
     pub endpoints: Vec<EndpointConfig>,
 }
@@ -413,6 +416,7 @@ impl Default for UpstreamGroupConfig {
             retry: RetryConfig::default(),
             circuit_breaker: None,
             drain_timeout_secs: default_drain_timeout_secs(),
+            max_in_flight: default_upstream_max_in_flight(),
             endpoints: Vec::new(),
         }
     }
@@ -586,6 +590,10 @@ impl Default for CircuitBreakerConfig {
 
 fn default_drain_timeout_secs() -> u64 {
     30
+}
+
+fn default_upstream_max_in_flight() -> usize {
+    1_024
 }
 
 /// Upstream endpoint.
@@ -1194,6 +1202,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
     let mut groups = HashSet::new();
     let mut group_is_tcp = HashMap::new();
     let mut total_endpoints = 0_usize;
+    let mut total_upstream_in_flight = 0_usize;
     for (group_index, group) in config.upstream_groups.iter().enumerate() {
         valid_id(&group.id)?;
         if !groups.insert(group.id.as_str()) {
@@ -1230,6 +1239,14 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             )));
         }
         validate_upstream_policy(group_index, group)?;
+        total_upstream_in_flight = total_upstream_in_flight
+            .checked_add(group.max_in_flight)
+            .ok_or_else(|| ConfigError::Invalid("upstream in-flight capacity overflow".into()))?;
+        if total_upstream_in_flight > 100_000 {
+            return Err(ConfigError::Invalid(
+                "aggregate upstream in-flight capacity exceeds 100000".into(),
+            ));
+        }
         let mut endpoint_ids = HashSet::new();
         let mut total_weight = 0_u64;
         for (endpoint_index, endpoint) in group.endpoints.iter().enumerate() {
@@ -2649,6 +2666,12 @@ fn validate_upstream_policy(
             field("drain_timeout_secs")
         )));
     }
+    if group.max_in_flight == 0 || group.max_in_flight > 100_000 {
+        return Err(ConfigError::Invalid(format!(
+            "{} is outside 1..=100000",
+            field("max_in_flight")
+        )));
+    }
     let passive = &group.passive_health;
     if passive.failure_threshold == 0
         || passive.failure_threshold > 100
@@ -3958,6 +3981,12 @@ mod tests {
         group.drain_timeout_secs = 0;
         assert!(validate_upstream_policy(0, &group).is_err());
         group.drain_timeout_secs = default_drain_timeout_secs();
+
+        group.max_in_flight = 1;
+        validate_upstream_policy(0, &group).expect("bounded in-flight policy");
+        group.max_in_flight = 0;
+        assert!(validate_upstream_policy(0, &group).is_err());
+        group.max_in_flight = default_upstream_max_in_flight();
 
         group.retry.max_attempts = 6;
         assert!(
