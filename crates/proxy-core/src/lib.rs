@@ -1308,6 +1308,28 @@ impl PinnedProxyService {
                 );
             }
         }
+        match middleware::rate::check_principal(
+            &self.rate_limiters,
+            &self.config,
+            route,
+            identity.principal.as_deref(),
+        ) {
+            Ok(RateOutcome::Allowed) => {}
+            Ok(RateOutcome::Limited { retry_after_secs }) => {
+                let mut response = error_response(StatusCode::TOO_MANY_REQUESTS, "rate limited\n");
+                let Ok(retry_after) = HeaderValue::from_str(&retry_after_secs.to_string()) else {
+                    return error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "rate limit response failed\n",
+                    );
+                };
+                response.headers_mut().insert(RETRY_AFTER, retry_after);
+                return response;
+            }
+            Err(()) => {
+                return error_response(StatusCode::SERVICE_UNAVAILABLE, "rate limit unavailable\n");
+            }
+        }
         match middleware::maintenance::response(&self.config, route, true) {
             Ok(Some(mut response)) => {
                 if middleware::headers::apply_response_mutations(&self.config, route, &mut response)
@@ -1754,8 +1776,8 @@ mod tests {
     use super::*;
     use aegisproxy_config::{
         AdminConfig, BalancingAlgorithm, CertificateConfig, Config, EndpointConfig, LimitsConfig,
-        ListenerConfig, MiddlewareConfig, RouteConfig, RuntimeConfig, TrustedProxyConfig,
-        UpstreamGroupConfig,
+        ListenerConfig, MiddlewareConfig, RateLimitKey, RouteConfig, RuntimeConfig,
+        TrustedProxyConfig, UpstreamGroupConfig,
     };
     use http_body_util::Empty;
     use std::collections::BTreeMap;
@@ -3526,6 +3548,7 @@ mod tests {
             config.middlewares.insert(
                 "edge".into(),
                 MiddlewareConfig::RateLimit {
+                    key: RateLimitKey::ClientIp,
                     requests_per_second: 1,
                     burst: 1,
                     max_keys: 2,

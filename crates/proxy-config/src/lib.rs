@@ -630,6 +630,9 @@ pub enum MiddlewareConfig {
     },
     /// Edge request rate limit.
     RateLimit {
+        /// Trusted key source and fixed pipeline stage.
+        #[serde(default)]
+        key: RateLimitKey,
         /// Sustained request rate.
         requests_per_second: u64,
         /// Burst capacity.
@@ -765,6 +768,17 @@ pub enum MiddlewareConfig {
         #[serde(default)]
         preserve_query: bool,
     },
+}
+
+/// Trusted rate-limit key source.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RateLimitKey {
+    /// Immediate/trusted-chain client address at stage 5.
+    #[default]
+    ClientIp,
+    /// Authenticated principal at stage 9.
+    Principal,
 }
 
 fn default_rate_limit_keys() -> usize {
@@ -1416,7 +1430,8 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         let mut redirects = 0_usize;
         let mut security_headers = 0_usize;
         let mut ip_policies = 0_usize;
-        let mut rate_limits = 0_usize;
+        let mut edge_rate_limits = 0_usize;
+        let mut principal_rate_limits = 0_usize;
         let mut cors_policies = 0_usize;
         let mut authentication = 0_usize;
         let mut rewrites = 0_usize;
@@ -1447,7 +1462,10 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                         )));
                     }
                 }
-                MiddlewareConfig::RateLimit { .. } => rate_limits += 1,
+                MiddlewareConfig::RateLimit { key, .. } => match key {
+                    RateLimitKey::ClientIp => edge_rate_limits += 1,
+                    RateLimitKey::Principal => principal_rate_limits += 1,
+                },
                 MiddlewareConfig::IpPolicy { .. } => ip_policies += 1,
                 MiddlewareConfig::Cors { .. } => cors_policies += 1,
                 MiddlewareConfig::BasicAuth { .. } => {
@@ -1514,7 +1532,8 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         if redirects > 1
             || security_headers > 1
             || ip_policies > 1
-            || rate_limits > 1
+            || edge_rate_limits > 1
+            || principal_rate_limits > 1
             || cors_policies > 1
             || authentication > 1
             || rewrites > 1
@@ -1545,6 +1564,12 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         if redirects == 1 && authentication != 0 {
             return Err(ConfigError::Invalid(format!(
                 "route {} cannot authenticate a public redirect stage",
+                route.id
+            )));
+        }
+        if principal_rate_limits != 0 && authentication != 1 {
+            return Err(ConfigError::Invalid(format!(
+                "route {} principal rate limit requires exactly one authentication stage",
                 route.id
             )));
         }
@@ -1669,6 +1694,7 @@ fn validate_middleware(id: &str, middleware: &MiddlewareConfig) -> Result<(), Co
             }
         }
         MiddlewareConfig::RateLimit {
+            key: _,
             requests_per_second,
             burst,
             max_keys,
@@ -3455,6 +3481,7 @@ mod tests {
         config.middlewares.insert(
             "edge".into(),
             MiddlewareConfig::RateLimit {
+                key: RateLimitKey::ClientIp,
                 requests_per_second: 10,
                 burst: 20,
                 max_keys: 100,
@@ -3472,6 +3499,23 @@ mod tests {
         };
         *max_keys = 0;
         assert!(validate(&config).is_err());
+
+        let mut principal = base_config();
+        add_http_upstream(&mut principal);
+        principal.middlewares.insert(
+            "principal".into(),
+            MiddlewareConfig::RateLimit {
+                key: RateLimitKey::Principal,
+                requests_per_second: 10,
+                burst: 20,
+                max_keys: 100,
+                idle_secs: 60,
+            },
+        );
+        let mut route = test_route();
+        route.middlewares = vec!["principal".into()];
+        principal.routes.push(route);
+        assert!(validate(&principal).is_err());
     }
 
     #[test]
