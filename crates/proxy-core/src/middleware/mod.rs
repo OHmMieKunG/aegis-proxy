@@ -2,6 +2,7 @@
 
 pub(crate) mod auth;
 pub(crate) mod cors;
+pub(crate) mod custom_error;
 pub(crate) mod headers;
 pub(crate) mod ip;
 pub(crate) mod maintenance;

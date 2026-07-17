@@ -1471,7 +1471,9 @@ impl PinnedProxyService {
                     }
                 };
             match result {
-                Ok(mut response) => {
+                Ok(response) => {
+                    let mut response = response
+                        .map(|body| body.map_err(|error| Box::new(error) as BoxError).boxed());
                     let body_guard = if response.status() == StatusCode::SWITCHING_PROTOCOLS {
                         let Some(client_upgrade) = client_upgrade.take() else {
                             selected.record_failure();
@@ -1508,6 +1510,13 @@ impl PinnedProxyService {
                         strip_hop_by_hop_headers(response.headers_mut(), false, false);
                         Some(selected)
                     };
+                    if middleware::custom_error::apply(&self.config, route, &mut response).is_err()
+                    {
+                        return error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "custom error response failed\n",
+                        );
+                    }
                     if middleware::headers::apply_response_mutations(
                         &self.config,
                         route,
@@ -1536,12 +1545,9 @@ impl PinnedProxyService {
                             "middleware response failed\n",
                         );
                     }
-                    return response.map(|body| {
-                        let body = body.map_err(|error| Box::new(error) as BoxError);
-                        match body_guard {
-                            Some(endpoint) => GuardedBody::new(body, endpoint).boxed(),
-                            None => body.boxed(),
-                        }
+                    return response.map(|body| match body_guard {
+                        Some(endpoint) => GuardedBody::new(body, endpoint).boxed(),
+                        None => body,
                     });
                 }
                 Err(error) => {
@@ -3340,6 +3346,58 @@ mod tests {
                 .await
                 .is_err()
         );
+        shutdown.cancel();
+        proxy_task.await.expect("proxy task").expect("proxy run");
+    }
+
+    #[tokio::test]
+    async fn custom_error_replaces_selected_upstream_body_without_leakage() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("upstream bind");
+        let upstream_addr = upstream.local_addr().expect("upstream address");
+        let upstream_task = tokio::spawn(async move {
+            let (mut stream, _) = upstream.accept().await.expect("upstream accept");
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).await.expect("upstream read");
+            stream
+                .write_all(
+                    b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 13\r\nContent-Encoding: gzip\r\nConnection: close\r\n\r\nupstream leak",
+                )
+                .await
+                .expect("upstream response");
+        });
+        let (proxy_addr, shutdown, proxy_task) = start_test_proxy(upstream_addr, |config| {
+            config.middlewares.insert(
+                "errors".into(),
+                MiddlewareConfig::CustomError {
+                    statuses: vec![502],
+                    body: "service unavailable".into(),
+                    content_type: "text/plain; charset=utf-8".into(),
+                },
+            );
+            config.routes[0].middlewares = vec!["errors".into()];
+        })
+        .await;
+        let mut client = connect_to_proxy(proxy_addr).await;
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("client write");
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("client read");
+        let response = String::from_utf8(response).expect("response text");
+        assert!(response.starts_with("HTTP/1.1 502 Bad Gateway\r\n"));
+        assert!(!response.contains("content-encoding:"));
+        assert!(!response.contains("upstream leak"));
+        assert!(response.ends_with("service unavailable"));
+        upstream_task.await.expect("upstream task");
         shutdown.cancel();
         proxy_task.await.expect("proxy task").expect("proxy run");
     }

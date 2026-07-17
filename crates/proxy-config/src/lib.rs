@@ -745,6 +745,16 @@ pub enum MiddlewareConfig {
         #[serde(default)]
         authenticated: bool,
     },
+    /// Static replacement for selected upstream 5xx responses.
+    CustomError {
+        /// Exact upstream response statuses to replace.
+        statuses: Vec<u16>,
+        /// Bounded static response body with no request interpolation.
+        body: String,
+        /// `text/plain; charset=utf-8` or `text/html; charset=utf-8`.
+        #[serde(default = "default_maintenance_content_type")]
+        content_type: String,
+    },
     /// Fixed redirect.
     Redirect {
         /// Destination URL.
@@ -1414,6 +1424,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         let mut request_header_mutations = false;
         let mut maintenance = 0_usize;
         let mut authenticated_maintenance = false;
+        let mut custom_errors = 0_usize;
         for middleware in &route.middlewares {
             let Some(definition) = config.middlewares.get(middleware) else {
                 return Err(ConfigError::Invalid(format!(
@@ -1497,6 +1508,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                     maintenance += 1;
                     authenticated_maintenance = *authenticated;
                 }
+                MiddlewareConfig::CustomError { .. } => custom_errors += 1,
             }
         }
         if redirects > 1
@@ -1508,6 +1520,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             || rewrites > 1
             || header_mutations > 1
             || maintenance > 1
+            || custom_errors > 1
         {
             return Err(ConfigError::Invalid(format!(
                 "route {} contains an ambiguous duplicate middleware stage",
@@ -1562,6 +1575,12 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         if maintenance == 1 && authenticated_maintenance != (authentication == 1) {
             return Err(ConfigError::Invalid(format!(
                 "route {} maintenance authentication mode does not match its auth middleware",
+                route.id
+            )));
+        }
+        if custom_errors != 0 && route.upstream_group.is_none() {
+            return Err(ConfigError::Invalid(format!(
+                "route {} applies custom upstream errors without proxying",
                 route.id
             )));
         }
@@ -1908,6 +1927,28 @@ fn validate_middleware(id: &str, middleware: &MiddlewareConfig) -> Result<(), Co
             {
                 return Err(ConfigError::Invalid(format!(
                     "middleware {id} has an unsafe maintenance response"
+                )));
+            }
+        }
+        MiddlewareConfig::CustomError {
+            statuses,
+            body,
+            content_type,
+        } => {
+            let unique: HashSet<_> = statuses.iter().copied().collect();
+            if statuses.is_empty()
+                || statuses.len() > 16
+                || unique.len() != statuses.len()
+                || statuses.iter().any(|status| !(500..=599).contains(status))
+                || body.is_empty()
+                || body.len() > 64 * 1024
+                || !matches!(
+                    content_type.as_str(),
+                    "text/plain; charset=utf-8" | "text/html; charset=utf-8"
+                )
+            {
+                return Err(ConfigError::Invalid(format!(
+                    "middleware {id} has an unsafe custom error response"
                 )));
             }
         }
@@ -3606,6 +3647,30 @@ mod tests {
         };
         *authenticated = true;
         assert!(validate(&config).is_err());
+    }
+
+    #[test]
+    fn custom_errors_are_bounded_unique_upstream_statuses() {
+        validate_middleware(
+            "errors",
+            &MiddlewareConfig::CustomError {
+                statuses: vec![502, 503, 504],
+                body: "service unavailable".into(),
+                content_type: "text/plain; charset=utf-8".into(),
+            },
+        )
+        .expect("custom upstream errors");
+        assert!(
+            validate_middleware(
+                "errors",
+                &MiddlewareConfig::CustomError {
+                    statuses: vec![401, 502, 502],
+                    body: "unsafe".into(),
+                    content_type: "text/plain; charset=utf-8".into(),
+                },
+            )
+            .is_err()
+        );
     }
 
     #[test]
