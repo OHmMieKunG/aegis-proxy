@@ -38,6 +38,7 @@ const MAX_ROUTE_PATHS: usize = 64;
 const MAX_ROUTE_METHODS: usize = 32;
 const MAX_ROUTE_HEADERS: usize = 32;
 const MAX_ROUTE_MIDDLEWARES: usize = 64;
+const MAX_HEADER_NAME_BYTES: usize = 128;
 const MAX_HEADER_VALUE_BYTES: usize = 1_024;
 const MAX_PATH_BYTES: usize = 2_048;
 const MAX_ACME_ISSUERS: usize = 32;
@@ -685,6 +686,27 @@ pub enum MiddlewareConfig {
         from_prefix: Option<String>,
         /// Canonical replacement path or prefix.
         to: String,
+    },
+    /// Typed request and response header mutations.
+    HeaderMutation {
+        /// Replace request headers.
+        #[serde(default)]
+        request_set: BTreeMap<String, String>,
+        /// Append request header values.
+        #[serde(default)]
+        request_add: BTreeMap<String, Vec<String>>,
+        /// Remove request headers.
+        #[serde(default)]
+        request_remove: Vec<String>,
+        /// Replace response headers.
+        #[serde(default)]
+        response_set: BTreeMap<String, String>,
+        /// Append response header values.
+        #[serde(default)]
+        response_add: BTreeMap<String, Vec<String>>,
+        /// Remove response headers.
+        #[serde(default)]
+        response_remove: Vec<String>,
     },
     /// Fixed redirect.
     Redirect {
@@ -1339,6 +1361,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         let mut cors_policies = 0_usize;
         let mut authentication = 0_usize;
         let mut rewrites = 0_usize;
+        let mut header_mutations = 0_usize;
         for middleware in &route.middlewares {
             let Some(definition) = config.middlewares.get(middleware) else {
                 return Err(ConfigError::Invalid(format!(
@@ -1376,6 +1399,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                     }
                 }
                 MiddlewareConfig::Rewrite { .. } => rewrites += 1,
+                MiddlewareConfig::HeaderMutation { .. } => header_mutations += 1,
             }
         }
         if redirects > 1
@@ -1385,6 +1409,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             || cors_policies > 1
             || authentication > 1
             || rewrites > 1
+            || header_mutations > 1
         {
             return Err(ConfigError::Invalid(format!(
                 "route {} contains an ambiguous duplicate middleware stage",
@@ -1414,6 +1439,12 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         if redirects == 1 && rewrites != 0 {
             return Err(ConfigError::Invalid(format!(
                 "route {} cannot rewrite a terminal redirect",
+                route.id
+            )));
+        }
+        if redirects == 1 && header_mutations != 0 {
+            return Err(ConfigError::Invalid(format!(
+                "route {} cannot mutate a terminal redirect request",
                 route.id
             )));
         }
@@ -1661,6 +1692,42 @@ fn validate_middleware(id: &str, middleware: &MiddlewareConfig) -> Result<(), Co
                 }
             }
         }
+        MiddlewareConfig::HeaderMutation {
+            request_set,
+            request_add,
+            request_remove,
+            response_set,
+            response_add,
+            response_remove,
+        } => {
+            validate_header_mutations(
+                id,
+                "request",
+                request_set,
+                request_add,
+                request_remove,
+                true,
+            )?;
+            validate_header_mutations(
+                id,
+                "response",
+                response_set,
+                response_add,
+                response_remove,
+                false,
+            )?;
+            let operations = request_set.len()
+                + request_add.values().map(Vec::len).sum::<usize>()
+                + request_remove.len()
+                + response_set.len()
+                + response_add.values().map(Vec::len).sum::<usize>()
+                + response_remove.len();
+            if operations == 0 || operations > 64 {
+                return Err(ConfigError::Invalid(format!(
+                    "middleware {id} header mutation count is outside 1..=64"
+                )));
+            }
+        }
         MiddlewareConfig::Redirect {
             location,
             status,
@@ -1736,6 +1803,100 @@ fn validate_rewrite_path(id: &str, path: &str, prefix: bool) -> Result<(), Confi
         )));
     }
     Ok(())
+}
+
+fn validate_header_mutations(
+    id: &str,
+    side: &str,
+    set: &BTreeMap<String, String>,
+    add: &BTreeMap<String, Vec<String>>,
+    remove: &[String],
+    request: bool,
+) -> Result<(), ConfigError> {
+    let mut names = HashSet::new();
+    for (name, value) in set {
+        validate_mutable_header(id, side, name, request)?;
+        validate_header_value(id, side, value)?;
+        names.insert(name.as_str());
+    }
+    for (name, values) in add {
+        validate_mutable_header(id, side, name, request)?;
+        if values.is_empty() || values.len() > 8 || !names.insert(name.as_str()) {
+            return Err(ConfigError::Invalid(format!(
+                "middleware {id} has ambiguous {side} header mutations"
+            )));
+        }
+        for value in values {
+            validate_header_value(id, side, value)?;
+        }
+    }
+    let mut removed = HashSet::new();
+    for name in remove {
+        validate_mutable_header(id, side, name, request)?;
+        if !removed.insert(name.as_str()) || !names.insert(name.as_str()) {
+            return Err(ConfigError::Invalid(format!(
+                "middleware {id} has ambiguous {side} header mutations"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_mutable_header(
+    id: &str,
+    side: &str,
+    value: &str,
+    request: bool,
+) -> Result<(), ConfigError> {
+    let name = HeaderName::from_bytes(value.as_bytes()).map_err(|_| {
+        ConfigError::Invalid(format!("middleware {id} has an invalid {side} header name"))
+    })?;
+    if value.len() > MAX_HEADER_NAME_BYTES
+        || name.as_str() != value
+        || prohibited_mutation_header(&name, request)
+    {
+        return Err(ConfigError::Invalid(format!(
+            "middleware {id} cannot mutate protected {side} header {value}"
+        )));
+    }
+    Ok(())
+}
+
+fn prohibited_mutation_header(name: &HeaderName, request: bool) -> bool {
+    matches!(
+        name.as_str(),
+        "authorization"
+            | "access-control-allow-credentials"
+            | "access-control-allow-headers"
+            | "access-control-allow-methods"
+            | "access-control-allow-origin"
+            | "access-control-expose-headers"
+            | "access-control-max-age"
+            | "connection"
+            | "content-encoding"
+            | "content-length"
+            | "content-security-policy"
+            | "cookie"
+            | "forwarded"
+            | "host"
+            | "keep-alive"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+            | "proxy-connection"
+            | "set-cookie"
+            | "strict-transport-security"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
+            | "upgrade"
+            | "x-aegisproxy-user"
+            | "x-forwarded-for"
+            | "x-forwarded-host"
+            | "x-forwarded-port"
+            | "x-forwarded-proto"
+            | "x-real-ip"
+            | "x-request-id"
+    ) || (!request && name.as_str() == "www-authenticate")
 }
 
 fn validate_acme<'a>(
@@ -3103,6 +3264,37 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn rejects_protected_or_ambiguous_header_mutations() {
+        let valid = MiddlewareConfig::HeaderMutation {
+            request_set: BTreeMap::from([("x-environment".into(), "production".into())]),
+            request_add: BTreeMap::new(),
+            request_remove: vec!["x-legacy".into()],
+            response_set: BTreeMap::new(),
+            response_add: BTreeMap::new(),
+            response_remove: vec![],
+        };
+        validate_middleware("headers", &valid).expect("header mutations");
+        let protected = MiddlewareConfig::HeaderMutation {
+            request_set: BTreeMap::from([("x-forwarded-for".into(), "127.0.0.1".into())]),
+            request_add: BTreeMap::new(),
+            request_remove: vec![],
+            response_set: BTreeMap::new(),
+            response_add: BTreeMap::new(),
+            response_remove: vec![],
+        };
+        assert!(validate_middleware("headers", &protected).is_err());
+        let ambiguous = MiddlewareConfig::HeaderMutation {
+            request_set: BTreeMap::from([("x-environment".into(), "production".into())]),
+            request_add: BTreeMap::new(),
+            request_remove: vec!["x-environment".into()],
+            response_set: BTreeMap::new(),
+            response_add: BTreeMap::new(),
+            response_remove: vec![],
+        };
+        assert!(validate_middleware("headers", &ambiguous).is_err());
     }
 
     #[test]

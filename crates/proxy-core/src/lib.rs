@@ -1260,6 +1260,13 @@ impl PinnedProxyService {
                 "request rewrite failed\n",
             );
         }
+        if middleware::headers::apply_request_mutations(&self.config, route, &mut request).is_err()
+        {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "request header mutation failed\n",
+            );
+        }
         let Some(group_id) = route.upstream_group.as_deref() else {
             return error_response(StatusCode::BAD_GATEWAY, "route has no upstream\n");
         };
@@ -1417,6 +1424,18 @@ impl PinnedProxyService {
                         strip_hop_by_hop_headers(response.headers_mut(), false, false);
                         Some(selected)
                     };
+                    if middleware::headers::apply_response_mutations(
+                        &self.config,
+                        route,
+                        &mut response,
+                    )
+                    .is_err()
+                    {
+                        return error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "middleware response failed\n",
+                        );
+                    }
                     if middleware::headers::apply(&self.config, route, scheme, &mut response)
                         .is_err()
                     {
@@ -3081,7 +3100,9 @@ mod tests {
             let mut request = [0_u8; 4096];
             let count = stream.read(&mut request).await.expect("upstream read");
             stream
-                .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+                .write_all(
+                    b"HTTP/1.1 204 No Content\r\nX-Upstream-Private: remove\r\nConnection: close\r\n\r\n",
+                )
                 .await
                 .expect("upstream response");
             String::from_utf8(request[..count].to_vec()).expect("request text")
@@ -3094,15 +3115,26 @@ mod tests {
                     to: "/internal".into(),
                 },
             );
+            config.middlewares.insert(
+                "mutate".into(),
+                MiddlewareConfig::HeaderMutation {
+                    request_set: BTreeMap::from([("x-environment".into(), "production".into())]),
+                    request_add: BTreeMap::new(),
+                    request_remove: vec!["x-client-private".into()],
+                    response_set: BTreeMap::from([("x-edge".into(), "aegis".into())]),
+                    response_add: BTreeMap::new(),
+                    response_remove: vec!["x-upstream-private".into()],
+                },
+            );
             config.routes[0].path_prefixes = vec!["/api".into()];
             config.routes[0].default = false;
-            config.routes[0].middlewares = vec!["rewrite".into()];
+            config.routes[0].middlewares = vec!["rewrite".into(), "mutate".into()];
         })
         .await;
         let mut client = connect_to_proxy(proxy_addr).await;
         client
             .write_all(
-                b"GET /api/users?page=2 HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n",
+                b"GET /api/users?page=2 HTTP/1.1\r\nHost: example.test\r\nX-Client-Private: remove\r\nConnection: close\r\n\r\n",
             )
             .await
             .expect("client write");
@@ -3112,8 +3144,13 @@ mod tests {
             .await
             .expect("client read");
         assert!(response.starts_with(b"HTTP/1.1 204 No Content"));
+        let response = String::from_utf8(response).expect("response text");
+        assert!(response.contains("x-edge: aegis\r\n"));
+        assert!(!response.contains("x-upstream-private:"));
         let request = upstream_task.await.expect("upstream task");
         assert!(request.starts_with("GET /internal/users?page=2 HTTP/1.1\r\n"));
+        assert!(request.contains("x-environment: production\r\n"));
+        assert!(!request.contains("x-client-private:"));
         shutdown.cancel();
         proxy_task.await.expect("proxy task").expect("proxy run");
     }
