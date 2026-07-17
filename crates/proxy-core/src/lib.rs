@@ -1119,6 +1119,15 @@ impl PinnedProxyService {
                 "request headers too large\n",
             );
         }
+        if request
+            .headers()
+            .get(hyper::header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<usize>().ok())
+            .is_some_and(|length| length > self.limits.max_request_body)
+        {
+            return error_response(StatusCode::PAYLOAD_TOO_LARGE, "request body too large\n");
+        }
         match http_challenge_response(&self.http_challenges, &self.listener_id, &request) {
             Ok(Some(response)) => return response,
             Ok(None) => {}
@@ -1245,15 +1254,6 @@ impl PinnedProxyService {
             return error_response(StatusCode::BAD_GATEWAY, "upstream group missing\n");
         };
         let retry = pool.retry_policy();
-        if request
-            .headers()
-            .get(hyper::header::CONTENT_LENGTH)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.parse::<usize>().ok())
-            .is_some_and(|length| length > self.limits.max_request_body)
-        {
-            return error_response(StatusCode::PAYLOAD_TOO_LARGE, "request body too large\n");
-        }
         let (mut parts, body) = request.into_parts();
         let request_path = parts.uri.path().to_owned();
         let request_query = parts.uri.query().map(str::to_owned);
@@ -4107,7 +4107,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_oversized_body_before_upstream() {
+    async fn rejects_oversized_body_before_terminal_middleware() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
 
@@ -4117,6 +4117,16 @@ mod tests {
         let upstream_addr = upstream.local_addr().expect("upstream address");
         let (proxy_addr, shutdown, task) = start_test_proxy(upstream_addr, |config| {
             config.limits.max_request_body = 4;
+            config.middlewares.insert(
+                "redirect".into(),
+                MiddlewareConfig::Redirect {
+                    location: "/maintenance".into(),
+                    status: 307,
+                    preserve_query: false,
+                },
+            );
+            config.routes[0].middlewares = vec!["redirect".into()];
+            config.routes[0].upstream_group = None;
         })
         .await;
         let mut client = connect_to_proxy(proxy_addr).await;
