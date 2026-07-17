@@ -48,6 +48,7 @@ dependencies = [
  "arc-swap",
  "bytes",
  "futures-util",
+ "getrandom 0.3.4",
  "hickory-resolver",
  "http-body-util",
  "hyper",

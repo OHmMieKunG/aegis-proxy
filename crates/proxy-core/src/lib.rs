@@ -57,7 +57,7 @@ use upstream::{
     DnsEndpoint, GuardedBody, PolicyResolver, UpstreamPool, prepare_dns, start_dns_refreshes,
 };
 
-use middleware::normalize::{normalize_forwarding_headers, rebuild_forwarding_headers};
+use middleware::normalize::{normalize_forwarding_headers, rebuild_proxy_headers};
 
 pub use route::RouteIndex;
 use route::{PathError, canonical_host, canonicalize_request_path, request_host};
@@ -1087,7 +1087,7 @@ impl PinnedProxyService {
                 return error_response(StatusCode::BAD_REQUEST, "invalid forwarding headers\n");
             }
         };
-        request.extensions_mut().insert(identity);
+        request.extensions_mut().insert(identity.clone());
         if self.tls_server_name.as_deref().is_some_and(|server_name| {
             match canonical_host(server_name) {
                 Ok(server_name) => host != server_name,
@@ -1165,9 +1165,9 @@ impl PinnedProxyService {
         let request_path = parts.uri.path().to_owned();
         let request_query = parts.uri.query().map(str::to_owned);
         strip_hop_by_hop_headers(&mut parts.headers, websocket, preserve_te_trailers);
-        if rebuild_forwarding_headers(
+        if rebuild_proxy_headers(
             &mut parts.headers,
-            identity.ip,
+            &identity,
             scheme,
             &host,
             listener.bind.port(),
@@ -2787,7 +2787,7 @@ mod tests {
         let mut client = connect_to_proxy(proxy_addr).await;
         client
             .write_all(
-                b"GET / HTTP/1.1\r\nHost: example.test\r\nX-Forwarded-For: 198.51.100.9\r\nForwarded: for=malicious\r\nX-Forwarded-Host: malicious.test\r\nX-Request-Id: malicious\r\nConnection: close, x-forwarded-for\r\n\r\n",
+                b"GET / HTTP/1.1\r\nHost: example.test\r\nX-Forwarded-For: 198.51.100.9\r\nForwarded: for=malicious\r\nX-Forwarded-Host: malicious.test\r\nX-Request-Id: edge-valid-id\r\nConnection: close, x-forwarded-for, x-request-id\r\n\r\n",
             )
             .await
             .expect("client write");
@@ -2796,6 +2796,7 @@ mod tests {
         assert!(request.contains("x-real-ip: 198.51.100.9\r\n"));
         assert!(request.contains("x-forwarded-host: example.test\r\n"));
         assert!(request.contains("x-forwarded-proto: http\r\n"));
+        assert!(request.contains("x-request-id: edge-valid-id\r\n"));
         assert!(
             request.contains("forwarded: for=198.51.100.9;proto=http;host=\"example.test\"\r\n")
         );

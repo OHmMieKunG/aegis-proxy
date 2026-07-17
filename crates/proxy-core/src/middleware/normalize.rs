@@ -5,6 +5,7 @@ use hyper::header::{HeaderMap, HeaderValue};
 use thiserror::Error;
 
 const MAX_FORWARDED_ADDRESSES: usize = 33;
+const MAX_REQUEST_ID_BYTES: usize = 64;
 const FORWARDED_HEADERS: [&str; 7] = [
     "forwarded",
     "x-forwarded-for",
@@ -15,9 +16,10 @@ const FORWARDED_HEADERS: [&str; 7] = [
     "x-request-id",
 ];
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ClientIdentity {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RequestContext {
     pub(crate) ip: IpAddr,
+    pub(crate) request_id: String,
 }
 
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
@@ -26,6 +28,8 @@ pub(crate) enum NormalizeError {
     InvalidForwarding,
     #[error("canonical forwarding header construction failed")]
     InvalidCanonicalHeader,
+    #[error("operating system random source unavailable")]
+    RandomUnavailable,
 }
 
 pub(crate) fn normalize_forwarding_headers(
@@ -35,32 +39,42 @@ pub(crate) fn normalize_forwarding_headers(
     scheme: &str,
     host: &str,
     port: u16,
-) -> Result<ClientIdentity, NormalizeError> {
-    let client_ip = if trusted(peer, policy) {
+) -> Result<RequestContext, NormalizeError> {
+    let peer_is_trusted = trusted(peer, policy);
+    let client_ip = if peer_is_trusted {
         trusted_client_ip(headers, peer, policy)?
     } else {
         peer
     };
+    let request_id = match (peer_is_trusted, trusted_request_id(headers)) {
+        (true, Some(request_id)) => request_id,
+        _ => generate_request_id()?,
+    };
     for name in FORWARDED_HEADERS {
         headers.remove(name);
     }
-    rebuild_forwarding_headers(headers, client_ip, scheme, host, port)?;
-    Ok(ClientIdentity { ip: client_ip })
+    let context = RequestContext {
+        ip: client_ip,
+        request_id,
+    };
+    rebuild_proxy_headers(headers, &context, scheme, host, port)?;
+    Ok(context)
 }
 
-pub(crate) fn rebuild_forwarding_headers(
+pub(crate) fn rebuild_proxy_headers(
     headers: &mut HeaderMap,
-    client_ip: IpAddr,
+    context: &RequestContext,
     scheme: &str,
     host: &str,
     port: u16,
 ) -> Result<(), NormalizeError> {
-    insert(headers, "x-forwarded-for", &client_ip.to_string())?;
-    insert(headers, "x-real-ip", &client_ip.to_string())?;
+    insert(headers, "x-forwarded-for", &context.ip.to_string())?;
+    insert(headers, "x-real-ip", &context.ip.to_string())?;
     insert(headers, "x-forwarded-host", host)?;
     insert(headers, "x-forwarded-proto", scheme)?;
     insert(headers, "x-forwarded-port", &port.to_string())?;
-    let forwarded_for = match client_ip {
+    insert(headers, "x-request-id", &context.request_id)?;
+    let forwarded_for = match context.ip {
         IpAddr::V4(address) => address.to_string(),
         IpAddr::V6(address) => format!("\"[{address}]\""),
     };
@@ -70,6 +84,33 @@ pub(crate) fn rebuild_forwarding_headers(
         &format!("for={forwarded_for};proto={scheme};host=\"{host}\""),
     )?;
     Ok(())
+}
+
+fn trusted_request_id(headers: &HeaderMap) -> Option<String> {
+    let mut values = headers.get_all("x-request-id").iter();
+    let value = values.next()?.to_str().ok()?;
+    if values.next().is_some()
+        || value.is_empty()
+        || value.len() > MAX_REQUEST_ID_BYTES
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return None;
+    }
+    Some(value.to_owned())
+}
+
+fn generate_request_id() -> Result<String, NormalizeError> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut random = [0_u8; 16];
+    getrandom::fill(&mut random).map_err(|_| NormalizeError::RandomUnavailable)?;
+    let mut id = String::with_capacity(random.len() * 2);
+    for byte in random {
+        id.push(HEX[usize::from(byte >> 4)] as char);
+        id.push(HEX[usize::from(byte & 0x0f)] as char);
+    }
+    Ok(id)
 }
 
 fn trusted_client_ip(
@@ -156,7 +197,8 @@ mod tests {
         .expect("normalize");
         assert_eq!(identity.ip, "203.0.113.5".parse::<IpAddr>().expect("IP"));
         assert_eq!(headers["x-forwarded-for"], "203.0.113.5");
-        assert!(!headers.contains_key("x-request-id"));
+        assert_eq!(headers["x-request-id"].as_bytes().len(), 32);
+        assert_ne!(headers["x-request-id"], "client-controlled");
     }
 
     #[test]
@@ -179,6 +221,62 @@ mod tests {
         assert_eq!(headers["x-forwarded-for"], "198.51.100.9");
         assert_eq!(headers["x-forwarded-proto"], "http");
         assert_eq!(headers["x-forwarded-port"], "8080");
+    }
+
+    #[test]
+    fn trusted_request_id_is_bounded_and_validated() {
+        for (value, accepted) in [
+            ("edge-Request_123.4", true),
+            ("contains space", false),
+            ("", false),
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                "x-request-id",
+                HeaderValue::from_str(value).expect("header"),
+            );
+            let context = normalize_forwarding_headers(
+                &mut headers,
+                "10.0.0.3".parse().expect("IP"),
+                &policy(1),
+                "https",
+                "example.test",
+                443,
+            )
+            .expect("normalize");
+            assert_eq!(context.request_id == value, accepted);
+            assert_eq!(headers["x-request-id"], context.request_id);
+        }
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-request-id",
+            HeaderValue::from_str(&"a".repeat(MAX_REQUEST_ID_BYTES + 1)).expect("header"),
+        );
+        let context = normalize_forwarding_headers(
+            &mut headers,
+            "10.0.0.3".parse().expect("IP"),
+            &policy(1),
+            "https",
+            "example.test",
+            443,
+        )
+        .expect("normalize");
+        assert_eq!(context.request_id.len(), 32);
+
+        let mut headers = HeaderMap::new();
+        headers.append("x-request-id", HeaderValue::from_static("first"));
+        headers.append("x-request-id", HeaderValue::from_static("second"));
+        let context = normalize_forwarding_headers(
+            &mut headers,
+            "10.0.0.3".parse().expect("IP"),
+            &policy(1),
+            "https",
+            "example.test",
+            443,
+        )
+        .expect("normalize");
+        assert_eq!(context.request_id.len(), 32);
     }
 
     #[test]
