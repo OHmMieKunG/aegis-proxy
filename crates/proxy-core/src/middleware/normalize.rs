@@ -6,7 +6,7 @@ use thiserror::Error;
 
 const MAX_FORWARDED_ADDRESSES: usize = 33;
 const MAX_REQUEST_ID_BYTES: usize = 64;
-const FORWARDED_HEADERS: [&str; 7] = [
+const FORWARDED_HEADERS: [&str; 8] = [
     "forwarded",
     "x-forwarded-for",
     "x-forwarded-host",
@@ -14,12 +14,14 @@ const FORWARDED_HEADERS: [&str; 7] = [
     "x-forwarded-port",
     "x-real-ip",
     "x-request-id",
+    "x-aegisproxy-user",
 ];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RequestContext {
     pub(crate) ip: IpAddr,
     pub(crate) request_id: String,
+    pub(crate) principal: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
@@ -56,6 +58,7 @@ pub(crate) fn normalize_forwarding_headers(
     let context = RequestContext {
         ip: client_ip,
         request_id,
+        principal: None,
     };
     rebuild_proxy_headers(headers, &context, scheme, host, port)?;
     Ok(context)
@@ -74,6 +77,9 @@ pub(crate) fn rebuild_proxy_headers(
     insert(headers, "x-forwarded-proto", scheme)?;
     insert(headers, "x-forwarded-port", &port.to_string())?;
     insert(headers, "x-request-id", &context.request_id)?;
+    if let Some(principal) = &context.principal {
+        insert(headers, "x-aegisproxy-user", principal)?;
+    }
     let forwarded_for = match context.ip {
         IpAddr::V4(address) => address.to_string(),
         IpAddr::V6(address) => format!("\"[{address}]\""),

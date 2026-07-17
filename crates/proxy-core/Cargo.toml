@@ -10,6 +10,8 @@ aegisproxy-config = { path = "../proxy-config" }
 aegisproxy-secrets = { path = "../proxy-secrets" }
 aegisproxy-tls = { path = "../proxy-tls" }
 arc-swap = "1"
+argon2 = { version = "0.5.3", default-features = false, features = ["alloc", "password-hash"] }
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 bytes = "1"
 http-body-util = "0.1"
 hickory-resolver = { version = "0.26.1", default-features = false, features = ["system-config", "tokio"] }
@@ -25,6 +27,7 @@ tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-threa
 tokio-util = { version = "0.7", features = ["rt"] }
 tracing = "0.1"
 tower-service = "0.3"
+zeroize = { version = "1", features = ["std"] }
 
 [dev-dependencies]
 age = { version = "0.11.2", default-features = false }

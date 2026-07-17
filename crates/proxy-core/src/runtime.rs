@@ -27,7 +27,10 @@ use super::{
     build_upstream_pools, prepare_dns, prepare_tls, start_active_health_checks,
     start_dns_refreshes,
 };
-use crate::middleware::rate::{self, RateLimiters};
+use crate::middleware::{
+    auth::{self, BasicAuthPolicies},
+    rate::{self, RateLimiters},
+};
 
 pub(crate) struct RuntimeSnapshot {
     pub(crate) revision: Arc<str>,
@@ -40,6 +43,7 @@ pub(crate) struct RuntimeSnapshot {
     pub(crate) upstream_pools: UpstreamPools,
     pub(crate) dns_endpoints: DnsEndpoints,
     pub(crate) rate_limiters: RateLimiters,
+    pub(crate) basic_auth: BasicAuthPolicies,
     pub(crate) tls_challenges: TlsAlpnChallengeRegistry,
     background_cancel: CancellationToken,
     health_tasks: TaskTracker,
@@ -105,6 +109,7 @@ impl RuntimeSnapshot {
             upstream_clients,
             upstream_pools,
             dns_endpoints,
+            basic_auth,
         ) = tokio::task::spawn_blocking(move || {
             let (mut clients, mut dns_endpoints) = build_upstream_clients(&preparation_config)?;
             let mut pools = build_upstream_pools(&preparation_config)?;
@@ -136,6 +141,8 @@ impl RuntimeSnapshot {
                 }
             }
             let tls = prepare_tls(&preparation_config, preparation_tls_challenges)?;
+            let basic_auth = auth::build(&preparation_config)
+                .map_err(|error| ProxyError::Preparation(error.to_string()))?;
             Ok::<_, ProxyError>((
                 tls.acceptors,
                 tls.resolvers,
@@ -143,6 +150,7 @@ impl RuntimeSnapshot {
                 clients,
                 pools,
                 dns_endpoints,
+                basic_auth,
             ))
         })
         .await
@@ -178,6 +186,7 @@ impl RuntimeSnapshot {
             upstream_pools,
             dns_endpoints,
             rate_limiters,
+            basic_auth,
             tls_challenges,
             background_cancel,
             health_tasks,

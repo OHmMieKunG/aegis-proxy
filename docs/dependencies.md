@@ -31,6 +31,8 @@ Phase 0 inventory; versions are locked in `Cargo.lock` and must be re-reviewed o
 | age | X25519 encrypted private-key envelopes | no optional features | Apache-2.0/MIT | Pure-Rust cryptography with audited unsafe/transitive surface | custom AEAD envelope | Pin lockfile; restore and interoperability tests |
 | instant-acme | Async RFC 8555 accounts, orders, and challenge protocol | `aws-lc-rs`, `hyper-rustls`; defaults disabled | Apache-2.0 | Reuses existing AWS-LC native crypto and Hyper/Rustls transport; transitive review required | rustls-acme, external Certbot, custom protocol | Pin 0.8.5; Pebble regression, advisory, API, and MSRV review before upgrade |
 | arc-swap | Atomic immutable certificate/runtime snapshots | default | Apache-2.0/MIT | Small unsafe internals implementing atomic pointer ownership | `RwLock<Arc<_>>` | Concurrency tests; review upgrades |
+| argon2 | Bounded Basic-auth password verification using Argon2id PHC hashes | `alloc`, `password-hash`; defaults disabled | MIT/Apache-2.0 | Pure Rust; memory/CPU cost comes from validated hash parameters | external ForwardAuth only | Pin 0.5.3; advisory/MSRV review and auth timing/resource tests |
+| base64 | Strict HTTP Basic credential decoding | `alloc`; defaults disabled | MIT/Apache-2.0 | No native code; small parser surface | handwritten decoder | Pin 0.22 lockfile; malformed-input regression tests |
 | axum | Private admin REST API | Phase 8 | MIT | Safe first-party policy | raw hyper | Add only Phase 8 |
 | tracing/tracing-subscriber | Structured logs | JSON/env filter | MIT | None expected | log | Keep exporter bounded |
 | clap | CLI parsing | derive | MIT/Apache-2.0 | None expected | std::env | Stable CLI contract |

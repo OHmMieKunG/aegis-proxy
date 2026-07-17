@@ -36,7 +36,9 @@ use hyper::service::Service;
 use hyper::{
     Request, Response, StatusCode, Uri,
     body::Incoming,
-    header::{CONNECTION, HOST, HeaderValue, RETRY_AFTER, UPGRADE},
+    header::{
+        AUTHORIZATION, CONNECTION, HOST, HeaderValue, RETRY_AFTER, UPGRADE, WWW_AUTHENTICATE,
+    },
 };
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::{
@@ -57,6 +59,7 @@ use upstream::{
     DnsEndpoint, GuardedBody, PolicyResolver, UpstreamPool, prepare_dns, start_dns_refreshes,
 };
 
+use middleware::auth::{BasicAuthPolicies, Outcome as AuthOutcome};
 use middleware::normalize::{normalize_forwarding_headers, rebuild_proxy_headers};
 use middleware::rate::{Outcome as RateOutcome, RateLimiters};
 
@@ -1014,6 +1017,7 @@ struct PinnedProxyService {
     clients: UpstreamClients,
     pools: UpstreamPools,
     rate_limiters: RateLimiters,
+    basic_auth: BasicAuthPolicies,
     shutdown: CancellationToken,
     upgrade_tasks: TaskTracker,
     tls_server_name: Option<String>,
@@ -1037,6 +1041,7 @@ impl Service<Request<Incoming>> for ProxyService {
             clients: Arc::clone(&snapshot.upstream_clients),
             pools: Arc::clone(&snapshot.upstream_pools),
             rate_limiters: Arc::clone(&snapshot.rate_limiters),
+            basic_auth: Arc::clone(&snapshot.basic_auth),
             shutdown: service.shutdown,
             upgrade_tasks: service.upgrade_tasks,
             tls_server_name: service.tls_server_name,
@@ -1077,7 +1082,7 @@ impl PinnedProxyService {
         } else {
             "http"
         };
-        let identity = match normalize_forwarding_headers(
+        let mut identity = match normalize_forwarding_headers(
             request.headers_mut(),
             self.peer.ip(),
             &self.config.trusted_proxies,
@@ -1090,7 +1095,6 @@ impl PinnedProxyService {
                 return error_response(StatusCode::BAD_REQUEST, "invalid forwarding headers\n");
             }
         };
-        request.extensions_mut().insert(identity.clone());
         if self.tls_server_name.as_deref().is_some_and(|server_name| {
             match canonical_host(server_name) {
                 Ok(server_name) => host != server_name,
@@ -1199,6 +1203,41 @@ impl PinnedProxyService {
             Ok(None) => {}
             Err(()) => return error_response(StatusCode::FORBIDDEN, "CORS request denied\n"),
         }
+        match middleware::auth::authenticate(
+            &self.basic_auth,
+            &self.config,
+            route,
+            request.headers(),
+        )
+        .await
+        {
+            AuthOutcome::NotConfigured => {}
+            AuthOutcome::Authenticated(principal) => {
+                request.headers_mut().remove(AUTHORIZATION);
+                identity.principal = Some(principal);
+            }
+            AuthOutcome::Unauthorized(realm) => {
+                let mut response =
+                    error_response(StatusCode::UNAUTHORIZED, "authentication required\n");
+                let Ok(challenge) =
+                    HeaderValue::from_str(&format!("Basic realm=\"{realm}\", charset=\"UTF-8\""))
+                else {
+                    return error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "authentication response failed\n",
+                    );
+                };
+                response.headers_mut().insert(WWW_AUTHENTICATE, challenge);
+                return response;
+            }
+            AuthOutcome::Unavailable => {
+                return error_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "authentication unavailable\n",
+                );
+            }
+        }
+        request.extensions_mut().insert(identity.clone());
         let Some(group_id) = route.upstream_group.as_deref() else {
             return error_response(StatusCode::BAD_GATEWAY, "route has no upstream\n");
         };
@@ -2353,6 +2392,32 @@ mod tests {
         StatusCode,
         bytes::Bytes,
     ) {
+        let (alpn, version, status, body, _) = tls_request_custom(
+            http2,
+            authority,
+            minimum_version,
+            client_versions,
+            None,
+            |_| {},
+        )
+        .await;
+        (alpn, version, status, body)
+    }
+
+    async fn tls_request_custom(
+        http2: bool,
+        authority: &str,
+        minimum_version: &str,
+        client_versions: &[&'static rustls::SupportedProtocolVersion],
+        authorization: Option<String>,
+        configure: impl FnOnce(&mut Config),
+    ) -> (
+        Vec<u8>,
+        Option<rustls::ProtocolVersion>,
+        StatusCode,
+        bytes::Bytes,
+        Option<String>,
+    ) {
         use age::secrecy::ExposeSecret;
         use rustls::{ClientConfig, RootCertStore, crypto::aws_lc_rs, pki_types::ServerName};
         use std::{
@@ -2398,15 +2463,16 @@ mod tests {
             .await
             .expect("upstream bind");
         let upstream_addr = upstream.local_addr().expect("upstream address");
+        let (captured_tx, captured_rx) = tokio::sync::oneshot::channel();
         let upstream_task = tokio::spawn(async move {
             let (mut stream, _) = upstream.accept().await.expect("upstream accept");
             let mut request = [0_u8; 4096];
             let count = stream.read(&mut request).await.expect("upstream read");
-            assert!(
-                std::str::from_utf8(&request[..count])
-                    .expect("request text")
-                    .contains(&format!("host: {upstream_addr}"))
-            );
+            let request = std::str::from_utf8(&request[..count])
+                .expect("request text")
+                .to_owned();
+            assert!(request.contains(&format!("host: {upstream_addr}")));
+            captured_tx.send(request).expect("capture request");
             stream
                 .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")
                 .await
@@ -2423,6 +2489,7 @@ mod tests {
                 certificate_chain: format!("file://{}", certificate_path.display()),
                 private_key: format!("file://{}", private_key_path.display()),
             });
+            configure(config);
         })
         .await;
         let stream = connect_to_proxy(proxy_addr).await;
@@ -2455,18 +2522,17 @@ mod tests {
             .expect("ALPN negotiated")
             .to_vec();
         let protocol_version = tls.get_ref().1.protocol_version();
-        let request = if http2 {
-            Request::builder()
-                .uri(format!("https://{authority}/"))
-                .body(Empty::<bytes::Bytes>::new())
-                .expect("HTTP/2 request")
+        let mut request = if http2 {
+            Request::builder().uri(format!("https://{authority}/"))
         } else {
-            Request::builder()
-                .uri("/")
-                .header(HOST, authority)
-                .body(Empty::<bytes::Bytes>::new())
-                .expect("HTTP/1.1 request")
+            Request::builder().uri("/").header(HOST, authority)
         };
+        if let Some(authorization) = authorization {
+            request = request.header(AUTHORIZATION, authorization);
+        }
+        let request = request
+            .body(Empty::<bytes::Bytes>::new())
+            .expect("TLS HTTP request");
         let (status, body) = if http2 {
             let (mut sender, connection) =
                 hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(tls))
@@ -2504,15 +2570,17 @@ mod tests {
         };
         shutdown.cancel();
         proxy_task.await.expect("proxy task").expect("proxy run");
-        if status == StatusCode::OK {
+        let captured = if status == StatusCode::OK {
             upstream_task.await.expect("upstream task");
+            captured_rx.await.ok()
         } else {
             upstream_task.abort();
-        }
+            None
+        };
         fs::remove_file(certificate_path).expect("remove certificate");
         fs::remove_file(private_key_path).expect("remove private key");
         fs::remove_file(identity_path).expect("remove age identity");
-        (negotiated, protocol_version, status, body)
+        (negotiated, protocol_version, status, body, captured)
     }
 
     #[tokio::test]
@@ -2521,6 +2589,63 @@ mod tests {
         assert_eq!(alpn, b"http/1.1");
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, "ok");
+    }
+
+    #[tokio::test]
+    async fn basic_auth_runs_off_path_and_rebuilds_principal_header() {
+        use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        use std::{
+            fs,
+            sync::atomic::{AtomicU64, Ordering},
+        };
+
+        static NEXT_HASH: AtomicU64 = AtomicU64::new(0);
+        let salt = SaltString::encode_b64(b"0123456789abcdef").expect("salt");
+        let hash = Argon2::default()
+            .hash_password(b"correct horse", &salt)
+            .expect("hash")
+            .to_string();
+        let path = std::env::temp_dir().join(format!(
+            "aegisproxy-basic-integration-{}-{}",
+            std::process::id(),
+            NEXT_HASH.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::write(&path, hash).expect("write hash");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("permissions");
+        }
+        let authorization = format!("Basic {}", STANDARD.encode(b"alice:correct horse"));
+        let (_, _, status, _, captured) = tls_request_custom(
+            false,
+            "example.test",
+            "1.2",
+            &[&rustls::version::TLS13, &rustls::version::TLS12],
+            Some(authorization),
+            |config| {
+                config.middlewares.insert(
+                    "basic".into(),
+                    MiddlewareConfig::BasicAuth {
+                        realm: "Private".into(),
+                        users: BTreeMap::from([(
+                            "alice".into(),
+                            format!("file://{}", path.display()),
+                        )]),
+                        max_concurrent_verifications: 2,
+                        timeout_secs: 5,
+                    },
+                );
+                config.routes[0].middlewares = vec!["basic".into()];
+            },
+        )
+        .await;
+        fs::remove_file(path).expect("remove hash");
+        assert_eq!(status, StatusCode::OK);
+        let captured = captured.expect("upstream request");
+        assert!(captured.contains("x-aegisproxy-user: alice\r\n"));
+        assert!(!captured.contains("authorization:"));
     }
 
     #[tokio::test]

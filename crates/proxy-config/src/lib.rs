@@ -665,6 +665,19 @@ pub enum MiddlewareConfig {
         #[serde(default)]
         max_age_secs: u64,
     },
+    /// TLS-only HTTP Basic authentication backed by Argon2id hashes.
+    BasicAuth {
+        /// Bounded challenge realm.
+        realm: String,
+        /// Username to Argon2id PHC secret reference.
+        users: BTreeMap<String, String>,
+        /// Maximum simultaneous password verifications.
+        #[serde(default = "default_auth_verifications")]
+        max_concurrent_verifications: usize,
+        /// Verification deadline in seconds.
+        #[serde(default = "default_auth_timeout_secs")]
+        timeout_secs: u64,
+    },
     /// Fixed redirect.
     Redirect {
         /// Destination URL.
@@ -683,6 +696,14 @@ fn default_rate_limit_keys() -> usize {
 
 fn default_rate_limit_idle_secs() -> u64 {
     300
+}
+
+fn default_auth_verifications() -> usize {
+    8
+}
+
+fn default_auth_timeout_secs() -> u64 {
+    5
 }
 
 /// HTTP route.
@@ -1308,6 +1329,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         let mut ip_policies = 0_usize;
         let mut rate_limits = 0_usize;
         let mut cors_policies = 0_usize;
+        let mut authentication = 0_usize;
         for middleware in &route.middlewares {
             let Some(definition) = config.middlewares.get(middleware) else {
                 return Err(ConfigError::Invalid(format!(
@@ -1333,6 +1355,17 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                 MiddlewareConfig::RateLimit { .. } => rate_limits += 1,
                 MiddlewareConfig::IpPolicy { .. } => ip_policies += 1,
                 MiddlewareConfig::Cors { .. } => cors_policies += 1,
+                MiddlewareConfig::BasicAuth { .. } => {
+                    authentication += 1;
+                    if route.listeners.iter().any(|listener| {
+                        listener_protocols.get(listener.as_str()).copied() != Some("https")
+                    }) {
+                        return Err(ConfigError::Invalid(format!(
+                            "route {} applies Basic authentication to a non-HTTPS listener",
+                            route.id
+                        )));
+                    }
+                }
             }
         }
         if redirects > 1
@@ -1340,6 +1373,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             || ip_policies > 1
             || rate_limits > 1
             || cors_policies > 1
+            || authentication > 1
         {
             return Err(ConfigError::Invalid(format!(
                 "route {} contains an ambiguous duplicate middleware stage",
@@ -1357,6 +1391,12 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         if redirects == 1 && route_protocol != Some("http") {
             return Err(ConfigError::Invalid(format!(
                 "route {} uses redirect outside an HTTP-family listener",
+                route.id
+            )));
+        }
+        if redirects == 1 && authentication != 0 {
+            return Err(ConfigError::Invalid(format!(
+                "route {} cannot authenticate a public redirect stage",
                 route.id
             )));
         }
@@ -1555,6 +1595,40 @@ fn validate_middleware(id: &str, middleware: &MiddlewareConfig) -> Result<(), Co
                 if parsed.as_str() != header || !unique.insert(header) {
                     return Err(ConfigError::Invalid(format!(
                         "middleware {id} requires lowercase unique CORS headers"
+                    )));
+                }
+            }
+        }
+        MiddlewareConfig::BasicAuth {
+            realm,
+            users,
+            max_concurrent_verifications,
+            timeout_secs,
+        } => {
+            if realm.is_empty()
+                || realm.len() > 64
+                || !realm.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b' ' | b'-' | b'_' | b'.')
+                })
+                || users.is_empty()
+                || users.len() > 64
+                || !(1..=1_024).contains(max_concurrent_verifications)
+                || !(1..=30).contains(timeout_secs)
+            {
+                return Err(ConfigError::Invalid(format!(
+                    "middleware {id} Basic authentication policy exceeds safe bounds"
+                )));
+            }
+            for (username, reference) in users {
+                if username.is_empty()
+                    || username.len() > 64
+                    || !username
+                        .bytes()
+                        .all(|byte| byte.is_ascii_graphic() && !matches!(byte, b':' | b'"' | b'\\'))
+                    || SecretRef::parse(reference).is_err()
+                {
+                    return Err(ConfigError::Invalid(format!(
+                        "middleware {id} has an invalid Basic authentication user"
                     )));
                 }
             }
@@ -2926,6 +3000,32 @@ mod tests {
         route.middlewares = vec!["cors".into()];
         config.routes.push(route);
         validate(&config).expect("route CORS policy");
+    }
+
+    #[test]
+    fn validates_basic_auth_secret_refs_and_requires_https() {
+        let policy = MiddlewareConfig::BasicAuth {
+            realm: "Private Area".into(),
+            users: BTreeMap::from([("alice".into(), "env://ALICE_HASH".into())]),
+            max_concurrent_verifications: 8,
+            timeout_secs: 5,
+        };
+        validate_middleware("basic", &policy).expect("Basic auth policy");
+        let inline = MiddlewareConfig::BasicAuth {
+            realm: "Private Area".into(),
+            users: BTreeMap::from([("alice".into(), "$argon2id$inline".into())]),
+            max_concurrent_verifications: 8,
+            timeout_secs: 5,
+        };
+        assert!(validate_middleware("basic", &inline).is_err());
+
+        let mut config = base_config();
+        add_http_upstream(&mut config);
+        config.middlewares.insert("basic".into(), policy);
+        let mut route = test_route();
+        route.middlewares = vec!["basic".into()];
+        config.routes.push(route);
+        assert!(validate(&config).is_err());
     }
 
     #[test]
