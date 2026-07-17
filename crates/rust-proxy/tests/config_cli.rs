@@ -43,6 +43,7 @@ fn shipped_valid_and_invalid_corpus_has_expected_result() {
     for path in [
         "config/examples/minimal.toml",
         "config/examples/tls.toml",
+        "config/examples/phase7.toml",
         "config/examples/default-route.toml",
         "config/examples/tcp.toml",
     ] {
