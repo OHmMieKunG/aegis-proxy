@@ -1059,18 +1059,24 @@ impl Service<Request<Incoming>> for ProxyService {
 
 impl PinnedProxyService {
     async fn forward(&self, request: Request<Incoming>) -> Response<ResponseBody> {
+        let mut access = middleware::access::AccessEvent::new(
+            request.method().clone(),
+            self.listener_id.clone(),
+        );
         let mut permit = None;
-        let response = self.forward_inner(request, &mut permit).await;
-        match permit {
+        let response = self.forward_inner(request, &mut permit, &mut access).await;
+        let response = match permit {
             Some(permit) => response.map(|body| middleware::limit::hold(body, permit)),
             None => response,
-        }
+        };
+        access.hold(response)
     }
 
     async fn forward_inner(
         &self,
         mut request: Request<Incoming>,
         request_permit: &mut Option<middleware::limit::InFlightPermit>,
+        access: &mut middleware::access::AccessEvent,
     ) -> Response<ResponseBody> {
         if let Some(status) = reject_unsafe_request_target(&request) {
             return error_response(status, "request target is not supported\n");
@@ -1114,6 +1120,7 @@ impl PinnedProxyService {
                 return error_response(StatusCode::BAD_REQUEST, "invalid forwarding headers\n");
             }
         };
+        access.set_request_id(&identity.request_id);
         if self.tls_server_name.as_deref().is_some_and(|server_name| {
             match canonical_host(server_name) {
                 Ok(server_name) => host != server_name,
@@ -1180,6 +1187,7 @@ impl PinnedProxyService {
         else {
             return error_response(StatusCode::NOT_FOUND, "no matching route\n");
         };
+        access.set_route(&route.id);
         if !middleware::ip::allowed(&self.config, route, identity.ip) {
             return error_response(StatusCode::FORBIDDEN, "request denied\n");
         }

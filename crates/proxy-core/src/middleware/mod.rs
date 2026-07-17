@@ -1,5 +1,6 @@
 //! Fixed-stage request and response middleware.
 
+pub(crate) mod access;
 pub(crate) mod auth;
 pub(crate) mod compression;
 pub(crate) mod cors;
