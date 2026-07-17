@@ -30,6 +30,7 @@ use super::{
 use crate::middleware::{
     auth::{self, BasicAuthPolicies},
     compression::{self, CompressionLimiters},
+    limit::{self, InFlightLimiters},
     rate::{self, RateLimiters},
 };
 
@@ -45,6 +46,7 @@ pub(crate) struct RuntimeSnapshot {
     pub(crate) dns_endpoints: DnsEndpoints,
     pub(crate) rate_limiters: RateLimiters,
     pub(crate) compression_limiters: CompressionLimiters,
+    pub(crate) in_flight_limiters: InFlightLimiters,
     pub(crate) basic_auth: BasicAuthPolicies,
     pub(crate) tls_challenges: TlsAlpnChallengeRegistry,
     background_cancel: CancellationToken,
@@ -94,6 +96,10 @@ impl RuntimeSnapshot {
         let compression_limiters = compression::build(
             &config,
             previous.map(|snapshot| (&*snapshot.config, &snapshot.compression_limiters)),
+        );
+        let in_flight_limiters = limit::build(
+            &config,
+            previous.map(|snapshot| (&*snapshot.config, &snapshot.in_flight_limiters)),
         );
         let preparation_config = Arc::clone(&config);
         let previous_upstreams = previous.map(|previous| {
@@ -193,6 +199,7 @@ impl RuntimeSnapshot {
             dns_endpoints,
             rate_limiters,
             compression_limiters,
+            in_flight_limiters,
             basic_auth,
             tls_challenges,
             background_cancel,

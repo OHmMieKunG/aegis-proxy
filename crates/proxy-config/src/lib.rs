@@ -652,6 +652,16 @@ pub enum MiddlewareConfig {
         #[serde(default = "default_rate_limit_idle_secs")]
         idle_secs: u64,
     },
+    /// Non-queuing route and trusted-client in-flight request limit.
+    InFlightLimit {
+        /// Maximum concurrent requests across all clients.
+        max_requests: usize,
+        /// Maximum concurrent requests for one trusted client address.
+        max_per_client: usize,
+        /// Rejection status: `429` or `503`.
+        #[serde(default = "default_in_flight_status")]
+        status: u16,
+    },
     /// Trusted-client IP policy. Deny entries take precedence.
     IpPolicy {
         /// Optional allowlist; empty means any address not denied.
@@ -823,6 +833,10 @@ fn default_rate_limit_idle_secs() -> u64 {
     300
 }
 
+fn default_in_flight_status() -> u16 {
+    503
+}
+
 fn default_auth_verifications() -> usize {
     8
 }
@@ -985,6 +999,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         )));
     }
     let mut compression_slots = 0_usize;
+    let mut in_flight_slots = 0_usize;
     for (id, middleware) in &config.middlewares {
         valid_id(id)?;
         validate_middleware(id, middleware)?;
@@ -995,6 +1010,16 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             if compression_slots > 64 {
                 return Err(ConfigError::Invalid(
                     "aggregate compression concurrency exceeds 64".into(),
+                ));
+            }
+        }
+        if let MiddlewareConfig::InFlightLimit { max_requests, .. } = middleware {
+            in_flight_slots = in_flight_slots
+                .checked_add(*max_requests)
+                .ok_or_else(|| ConfigError::Invalid("in-flight capacity overflow".into()))?;
+            if in_flight_slots > 100_000 {
+                return Err(ConfigError::Invalid(
+                    "aggregate route in-flight capacity exceeds 100000".into(),
                 ));
             }
         }
@@ -1494,6 +1519,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         let mut ip_policies = 0_usize;
         let mut edge_rate_limits = 0_usize;
         let mut principal_rate_limits = 0_usize;
+        let mut in_flight_limits = 0_usize;
         let mut cors_policies = 0_usize;
         let mut authentication = 0_usize;
         let mut rewrites = 0_usize;
@@ -1529,6 +1555,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                     RateLimitKey::ClientIp => edge_rate_limits += 1,
                     RateLimitKey::Principal => principal_rate_limits += 1,
                 },
+                MiddlewareConfig::InFlightLimit { .. } => in_flight_limits += 1,
                 MiddlewareConfig::IpPolicy { .. } => ip_policies += 1,
                 MiddlewareConfig::Cors { .. } => cors_policies += 1,
                 MiddlewareConfig::BasicAuth { .. } => {
@@ -1598,6 +1625,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             || ip_policies > 1
             || edge_rate_limits > 1
             || principal_rate_limits > 1
+            || in_flight_limits > 1
             || cors_policies > 1
             || authentication > 1
             || rewrites > 1
@@ -1778,6 +1806,20 @@ fn validate_middleware(id: &str, middleware: &MiddlewareConfig) -> Result<(), Co
             {
                 return Err(ConfigError::Invalid(format!(
                     "middleware {id} rate limit is outside safe bounds"
+                )));
+            }
+        }
+        MiddlewareConfig::InFlightLimit {
+            max_requests,
+            max_per_client,
+            status,
+        } => {
+            if !(1..=100_000).contains(max_requests)
+                || !(1..=*max_requests).contains(max_per_client)
+                || !matches!(*status, 429 | 503)
+            {
+                return Err(ConfigError::Invalid(format!(
+                    "middleware {id} in-flight limit is outside safe bounds"
                 )));
             }
         }
@@ -3624,6 +3666,45 @@ mod tests {
         route.middlewares = vec!["principal".into()];
         principal.routes.push(route);
         assert!(validate(&principal).is_err());
+    }
+
+    #[test]
+    fn bounds_route_and_client_in_flight_capacity() {
+        let policy = MiddlewareConfig::InFlightLimit {
+            max_requests: 100,
+            max_per_client: 10,
+            status: 503,
+        };
+        validate_middleware("inflight", &policy).expect("bounded in-flight policy");
+        assert!(
+            validate_middleware(
+                "inflight",
+                &MiddlewareConfig::InFlightLimit {
+                    max_requests: 10,
+                    max_per_client: 11,
+                    status: 503,
+                },
+            )
+            .is_err()
+        );
+
+        let mut config = base_config();
+        add_http_upstream(&mut config);
+        config.middlewares.insert("inflight".into(), policy);
+        let mut route = test_route();
+        route.middlewares = vec!["inflight".into()];
+        config.routes.push(route);
+        validate(&config).expect("route in-flight policy");
+        config.middlewares.insert(
+            "second".into(),
+            MiddlewareConfig::InFlightLimit {
+                max_requests: 1,
+                max_per_client: 1,
+                status: 429,
+            },
+        );
+        config.routes[0].middlewares.push("second".into());
+        assert!(validate(&config).is_err());
     }
 
     #[test]

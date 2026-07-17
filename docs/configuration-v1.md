@@ -28,6 +28,8 @@ The schema defines bounded Phase 4 upstream DNS, health, retry, circuit, drain, 
 
 Phase 6 ACME automation is active for explicit issuers and HTTP-01, DNS-01, or TLS-ALPN-01 certificate policies. The only DNS adapter is a compile-time Cloudflare adapter with an explicit zone ID and secret-reference token. Orders, DNS answers, challenge state, account state, renewal work, and certificate publication are bounded. There is no automatic challenge or CA fallback. See [ACME operations](operations/acme.md).
 
+Phase 7 route middleware includes a non-queuing `in_flight_limit` stage keyed by the trusted client identity. `max_requests` bounds the route policy, `max_per_client` must not exceed it, and `status` is restricted to 429 or 503. The aggregate configured route capacity cannot exceed 100000. Permits span upstream waits, response streaming, and WebSocket lifetime; cancellation releases them.
+
 Configuration never silently accepts an inactive policy. Trusted-proxy settings and middleware objects remain gated by their assigned phases. TCP routing uses the explicit model in [ADR 0027](adr/0027-tcp-routing-schema.md); bounded TLS ClientHello capture follows [ADR 0016](adr/0016-clienthello-parser.md), with no handwritten parser.
 
 Configured egress denies override allows. Literal addresses are checked during validation. Configured DNS answers pass the same policy at refresh and immediately before connection. A refresh failure retains the last allowed set only through its configured stale deadline; startup fails if the initial lookup has no fully allowed answer set.

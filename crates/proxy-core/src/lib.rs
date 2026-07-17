@@ -61,6 +61,7 @@ use upstream::{
 
 use middleware::auth::{BasicAuthPolicies, ForwardOutcome, Outcome as AuthOutcome};
 use middleware::compression::CompressionLimiters;
+use middleware::limit::{InFlightLimiters, Outcome as InFlightOutcome};
 use middleware::normalize::{normalize_forwarding_headers, rebuild_proxy_headers};
 use middleware::rate::{Outcome as RateOutcome, RateLimiters};
 
@@ -1019,6 +1020,7 @@ struct PinnedProxyService {
     pools: UpstreamPools,
     rate_limiters: RateLimiters,
     compression_limiters: CompressionLimiters,
+    in_flight_limiters: InFlightLimiters,
     basic_auth: BasicAuthPolicies,
     shutdown: CancellationToken,
     upgrade_tasks: TaskTracker,
@@ -1044,6 +1046,7 @@ impl Service<Request<Incoming>> for ProxyService {
             pools: Arc::clone(&snapshot.upstream_pools),
             rate_limiters: Arc::clone(&snapshot.rate_limiters),
             compression_limiters: Arc::clone(&snapshot.compression_limiters),
+            in_flight_limiters: Arc::clone(&snapshot.in_flight_limiters),
             basic_auth: Arc::clone(&snapshot.basic_auth),
             shutdown: service.shutdown,
             upgrade_tasks: service.upgrade_tasks,
@@ -1055,7 +1058,20 @@ impl Service<Request<Incoming>> for ProxyService {
 }
 
 impl PinnedProxyService {
-    async fn forward(&self, mut request: Request<Incoming>) -> Response<ResponseBody> {
+    async fn forward(&self, request: Request<Incoming>) -> Response<ResponseBody> {
+        let mut permit = None;
+        let response = self.forward_inner(request, &mut permit).await;
+        match permit {
+            Some(permit) => response.map(|body| middleware::limit::hold(body, permit)),
+            None => response,
+        }
+    }
+
+    async fn forward_inner(
+        &self,
+        mut request: Request<Incoming>,
+        request_permit: &mut Option<middleware::limit::InFlightPermit>,
+    ) -> Response<ResponseBody> {
         if let Some(status) = reject_unsafe_request_target(&request) {
             return error_response(status, "request target is not supported\n");
         }
@@ -1166,6 +1182,26 @@ impl PinnedProxyService {
         };
         if !middleware::ip::allowed(&self.config, route, identity.ip) {
             return error_response(StatusCode::FORBIDDEN, "request denied\n");
+        }
+        match middleware::limit::acquire(&self.in_flight_limiters, &self.config, route, identity.ip)
+        {
+            InFlightOutcome::NotConfigured => {}
+            InFlightOutcome::Acquired(permit) => *request_permit = Some(permit),
+            InFlightOutcome::Limited(status) => {
+                let mut response = error_response(status, "request capacity exhausted\n");
+                if status == StatusCode::TOO_MANY_REQUESTS {
+                    response
+                        .headers_mut()
+                        .insert(RETRY_AFTER, HeaderValue::from_static("1"));
+                }
+                return response;
+            }
+            InFlightOutcome::Unavailable => {
+                return error_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "request limit unavailable\n",
+                );
+            }
         }
         match middleware::rate::check(&self.rate_limiters, &self.config, route, identity.ip) {
             Ok(RateOutcome::Allowed) => {}
@@ -1510,7 +1546,9 @@ impl PinnedProxyService {
                         selected.record_success();
                         let upstream_upgrade = hyper::upgrade::on(&mut response);
                         let shutdown = self.shutdown.clone();
+                        let request_permit = request_permit.take();
                         self.upgrade_tasks.spawn(async move {
+                            let _request_permit = request_permit;
                             let _selected = selected;
                             let Ok((client, upstream)) =
                                 tokio::try_join!(client_upgrade, upstream_upgrade)
@@ -3545,6 +3583,66 @@ mod tests {
         let first = first.await.expect("first client");
         assert!(first.starts_with(b"HTTP/1.1 200 OK\r\n"));
         assert!(first.ends_with(b"first"));
+        upstream_task.await.expect("upstream task");
+        shutdown.cancel();
+        proxy_task.await.expect("proxy task").expect("proxy run");
+    }
+
+    #[tokio::test]
+    async fn route_in_flight_limit_uses_trusted_client_and_body_lifetime() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        use tokio::sync::oneshot;
+
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("upstream bind");
+        let upstream_addr = upstream.local_addr().expect("upstream address");
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let upstream_task = tokio::spawn(async move {
+            let (mut stream, _) = upstream.accept().await.expect("upstream accept");
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).await.expect("upstream read");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\n")
+                .await
+                .expect("upstream headers");
+            ready_tx.send(()).expect("signal response");
+            release_rx.await.expect("release body");
+            stream.write_all(b"first").await.expect("upstream body");
+        });
+        let (proxy_addr, shutdown, proxy_task) = start_test_proxy(upstream_addr, |config| {
+            config.middlewares.insert(
+                "inflight".into(),
+                MiddlewareConfig::InFlightLimit {
+                    max_requests: 1,
+                    max_per_client: 1,
+                    status: 429,
+                },
+            );
+            config.routes[0].middlewares = vec!["inflight".into()];
+        })
+        .await;
+        let first = tokio::spawn(proxy_get(proxy_addr));
+        ready_rx.await.expect("first response started");
+        let second = tokio::time::timeout(
+            Duration::from_secs(1),
+            proxy_request(
+                proxy_addr,
+                b"GET / HTTP/1.1\r\nHost: example.test\r\nX-Forwarded-For: 192.0.2.9\r\nConnection: close\r\n\r\n",
+            ),
+        )
+        .await
+        .expect("limit response");
+        assert!(second.starts_with(b"HTTP/1.1 429 Too Many Requests\r\n"));
+        assert!(
+            second
+                .windows(16)
+                .any(|bytes| bytes == b"retry-after: 1\r\n")
+        );
+        release_tx.send(()).expect("release first body");
+        assert!(first.await.expect("first client").ends_with(b"first"));
         upstream_task.await.expect("upstream task");
         shutdown.cancel();
         proxy_task.await.expect("proxy task").expect("proxy run");
