@@ -60,6 +60,7 @@ use upstream::{
 };
 
 use middleware::auth::{BasicAuthPolicies, ForwardOutcome, Outcome as AuthOutcome};
+use middleware::compression::CompressionLimiters;
 use middleware::normalize::{normalize_forwarding_headers, rebuild_proxy_headers};
 use middleware::rate::{Outcome as RateOutcome, RateLimiters};
 
@@ -1017,6 +1018,7 @@ struct PinnedProxyService {
     clients: UpstreamClients,
     pools: UpstreamPools,
     rate_limiters: RateLimiters,
+    compression_limiters: CompressionLimiters,
     basic_auth: BasicAuthPolicies,
     shutdown: CancellationToken,
     upgrade_tasks: TaskTracker,
@@ -1041,6 +1043,7 @@ impl Service<Request<Incoming>> for ProxyService {
             clients: Arc::clone(&snapshot.upstream_clients),
             pools: Arc::clone(&snapshot.upstream_pools),
             rate_limiters: Arc::clone(&snapshot.rate_limiters),
+            compression_limiters: Arc::clone(&snapshot.compression_limiters),
             basic_auth: Arc::clone(&snapshot.basic_auth),
             shutdown: service.shutdown,
             upgrade_tasks: service.upgrade_tasks,
@@ -1567,6 +1570,26 @@ impl PinnedProxyService {
                             "middleware response failed\n",
                         );
                     }
+                    if middleware::compression::apply(
+                        &self.compression_limiters,
+                        &self.config,
+                        route,
+                        middleware::compression::RequestContext {
+                            method: &method,
+                            headers: &headers,
+                            authenticated: identity.principal.is_some(),
+                            grpc,
+                            websocket,
+                        },
+                        &mut response,
+                    )
+                    .is_err()
+                    {
+                        return error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "compression middleware failed\n",
+                        );
+                    }
                     return response.map(|body| match body_guard {
                         Some(endpoint) => GuardedBody::new(body, endpoint).boxed(),
                         None => body,
@@ -1775,9 +1798,9 @@ fn full_body(bytes: &[u8]) -> ResponseBody {
 mod tests {
     use super::*;
     use aegisproxy_config::{
-        AdminConfig, BalancingAlgorithm, CertificateConfig, Config, EndpointConfig, LimitsConfig,
-        ListenerConfig, MiddlewareConfig, RateLimitKey, RouteConfig, RuntimeConfig,
-        TrustedProxyConfig, UpstreamGroupConfig,
+        AdminConfig, BalancingAlgorithm, CertificateConfig, CompressionEncoding, Config,
+        EndpointConfig, LimitsConfig, ListenerConfig, MiddlewareConfig, RateLimitKey, RouteConfig,
+        RuntimeConfig, TrustedProxyConfig, UpstreamGroupConfig,
     };
     use http_body_util::Empty;
     use std::collections::BTreeMap;
@@ -3419,6 +3442,66 @@ mod tests {
         assert!(!response.contains("content-encoding:"));
         assert!(!response.contains("upstream leak"));
         assert!(response.ends_with("service unavailable"));
+        upstream_task.await.expect("upstream task");
+        shutdown.cancel();
+        proxy_task.await.expect("proxy task").expect("proxy run");
+    }
+
+    #[tokio::test]
+    async fn compression_is_negotiated_through_the_proxy() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("upstream bind");
+        let upstream_addr = upstream.local_addr().expect("upstream address");
+        let upstream_task = tokio::spawn(async move {
+            let (mut stream, _) = upstream.accept().await.expect("upstream accept");
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).await.expect("upstream read");
+            let body = vec![b'a'; 2_048];
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2048\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .expect("upstream headers");
+            stream.write_all(&body).await.expect("upstream body");
+        });
+        let (proxy_addr, shutdown, proxy_task) = start_test_proxy(upstream_addr, |config| {
+            config.middlewares.insert(
+                "compress".into(),
+                MiddlewareConfig::Compression {
+                    encodings: vec![CompressionEncoding::Gzip],
+                    content_types: vec!["text/plain".into()],
+                    min_bytes: 1_024,
+                    max_concurrent: 2,
+                    allow_authenticated: false,
+                },
+            );
+            config.routes[0].middlewares = vec!["compress".into()];
+        })
+        .await;
+        let response = proxy_request(
+            proxy_addr,
+            b"GET / HTTP/1.1\r\nHost: example.test\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        let header_end = response
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .expect("response headers");
+        let headers = String::from_utf8(response[..header_end].to_vec()).expect("header text");
+        assert!(headers.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(headers.contains("content-encoding: gzip\r\n"));
+        assert!(headers.contains("vary: Accept-Encoding\r\n"));
+        assert!(!headers.contains("content-length:"));
+        assert!(
+            response[header_end + 4..]
+                .windows(2)
+                .any(|bytes| bytes == [0x1f, 0x8b])
+        );
         upstream_task.await.expect("upstream task");
         shutdown.cancel();
         proxy_task.await.expect("proxy task").expect("proxy run");

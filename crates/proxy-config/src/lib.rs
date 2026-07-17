@@ -758,6 +758,22 @@ pub enum MiddlewareConfig {
         #[serde(default = "default_maintenance_content_type")]
         content_type: String,
     },
+    /// Streaming response compression with conservative exclusions.
+    Compression {
+        /// Preference-ordered enabled encodings.
+        encodings: Vec<CompressionEncoding>,
+        /// Allowed exact media types, excluding parameters.
+        content_types: Vec<String>,
+        /// Minimum declared response size.
+        #[serde(default = "default_compression_min_bytes")]
+        min_bytes: usize,
+        /// Maximum concurrent encoders for this policy.
+        #[serde(default = "default_compression_concurrency")]
+        max_concurrent: usize,
+        /// Explicitly permit compression after authentication.
+        #[serde(default)]
+        allow_authenticated: bool,
+    },
     /// Fixed redirect.
     Redirect {
         /// Destination URL.
@@ -779,6 +795,16 @@ pub enum RateLimitKey {
     ClientIp,
     /// Authenticated principal at stage 9.
     Principal,
+}
+
+/// Supported response content encodings.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompressionEncoding {
+    /// RFC 9110 gzip content coding.
+    Gzip,
+    /// RFC 7932 Brotli content coding.
+    Brotli,
 }
 
 fn default_rate_limit_keys() -> usize {
@@ -807,6 +833,14 @@ fn default_maintenance_status() -> u16 {
 
 fn default_maintenance_content_type() -> String {
     "text/plain; charset=utf-8".into()
+}
+
+fn default_compression_min_bytes() -> usize {
+    1_024
+}
+
+fn default_compression_concurrency() -> usize {
+    4
 }
 
 /// HTTP route.
@@ -942,9 +976,20 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             "middlewares exceeds {MAX_MIDDLEWARES} entries"
         )));
     }
+    let mut compression_slots = 0_usize;
     for (id, middleware) in &config.middlewares {
         valid_id(id)?;
         validate_middleware(id, middleware)?;
+        if let MiddlewareConfig::Compression { max_concurrent, .. } = middleware {
+            compression_slots = compression_slots
+                .checked_add(*max_concurrent)
+                .ok_or_else(|| ConfigError::Invalid("compression capacity overflow".into()))?;
+            if compression_slots > 64 {
+                return Err(ConfigError::Invalid(
+                    "aggregate compression concurrency exceeds 64".into(),
+                ));
+            }
+        }
     }
     if config.trusted_proxies.cidrs.len() > MAX_TRUSTED_PROXY_CIDRS
         || config.trusted_proxies.trusted_hops > 32
@@ -1440,6 +1485,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         let mut maintenance = 0_usize;
         let mut authenticated_maintenance = false;
         let mut custom_errors = 0_usize;
+        let mut compression = 0_usize;
         for middleware in &route.middlewares {
             let Some(definition) = config.middlewares.get(middleware) else {
                 return Err(ConfigError::Invalid(format!(
@@ -1527,6 +1573,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                     authenticated_maintenance = *authenticated;
                 }
                 MiddlewareConfig::CustomError { .. } => custom_errors += 1,
+                MiddlewareConfig::Compression { .. } => compression += 1,
             }
         }
         if redirects > 1
@@ -1540,6 +1587,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             || header_mutations > 1
             || maintenance > 1
             || custom_errors > 1
+            || compression > 1
         {
             return Err(ConfigError::Invalid(format!(
                 "route {} contains an ambiguous duplicate middleware stage",
@@ -1606,6 +1654,12 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         if custom_errors != 0 && route.upstream_group.is_none() {
             return Err(ConfigError::Invalid(format!(
                 "route {} applies custom upstream errors without proxying",
+                route.id
+            )));
+        }
+        if compression != 0 && route.upstream_group.is_none() {
+            return Err(ConfigError::Invalid(format!(
+                "route {} applies compression without proxying",
                 route.id
             )));
         }
@@ -1975,6 +2029,37 @@ fn validate_middleware(id: &str, middleware: &MiddlewareConfig) -> Result<(), Co
             {
                 return Err(ConfigError::Invalid(format!(
                     "middleware {id} has an unsafe custom error response"
+                )));
+            }
+        }
+        MiddlewareConfig::Compression {
+            encodings,
+            content_types,
+            min_bytes,
+            max_concurrent,
+            ..
+        } => {
+            let encoding_set: HashSet<_> = encodings.iter().copied().collect();
+            let mut type_set = HashSet::new();
+            if encodings.is_empty()
+                || encodings.len() > 2
+                || encoding_set.len() != encodings.len()
+                || content_types.is_empty()
+                || content_types.len() > 32
+                || !(256..=1_048_576).contains(min_bytes)
+                || !(1..=32).contains(max_concurrent)
+                || content_types.iter().any(|value| {
+                    value.is_empty()
+                        || value.len() > 127
+                        || value != &value.to_ascii_lowercase()
+                        || value.contains(';')
+                        || value.contains(char::is_whitespace)
+                        || !value.contains('/')
+                        || !type_set.insert(value.as_str())
+                })
+            {
+                return Err(ConfigError::Invalid(format!(
+                    "middleware {id} has an unsafe compression policy"
                 )));
             }
         }
@@ -3715,6 +3800,44 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn compression_policy_is_bounded_and_unambiguous() {
+        let valid = MiddlewareConfig::Compression {
+            encodings: vec![CompressionEncoding::Brotli, CompressionEncoding::Gzip],
+            content_types: vec!["application/json".into(), "text/plain".into()],
+            min_bytes: 1_024,
+            max_concurrent: 8,
+            allow_authenticated: false,
+        };
+        validate_middleware("compress", &valid).expect("bounded compression policy");
+
+        let duplicate = MiddlewareConfig::Compression {
+            encodings: vec![CompressionEncoding::Gzip, CompressionEncoding::Gzip],
+            content_types: vec!["text/plain".into()],
+            min_bytes: 1_024,
+            max_concurrent: 8,
+            allow_authenticated: false,
+        };
+        assert!(validate_middleware("compress", &duplicate).is_err());
+
+        let parameterized = MiddlewareConfig::Compression {
+            encodings: vec![CompressionEncoding::Gzip],
+            content_types: vec!["text/plain; charset=utf-8".into()],
+            min_bytes: 1_024,
+            max_concurrent: 8,
+            allow_authenticated: false,
+        };
+        assert!(validate_middleware("compress", &parameterized).is_err());
+
+        let mut config = base_config();
+        for index in 0..9 {
+            config
+                .middlewares
+                .insert(format!("compress-{index}"), valid.clone());
+        }
+        assert!(validate(&config).is_err());
     }
 
     #[test]
