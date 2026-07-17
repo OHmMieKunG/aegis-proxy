@@ -1186,6 +1186,19 @@ impl PinnedProxyService {
                 );
             }
         }
+        match middleware::cors::preflight(&self.config, route, &request) {
+            Ok(Some(mut response)) => {
+                if middleware::headers::apply(&self.config, route, scheme, &mut response).is_err() {
+                    return error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "middleware response failed\n",
+                    );
+                }
+                return response;
+            }
+            Ok(None) => {}
+            Err(()) => return error_response(StatusCode::FORBIDDEN, "CORS request denied\n"),
+        }
         let Some(group_id) = route.upstream_group.as_deref() else {
             return error_response(StatusCode::BAD_GATEWAY, "route has no upstream\n");
         };
@@ -1353,6 +1366,14 @@ impl PinnedProxyService {
                         Some(selected)
                     };
                     if middleware::headers::apply(&self.config, route, scheme, &mut response)
+                        .is_err()
+                    {
+                        return error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "middleware response failed\n",
+                        );
+                    }
+                    if middleware::cors::apply(&self.config, route, &headers, &mut response)
                         .is_err()
                     {
                         return error_response(
@@ -3010,6 +3031,72 @@ mod tests {
         );
         shutdown.cancel();
         proxy_task.await.expect("proxy task").expect("proxy run");
+    }
+
+    #[tokio::test]
+    async fn cors_preflight_short_circuits_and_actual_response_is_scoped() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("upstream bind");
+        let upstream_addr = upstream.local_addr().expect("upstream address");
+        let upstream_task = tokio::spawn(async move {
+            let (mut stream, _) = upstream.accept().await.expect("upstream accept");
+            let mut request = [0_u8; 2048];
+            let count = stream.read(&mut request).await.expect("upstream read");
+            assert!(request[..count].starts_with(b"GET / HTTP/1.1\r\n"));
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\naccess-control-allow-origin: https://evil.test\r\nconnection: close\r\n\r\n")
+                .await
+                .expect("upstream write");
+        });
+        let (proxy_addr, shutdown, proxy_task) = start_test_proxy(upstream_addr, |config| {
+            config.middlewares.insert(
+                "cors".into(),
+                MiddlewareConfig::Cors {
+                    origins: vec!["https://app.example.test".into()],
+                    methods: vec!["GET".into()],
+                    headers: vec!["content-type".into()],
+                    allow_credentials: true,
+                    max_age_secs: 600,
+                },
+            );
+            config.routes[0].middlewares = vec!["cors".into()];
+        })
+        .await;
+
+        let requests: [&[u8]; 3] = [
+            b"OPTIONS / HTTP/1.1\r\nHost: example.test\r\nOrigin: https://app.example.test\r\nAccess-Control-Request-Method: GET\r\nAccess-Control-Request-Headers: Content-Type\r\nConnection: close\r\n\r\n",
+            b"OPTIONS / HTTP/1.1\r\nHost: example.test\r\nOrigin: https://app.example.test\r\nAccess-Control-Request-Method: DELETE\r\nConnection: close\r\n\r\n",
+            b"GET / HTTP/1.1\r\nHost: example.test\r\nOrigin: https://app.example.test\r\nConnection: close\r\n\r\n",
+        ];
+        let mut responses = Vec::new();
+        for request in requests {
+            let mut client = connect_to_proxy(proxy_addr).await;
+            client.write_all(request).await.expect("client write");
+            let mut response = Vec::new();
+            client
+                .read_to_end(&mut response)
+                .await
+                .expect("client read");
+            responses.push(response);
+        }
+        assert!(responses[0].starts_with(b"HTTP/1.1 204 No Content\r\n"));
+        assert!(
+            String::from_utf8_lossy(&responses[0])
+                .contains("access-control-allow-origin: https://app.example.test\r\n")
+        );
+        assert!(responses[1].starts_with(b"HTTP/1.1 403 Forbidden\r\n"));
+        assert!(responses[2].starts_with(b"HTTP/1.1 200 OK\r\n"));
+        assert!(
+            String::from_utf8_lossy(&responses[2])
+                .contains("access-control-allow-origin: https://app.example.test\r\n")
+        );
+        shutdown.cancel();
+        proxy_task.await.expect("proxy task").expect("proxy run");
+        upstream_task.await.expect("upstream task");
     }
 
     #[tokio::test]

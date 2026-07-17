@@ -649,6 +649,22 @@ pub enum MiddlewareConfig {
         #[serde(default)]
         deny: Vec<IpNet>,
     },
+    /// Exact-origin CORS policy.
+    Cors {
+        /// Exact canonical origins, or a single `*` without credentials.
+        origins: Vec<String>,
+        /// Allowed request methods.
+        methods: Vec<String>,
+        /// Allowed non-simple request headers.
+        #[serde(default)]
+        headers: Vec<String>,
+        /// Emit `Access-Control-Allow-Credentials: true`.
+        #[serde(default)]
+        allow_credentials: bool,
+        /// Bounded preflight cache duration.
+        #[serde(default)]
+        max_age_secs: u64,
+    },
     /// Fixed redirect.
     Redirect {
         /// Destination URL.
@@ -1291,6 +1307,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         let mut security_headers = 0_usize;
         let mut ip_policies = 0_usize;
         let mut rate_limits = 0_usize;
+        let mut cors_policies = 0_usize;
         for middleware in &route.middlewares {
             let Some(definition) = config.middlewares.get(middleware) else {
                 return Err(ConfigError::Invalid(format!(
@@ -1315,9 +1332,15 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                 }
                 MiddlewareConfig::RateLimit { .. } => rate_limits += 1,
                 MiddlewareConfig::IpPolicy { .. } => ip_policies += 1,
+                MiddlewareConfig::Cors { .. } => cors_policies += 1,
             }
         }
-        if redirects > 1 || security_headers > 1 || ip_policies > 1 || rate_limits > 1 {
+        if redirects > 1
+            || security_headers > 1
+            || ip_policies > 1
+            || rate_limits > 1
+            || cors_policies > 1
+        {
             return Err(ConfigError::Invalid(format!(
                 "route {} contains an ambiguous duplicate middleware stage",
                 route.id
@@ -1451,6 +1474,89 @@ fn validate_middleware(id: &str, middleware: &MiddlewareConfig) -> Result<(), Co
                 return Err(ConfigError::Invalid(format!(
                     "middleware {id} IP policy contains duplicate CIDRs"
                 )));
+            }
+        }
+        MiddlewareConfig::Cors {
+            origins,
+            methods,
+            headers,
+            allow_credentials,
+            max_age_secs,
+        } => {
+            if origins.is_empty()
+                || origins.len() > 64
+                || methods.is_empty()
+                || methods.len() > 32
+                || headers.len() > 64
+                || *max_age_secs > 86_400
+            {
+                return Err(ConfigError::Invalid(format!(
+                    "middleware {id} CORS policy exceeds safe bounds"
+                )));
+            }
+            let wildcard = origins.iter().any(|origin| origin == "*");
+            if wildcard && (origins.len() != 1 || *allow_credentials) {
+                return Err(ConfigError::Invalid(format!(
+                    "middleware {id} CORS wildcard cannot mix origins or credentials"
+                )));
+            }
+            let mut unique = HashSet::new();
+            for origin in origins.iter().filter(|origin| origin.as_str() != "*") {
+                if origin.len() > MAX_HEADER_VALUE_BYTES {
+                    return Err(ConfigError::Invalid(format!(
+                        "middleware {id} has an oversized CORS origin"
+                    )));
+                }
+                let url = Url::parse(origin).map_err(|_| {
+                    ConfigError::Invalid(format!("middleware {id} has an invalid CORS origin"))
+                })?;
+                if !matches!(url.scheme(), "http" | "https")
+                    || url.host_str().is_none()
+                    || !url.username().is_empty()
+                    || url.password().is_some()
+                    || url.path() != "/"
+                    || url.query().is_some()
+                    || url.fragment().is_some()
+                    || url.origin().ascii_serialization() != *origin
+                    || !unique.insert(origin)
+                {
+                    return Err(ConfigError::Invalid(format!(
+                        "middleware {id} has an unsafe or duplicate CORS origin"
+                    )));
+                }
+            }
+            unique.clear();
+            for method in methods {
+                if method.len() > 32 {
+                    return Err(ConfigError::Invalid(format!(
+                        "middleware {id} has an oversized CORS method"
+                    )));
+                }
+                let parsed = Method::from_bytes(method.as_bytes()).map_err(|_| {
+                    ConfigError::Invalid(format!("middleware {id} has an invalid CORS method"))
+                })?;
+                if parsed == Method::CONNECT || parsed.as_str() != method || !unique.insert(method)
+                {
+                    return Err(ConfigError::Invalid(format!(
+                        "middleware {id} has an unsafe or duplicate CORS method"
+                    )));
+                }
+            }
+            unique.clear();
+            for header in headers {
+                if header.len() > 64 {
+                    return Err(ConfigError::Invalid(format!(
+                        "middleware {id} has an oversized CORS header"
+                    )));
+                }
+                let parsed = HeaderName::from_bytes(header.as_bytes()).map_err(|_| {
+                    ConfigError::Invalid(format!("middleware {id} has an invalid CORS header"))
+                })?;
+                if parsed.as_str() != header || !unique.insert(header) {
+                    return Err(ConfigError::Invalid(format!(
+                        "middleware {id} requires lowercase unique CORS headers"
+                    )));
+                }
             }
         }
         MiddlewareConfig::Redirect {
@@ -2791,6 +2897,35 @@ mod tests {
         };
         *max_keys = 0;
         assert!(validate(&config).is_err());
+    }
+
+    #[test]
+    fn validates_exact_cors_policy() {
+        let policy = MiddlewareConfig::Cors {
+            origins: vec!["https://app.example.test".into()],
+            methods: vec!["GET".into(), "POST".into()],
+            headers: vec!["content-type".into()],
+            allow_credentials: true,
+            max_age_secs: 600,
+        };
+        validate_middleware("cors", &policy).expect("exact CORS policy");
+
+        let wildcard_credentials = MiddlewareConfig::Cors {
+            origins: vec!["*".into()],
+            methods: vec!["GET".into()],
+            headers: vec![],
+            allow_credentials: true,
+            max_age_secs: 0,
+        };
+        assert!(validate_middleware("cors", &wildcard_credentials).is_err());
+
+        let mut config = base_config();
+        add_http_upstream(&mut config);
+        config.middlewares.insert("cors".into(), policy);
+        let mut route = test_route();
+        route.middlewares = vec!["cors".into()];
+        config.routes.push(route);
+        validate(&config).expect("route CORS policy");
     }
 
     #[test]
