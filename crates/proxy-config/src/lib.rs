@@ -728,6 +728,23 @@ pub enum MiddlewareConfig {
         #[serde(default)]
         response_remove: Vec<String>,
     },
+    /// Fixed terminal maintenance response.
+    Maintenance {
+        /// HTTP status, limited to 200 or 503.
+        #[serde(default = "default_maintenance_status")]
+        status: u16,
+        /// Bounded static response body.
+        body: String,
+        /// `text/plain; charset=utf-8` or `text/html; charset=utf-8`.
+        #[serde(default = "default_maintenance_content_type")]
+        content_type: String,
+        /// Optional Retry-After delta seconds.
+        #[serde(default)]
+        retry_after_secs: Option<u64>,
+        /// Run authentication before returning maintenance content.
+        #[serde(default)]
+        authenticated: bool,
+    },
     /// Fixed redirect.
     Redirect {
         /// Destination URL.
@@ -758,6 +775,14 @@ fn default_auth_timeout_secs() -> u64 {
 
 fn default_forward_auth_timeout_secs() -> u64 {
     3
+}
+
+fn default_maintenance_status() -> u16 {
+    503
+}
+
+fn default_maintenance_content_type() -> String {
+    "text/plain; charset=utf-8".into()
 }
 
 /// HTTP route.
@@ -1386,6 +1411,9 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         let mut authentication = 0_usize;
         let mut rewrites = 0_usize;
         let mut header_mutations = 0_usize;
+        let mut request_header_mutations = false;
+        let mut maintenance = 0_usize;
+        let mut authenticated_maintenance = false;
         for middleware in &route.middlewares {
             let Some(definition) = config.middlewares.get(middleware) else {
                 return Err(ConfigError::Invalid(format!(
@@ -1454,7 +1482,21 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                     }
                 }
                 MiddlewareConfig::Rewrite { .. } => rewrites += 1,
-                MiddlewareConfig::HeaderMutation { .. } => header_mutations += 1,
+                MiddlewareConfig::HeaderMutation {
+                    request_set,
+                    request_add,
+                    request_remove,
+                    ..
+                } => {
+                    header_mutations += 1;
+                    request_header_mutations = !request_set.is_empty()
+                        || !request_add.is_empty()
+                        || !request_remove.is_empty();
+                }
+                MiddlewareConfig::Maintenance { authenticated, .. } => {
+                    maintenance += 1;
+                    authenticated_maintenance = *authenticated;
+                }
             }
         }
         if redirects > 1
@@ -1465,23 +1507,25 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             || authentication > 1
             || rewrites > 1
             || header_mutations > 1
+            || maintenance > 1
         {
             return Err(ConfigError::Invalid(format!(
                 "route {} contains an ambiguous duplicate middleware stage",
                 route.id
             )));
         }
-        if (route.upstream_group.is_some(), redirects) != (true, 0)
-            && (route.upstream_group.is_some(), redirects) != (false, 1)
-        {
+        if !matches!(
+            (route.upstream_group.is_some(), redirects, maintenance),
+            (true, 0, 0) | (false, 1, 0) | (false, 0, 1)
+        ) {
             return Err(ConfigError::Invalid(format!(
-                "route {} must select exactly one proxy or redirect terminal action",
+                "route {} must select exactly one proxy, redirect, or maintenance terminal action",
                 route.id
             )));
         }
-        if redirects == 1 && route_protocol != Some("http") {
+        if (redirects == 1 || maintenance == 1) && route_protocol != Some("http") {
             return Err(ConfigError::Invalid(format!(
-                "route {} uses redirect outside an HTTP-family listener",
+                "route {} uses an HTTP terminal outside an HTTP-family listener",
                 route.id
             )));
         }
@@ -1500,6 +1544,24 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         if redirects == 1 && header_mutations != 0 {
             return Err(ConfigError::Invalid(format!(
                 "route {} cannot mutate a terminal redirect request",
+                route.id
+            )));
+        }
+        if maintenance == 1 && rewrites != 0 {
+            return Err(ConfigError::Invalid(format!(
+                "route {} cannot rewrite a terminal maintenance response",
+                route.id
+            )));
+        }
+        if maintenance == 1 && (request_header_mutations || cors_policies != 0) {
+            return Err(ConfigError::Invalid(format!(
+                "route {} applies an unused request or CORS transform to maintenance",
+                route.id
+            )));
+        }
+        if maintenance == 1 && authenticated_maintenance != (authentication == 1) {
+            return Err(ConfigError::Invalid(format!(
+                "route {} maintenance authentication mode does not match its auth middleware",
                 route.id
             )));
         }
@@ -1824,6 +1886,28 @@ fn validate_middleware(id: &str, middleware: &MiddlewareConfig) -> Result<(), Co
             if operations == 0 || operations > 64 {
                 return Err(ConfigError::Invalid(format!(
                     "middleware {id} header mutation count is outside 1..=64"
+                )));
+            }
+        }
+        MiddlewareConfig::Maintenance {
+            status,
+            body,
+            content_type,
+            retry_after_secs,
+            ..
+        } => {
+            if !matches!(*status, 200 | 503)
+                || body.is_empty()
+                || body.len() > 64 * 1024
+                || !matches!(
+                    content_type.as_str(),
+                    "text/plain; charset=utf-8" | "text/html; charset=utf-8"
+                )
+                || retry_after_secs.is_some_and(|seconds| !(1..=86_400).contains(&seconds))
+                || *status == 200 && retry_after_secs.is_some()
+            {
+                return Err(ConfigError::Invalid(format!(
+                    "middleware {id} has an unsafe maintenance response"
                 )));
             }
         }
@@ -3494,6 +3578,34 @@ mod tests {
             response_remove: vec![],
         };
         assert!(validate_middleware("headers", &ambiguous).is_err());
+    }
+
+    #[test]
+    fn maintenance_is_one_explicit_terminal_with_matching_auth_mode() {
+        let mut config = base_config();
+        config.middlewares.insert(
+            "maintenance".into(),
+            MiddlewareConfig::Maintenance {
+                status: 503,
+                body: "planned outage".into(),
+                content_type: "text/plain; charset=utf-8".into(),
+                retry_after_secs: Some(120),
+                authenticated: false,
+            },
+        );
+        let mut route = test_route();
+        route.middlewares = vec!["maintenance".into()];
+        route.upstream_group = None;
+        config.routes.push(route);
+        validate(&config).expect("public maintenance route");
+
+        let Some(MiddlewareConfig::Maintenance { authenticated, .. }) =
+            config.middlewares.get_mut("maintenance")
+        else {
+            panic!("maintenance middleware");
+        };
+        *authenticated = true;
+        assert!(validate(&config).is_err());
     }
 
     #[test]

@@ -4,6 +4,7 @@ pub(crate) mod auth;
 pub(crate) mod cors;
 pub(crate) mod headers;
 pub(crate) mod ip;
+pub(crate) mod maintenance;
 pub(crate) mod normalize;
 pub(crate) mod rate;
 pub(crate) mod redirect;

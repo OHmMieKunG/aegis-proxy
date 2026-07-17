@@ -1199,6 +1199,28 @@ impl PinnedProxyService {
                 );
             }
         }
+        match middleware::maintenance::response(&self.config, route, false) {
+            Ok(Some(mut response)) => {
+                if middleware::headers::apply_response_mutations(&self.config, route, &mut response)
+                    .is_err()
+                    || middleware::headers::apply(&self.config, route, scheme, &mut response)
+                        .is_err()
+                {
+                    return error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "middleware response failed\n",
+                    );
+                }
+                return response;
+            }
+            Ok(None) => {}
+            Err(()) => {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "maintenance response failed\n",
+                );
+            }
+        }
         match middleware::cors::preflight(&self.config, route, &request) {
             Ok(Some(mut response)) => {
                 if middleware::headers::apply(&self.config, route, scheme, &mut response).is_err() {
@@ -1283,6 +1305,28 @@ impl PinnedProxyService {
                 return error_response(
                     StatusCode::SERVICE_UNAVAILABLE,
                     "authentication unavailable\n",
+                );
+            }
+        }
+        match middleware::maintenance::response(&self.config, route, true) {
+            Ok(Some(mut response)) => {
+                if middleware::headers::apply_response_mutations(&self.config, route, &mut response)
+                    .is_err()
+                    || middleware::headers::apply(&self.config, route, scheme, &mut response)
+                        .is_err()
+                {
+                    return error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "middleware response failed\n",
+                    );
+                }
+                return response;
+            }
+            Ok(None) => {}
+            Err(()) => {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "maintenance response failed\n",
                 );
             }
         }
@@ -3244,6 +3288,53 @@ mod tests {
         let response = String::from_utf8(response).expect("response text");
         assert!(response.starts_with("HTTP/1.1 307 Temporary Redirect\r\n"));
         assert!(response.contains("location: /maintenance?page=2\r\n"));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), upstream.accept())
+                .await
+                .is_err()
+        );
+        shutdown.cancel();
+        proxy_task.await.expect("proxy task").expect("proxy run");
+    }
+
+    #[tokio::test]
+    async fn public_maintenance_is_static_and_never_dials_upstream() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("upstream bind");
+        let upstream_addr = upstream.local_addr().expect("upstream address");
+        let (proxy_addr, shutdown, proxy_task) = start_test_proxy(upstream_addr, |config| {
+            config.middlewares.insert(
+                "maintenance".into(),
+                MiddlewareConfig::Maintenance {
+                    status: 503,
+                    body: "planned outage".into(),
+                    content_type: "text/plain; charset=utf-8".into(),
+                    retry_after_secs: Some(120),
+                    authenticated: false,
+                },
+            );
+            config.routes[0].middlewares = vec!["maintenance".into()];
+            config.routes[0].upstream_group = None;
+        })
+        .await;
+        let mut client = connect_to_proxy(proxy_addr).await;
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("client write");
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("client read");
+        let response = String::from_utf8(response).expect("response text");
+        assert!(response.starts_with("HTTP/1.1 503 Service Unavailable\r\n"));
+        assert!(response.contains("retry-after: 120\r\n"));
+        assert!(response.ends_with("planned outage"));
         assert!(
             tokio::time::timeout(Duration::from_millis(100), upstream.accept())
                 .await
