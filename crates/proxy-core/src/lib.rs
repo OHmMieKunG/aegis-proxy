@@ -1461,6 +1461,35 @@ impl PinnedProxyService {
         };
         let method = parts.method;
         let headers = parts.headers;
+        let finalize_response = |response: &mut Response<ResponseBody>| -> Result<(), ()> {
+            middleware::custom_error::apply(&self.config, route, response)?;
+            middleware::headers::apply_response_mutations(&self.config, route, response)?;
+            middleware::headers::apply(&self.config, route, scheme, response)?;
+            middleware::cors::apply(&self.config, route, &headers, response)?;
+            middleware::compression::apply(
+                &self.compression_limiters,
+                &self.config,
+                route,
+                middleware::compression::RequestContext {
+                    method: &method,
+                    headers: &headers,
+                    authenticated: identity.principal.is_some(),
+                    grpc,
+                    websocket,
+                },
+                response,
+            )
+        };
+        let proxy_error = |status, message| {
+            let mut response = error_response(status, message);
+            if finalize_response(&mut response).is_err() {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "response middleware failed\n",
+                );
+            }
+            response
+        };
         let total_timeout = if max_attempts > 1 {
             retry.total_timeout_secs
         } else {
@@ -1469,15 +1498,15 @@ impl PinnedProxyService {
         let retry_deadline = tokio::time::Instant::now() + Duration::from_secs(total_timeout);
         for attempt in 1..=max_attempts {
             let Ok(selected) = pool.select() else {
-                return error_response(StatusCode::SERVICE_UNAVAILABLE, "upstream unavailable\n");
+                return proxy_error(StatusCode::SERVICE_UNAVAILABLE, "upstream unavailable\n");
             };
             let endpoint = selected.config();
             let key = endpoint_key(group_id, &endpoint.id);
             let Some(client) = self.clients.get(&key) else {
-                return error_response(StatusCode::BAD_GATEWAY, "upstream client missing\n");
+                return proxy_error(StatusCode::BAD_GATEWAY, "upstream client missing\n");
             };
             let Some(uri) = upstream_uri(endpoint, &request_path, request_query.as_deref()) else {
-                return error_response(StatusCode::BAD_GATEWAY, "invalid upstream URI\n");
+                return proxy_error(StatusCode::BAD_GATEWAY, "invalid upstream URI\n");
             };
             let mut request_headers = headers.clone();
             if let Some(authority) = endpoint_authority(endpoint) {
@@ -1488,7 +1517,7 @@ impl PinnedProxyService {
                 None => match streaming_body.take() {
                     Some(body) => body,
                     None => {
-                        return error_response(
+                        return proxy_error(
                             StatusCode::BAD_GATEWAY,
                             "request body is unavailable\n",
                         );
@@ -1503,13 +1532,13 @@ impl PinnedProxyService {
             {
                 Ok(request) => request,
                 Err(_) => {
-                    return error_response(StatusCode::BAD_GATEWAY, "invalid upstream request\n");
+                    return proxy_error(StatusCode::BAD_GATEWAY, "invalid upstream request\n");
                 }
             };
             *upstream_request.headers_mut() = request_headers;
             let remaining = retry_deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
-                return error_response(
+                return proxy_error(
                     StatusCode::GATEWAY_TIMEOUT,
                     "upstream retry budget exhausted\n",
                 );
@@ -1525,7 +1554,7 @@ impl PinnedProxyService {
                         if attempt < max_attempts {
                             continue;
                         }
-                        return error_response(
+                        return proxy_error(
                             StatusCode::GATEWAY_TIMEOUT,
                             "upstream response timed out\n",
                         );
@@ -1538,7 +1567,7 @@ impl PinnedProxyService {
                     let body_guard = if response.status() == StatusCode::SWITCHING_PROTOCOLS {
                         let Some(client_upgrade) = client_upgrade.take() else {
                             selected.record_failure();
-                            return error_response(
+                            return proxy_error(
                                 StatusCode::BAD_GATEWAY,
                                 "unexpected upstream upgrade\n",
                             );
@@ -1573,59 +1602,10 @@ impl PinnedProxyService {
                         strip_hop_by_hop_headers(response.headers_mut(), false, false);
                         Some(selected)
                     };
-                    if middleware::custom_error::apply(&self.config, route, &mut response).is_err()
-                    {
+                    if finalize_response(&mut response).is_err() {
                         return error_response(
                             StatusCode::INTERNAL_SERVER_ERROR,
-                            "custom error response failed\n",
-                        );
-                    }
-                    if middleware::headers::apply_response_mutations(
-                        &self.config,
-                        route,
-                        &mut response,
-                    )
-                    .is_err()
-                    {
-                        return error_response(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "middleware response failed\n",
-                        );
-                    }
-                    if middleware::headers::apply(&self.config, route, scheme, &mut response)
-                        .is_err()
-                    {
-                        return error_response(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "middleware response failed\n",
-                        );
-                    }
-                    if middleware::cors::apply(&self.config, route, &headers, &mut response)
-                        .is_err()
-                    {
-                        return error_response(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "middleware response failed\n",
-                        );
-                    }
-                    if middleware::compression::apply(
-                        &self.compression_limiters,
-                        &self.config,
-                        route,
-                        middleware::compression::RequestContext {
-                            method: &method,
-                            headers: &headers,
-                            authenticated: identity.principal.is_some(),
-                            grpc,
-                            websocket,
-                        },
-                        &mut response,
-                    )
-                    .is_err()
-                    {
-                        return error_response(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "compression middleware failed\n",
+                            "response middleware failed\n",
                         );
                     }
                     return response.map(|body| match body_guard {
@@ -1641,11 +1621,11 @@ impl PinnedProxyService {
                         }
                     }
                     tracing::debug!(peer = %self.peer, %error, "upstream request failed");
-                    return error_response(StatusCode::BAD_GATEWAY, "upstream request failed\n");
+                    return proxy_error(StatusCode::BAD_GATEWAY, "upstream request failed\n");
                 }
             }
         }
-        error_response(StatusCode::BAD_GATEWAY, "upstream attempts exhausted\n")
+        proxy_error(StatusCode::BAD_GATEWAY, "upstream attempts exhausted\n")
     }
 }
 
@@ -3481,6 +3461,33 @@ mod tests {
         assert!(!response.contains("upstream leak"));
         assert!(response.ends_with("service unavailable"));
         upstream_task.await.expect("upstream task");
+        shutdown.cancel();
+        proxy_task.await.expect("proxy task").expect("proxy run");
+    }
+
+    #[tokio::test]
+    async fn custom_error_replaces_internal_proxy_failure_without_rematching() {
+        let unavailable = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("reserve failed upstream");
+        let upstream_addr = unavailable.local_addr().expect("upstream address");
+        drop(unavailable);
+        let (proxy_addr, shutdown, proxy_task) = start_test_proxy(upstream_addr, |config| {
+            config.middlewares.insert(
+                "errors".into(),
+                MiddlewareConfig::CustomError {
+                    statuses: vec![502],
+                    body: "edge unavailable".into(),
+                    content_type: "text/plain; charset=utf-8".into(),
+                },
+            );
+            config.routes[0].middlewares = vec!["errors".into()];
+        })
+        .await;
+        let response = String::from_utf8(proxy_get(proxy_addr).await).expect("response text");
+        assert!(response.starts_with("HTTP/1.1 502 Bad Gateway\r\n"));
+        assert!(response.ends_with("edge unavailable"));
+        assert!(!response.contains("upstream request failed"));
         shutdown.cancel();
         proxy_task.await.expect("proxy task").expect("proxy run");
     }
