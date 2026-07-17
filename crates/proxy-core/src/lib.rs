@@ -36,7 +36,7 @@ use hyper::service::Service;
 use hyper::{
     Request, Response, StatusCode, Uri,
     body::Incoming,
-    header::{CONNECTION, HOST, HeaderValue, UPGRADE},
+    header::{CONNECTION, HOST, HeaderValue, RETRY_AFTER, UPGRADE},
 };
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::{
@@ -58,6 +58,7 @@ use upstream::{
 };
 
 use middleware::normalize::{normalize_forwarding_headers, rebuild_proxy_headers};
+use middleware::rate::{Outcome as RateOutcome, RateLimiters};
 
 pub use route::RouteIndex;
 use route::{PathError, canonical_host, canonicalize_request_path, request_host};
@@ -1012,6 +1013,7 @@ struct PinnedProxyService {
     limits: LimitsConfig,
     clients: UpstreamClients,
     pools: UpstreamPools,
+    rate_limiters: RateLimiters,
     shutdown: CancellationToken,
     upgrade_tasks: TaskTracker,
     tls_server_name: Option<String>,
@@ -1034,6 +1036,7 @@ impl Service<Request<Incoming>> for ProxyService {
             limits: service.limits,
             clients: Arc::clone(&snapshot.upstream_clients),
             pools: Arc::clone(&snapshot.upstream_pools),
+            rate_limiters: Arc::clone(&snapshot.rate_limiters),
             shutdown: service.shutdown,
             upgrade_tasks: service.upgrade_tasks,
             tls_server_name: service.tls_server_name,
@@ -1147,6 +1150,23 @@ impl PinnedProxyService {
         };
         if !middleware::ip::allowed(&self.config, route, identity.ip) {
             return error_response(StatusCode::FORBIDDEN, "request denied\n");
+        }
+        match middleware::rate::check(&self.rate_limiters, &self.config, route, identity.ip) {
+            Ok(RateOutcome::Allowed) => {}
+            Ok(RateOutcome::Limited { retry_after_secs }) => {
+                let mut response = error_response(StatusCode::TOO_MANY_REQUESTS, "rate limited\n");
+                let Ok(retry_after) = HeaderValue::from_str(&retry_after_secs.to_string()) else {
+                    return error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "rate limit response failed\n",
+                    );
+                };
+                response.headers_mut().insert(RETRY_AFTER, retry_after);
+                return response;
+            }
+            Err(()) => {
+                return error_response(StatusCode::SERVICE_UNAVAILABLE, "rate limit unavailable\n");
+            }
         }
         match middleware::redirect::response(&self.config, route, request.uri().query()) {
             Ok(Some(mut response)) => {
@@ -2921,6 +2941,68 @@ mod tests {
             .await
             .expect("client read");
         assert!(response.starts_with(b"HTTP/1.1 403 Forbidden\r\n"));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), upstream.accept())
+                .await
+                .is_err()
+        );
+        shutdown.cancel();
+        proxy_task.await.expect("proxy task").expect("proxy run");
+    }
+
+    #[tokio::test]
+    async fn edge_rate_limit_runs_before_redirect_across_connections() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("upstream bind");
+        let upstream_addr = upstream.local_addr().expect("upstream address");
+        let (proxy_addr, shutdown, proxy_task) = start_test_proxy(upstream_addr, |config| {
+            config.middlewares.insert(
+                "edge".into(),
+                MiddlewareConfig::RateLimit {
+                    requests_per_second: 1,
+                    burst: 1,
+                    max_keys: 2,
+                    idle_secs: 60,
+                },
+            );
+            config.middlewares.insert(
+                "redirect".into(),
+                MiddlewareConfig::Redirect {
+                    location: "/maintenance".into(),
+                    status: 307,
+                    preserve_query: false,
+                },
+            );
+            config.routes[0].middlewares = vec!["redirect".into(), "edge".into()];
+            config.routes[0].upstream_group = None;
+        })
+        .await;
+
+        let mut responses = Vec::new();
+        for _ in 0..2 {
+            let mut client = connect_to_proxy(proxy_addr).await;
+            client
+                .write_all(b"GET / HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n")
+                .await
+                .expect("client write");
+            let mut response = Vec::new();
+            client
+                .read_to_end(&mut response)
+                .await
+                .expect("client read");
+            responses.push(response);
+        }
+        assert!(responses[0].starts_with(b"HTTP/1.1 307 Temporary Redirect\r\n"));
+        assert!(responses[1].starts_with(b"HTTP/1.1 429 Too Many Requests\r\n"));
+        assert!(
+            responses[1]
+                .windows(16)
+                .any(|line| line == b"retry-after: 1\r\n")
+        );
         assert!(
             tokio::time::timeout(Duration::from_millis(100), upstream.accept())
                 .await

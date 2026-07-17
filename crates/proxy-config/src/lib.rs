@@ -611,7 +611,7 @@ fn default_weight() -> u32 {
 }
 
 /// Middleware definition.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MiddlewareConfig {
     /// Security response headers.
@@ -633,6 +633,12 @@ pub enum MiddlewareConfig {
         requests_per_second: u64,
         /// Burst capacity.
         burst: u64,
+        /// Maximum simultaneously tracked client keys.
+        #[serde(default = "default_rate_limit_keys")]
+        max_keys: usize,
+        /// Seconds after which an idle key may be evicted.
+        #[serde(default = "default_rate_limit_idle_secs")]
+        idle_secs: u64,
     },
     /// Trusted-client IP policy. Deny entries take precedence.
     IpPolicy {
@@ -653,6 +659,14 @@ pub enum MiddlewareConfig {
         #[serde(default)]
         preserve_query: bool,
     },
+}
+
+fn default_rate_limit_keys() -> usize {
+    10_000
+}
+
+fn default_rate_limit_idle_secs() -> u64 {
+    300
 }
 
 /// HTTP route.
@@ -1276,6 +1290,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         let mut redirects = 0_usize;
         let mut security_headers = 0_usize;
         let mut ip_policies = 0_usize;
+        let mut rate_limits = 0_usize;
         for middleware in &route.middlewares {
             let Some(definition) = config.middlewares.get(middleware) else {
                 return Err(ConfigError::Invalid(format!(
@@ -1298,16 +1313,11 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                         )));
                     }
                 }
-                MiddlewareConfig::RateLimit { .. } => {
-                    return Err(ConfigError::Invalid(format!(
-                        "route {} references rate limiting before runtime support",
-                        route.id
-                    )));
-                }
+                MiddlewareConfig::RateLimit { .. } => rate_limits += 1,
                 MiddlewareConfig::IpPolicy { .. } => ip_policies += 1,
             }
         }
-        if redirects > 1 || security_headers > 1 || ip_policies > 1 {
+        if redirects > 1 || security_headers > 1 || ip_policies > 1 || rate_limits > 1 {
             return Err(ConfigError::Invalid(format!(
                 "route {} contains an ambiguous duplicate middleware stage",
                 route.id
@@ -1414,8 +1424,14 @@ fn validate_middleware(id: &str, middleware: &MiddlewareConfig) -> Result<(), Co
         MiddlewareConfig::RateLimit {
             requests_per_second,
             burst,
+            max_keys,
+            idle_secs,
         } => {
-            if !(1..=1_000_000).contains(requests_per_second) || !(1..=1_000_000).contains(burst) {
+            if !(1..=1_000_000).contains(requests_per_second)
+                || !(1..=1_000_000).contains(burst)
+                || !(1..=100_000).contains(max_keys)
+                || !(1..=86_400).contains(idle_secs)
+            {
                 return Err(ConfigError::Invalid(format!(
                     "middleware {id} rate limit is outside safe bounds"
                 )));
@@ -2748,6 +2764,32 @@ mod tests {
             },
         );
         config.routes[0].middlewares.push("other".into());
+        assert!(validate(&config).is_err());
+    }
+
+    #[test]
+    fn bounds_rate_limit_state_and_activates_one_per_route() {
+        let mut config = base_config();
+        add_http_upstream(&mut config);
+        config.middlewares.insert(
+            "edge".into(),
+            MiddlewareConfig::RateLimit {
+                requests_per_second: 10,
+                burst: 20,
+                max_keys: 100,
+                idle_secs: 60,
+            },
+        );
+        let mut route = test_route();
+        route.middlewares = vec!["edge".into()];
+        config.routes.push(route);
+        validate(&config).expect("bounded rate limit");
+
+        let Some(MiddlewareConfig::RateLimit { max_keys, .. }) = config.middlewares.get_mut("edge")
+        else {
+            panic!("rate limiter");
+        };
+        *max_keys = 0;
         assert!(validate(&config).is_err());
     }
 

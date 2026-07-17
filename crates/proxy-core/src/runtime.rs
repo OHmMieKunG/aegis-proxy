@@ -27,6 +27,7 @@ use super::{
     build_upstream_pools, prepare_dns, prepare_tls, start_active_health_checks,
     start_dns_refreshes,
 };
+use crate::middleware::rate::{self, RateLimiters};
 
 pub(crate) struct RuntimeSnapshot {
     pub(crate) revision: Arc<str>,
@@ -38,6 +39,7 @@ pub(crate) struct RuntimeSnapshot {
     pub(crate) upstream_clients: UpstreamClients,
     pub(crate) upstream_pools: UpstreamPools,
     pub(crate) dns_endpoints: DnsEndpoints,
+    pub(crate) rate_limiters: RateLimiters,
     pub(crate) tls_challenges: TlsAlpnChallengeRegistry,
     background_cancel: CancellationToken,
     health_tasks: TaskTracker,
@@ -79,6 +81,10 @@ impl RuntimeSnapshot {
     ) -> Result<Arc<Self>, ProxyError> {
         aegisproxy_config::validate(&config)?;
         let route_index = Arc::new(RouteIndex::compile(&config));
+        let rate_limiters = rate::build(
+            &config,
+            previous.map(|snapshot| (&*snapshot.config, &snapshot.rate_limiters)),
+        );
         let preparation_config = Arc::clone(&config);
         let previous_upstreams = previous.map(|previous| {
             (
@@ -171,6 +177,7 @@ impl RuntimeSnapshot {
             upstream_clients,
             upstream_pools,
             dns_endpoints,
+            rate_limiters,
             tls_challenges,
             background_cancel,
             health_tasks,
