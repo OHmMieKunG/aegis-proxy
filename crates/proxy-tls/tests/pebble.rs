@@ -19,6 +19,7 @@ const DIRECTORY: &str = "https://localhost:14000/dir";
 const MANAGEMENT: &str = "127.0.0.1:8055";
 const POLL_TIMEOUT: Duration = Duration::from_secs(60);
 const MANAGEMENT_RESPONSE_LIMIT: u64 = 64 * 1024;
+const RENEWAL_CYCLES: usize = 3;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -45,10 +46,38 @@ fn issues_with_all_supported_challenges() -> TestResult {
         assert!(!created.account_id().is_empty());
         let client = AcmeClient::restore(credentials.as_slice(), Some(&ca_reference)).await?;
 
-        issue(&client, AcmeChallengeKind::Http01, "http.aegis.test").await?;
-        issue(&client, AcmeChallengeKind::Dns01, "*.dns.aegis.test").await?;
-        issue(&client, AcmeChallengeKind::TlsAlpn01, "tls-alpn.aegis.test").await
+        for _ in 0..RENEWAL_CYCLES {
+            issue(&client, AcmeChallengeKind::Http01, "http.aegis.test").await?;
+            issue(&client, AcmeChallengeKind::Dns01, "*.dns.aegis.test").await?;
+            issue(&client, AcmeChallengeKind::TlsAlpn01, "tls-alpn.aegis.test").await?;
+        }
+        reject_invalid_http_challenge(&client).await
     })
+}
+
+async fn reject_invalid_http_challenge(client: &AcmeClient) -> TestResult {
+    let names = vec!["invalid-http.aegis.test".to_owned()];
+    let mut order = client
+        .new_order(AcmeOrderRequest {
+            identifiers: &names,
+            challenge: AcmeChallengeKind::Http01,
+            profile: None,
+        })
+        .await?;
+    let material = order.prepare_challenges().await?;
+    let item = material.first().ok_or("missing HTTP-01 challenge")?;
+    management_post(
+        "add-http01",
+        &json!({ "token": item.token(), "content": "deliberately-invalid" }),
+    )?;
+    order.notify_challenges_ready().await?;
+    let result = order.poll_ready(Duration::from_secs(10)).await;
+    management_post("del-http01", &json!({ "token": item.token() }))?;
+    assert!(
+        result.is_err(),
+        "Pebble accepted an invalid HTTP-01 response"
+    );
+    Ok(())
 }
 
 async fn issue(client: &AcmeClient, challenge: AcmeChallengeKind, name: &str) -> TestResult {
