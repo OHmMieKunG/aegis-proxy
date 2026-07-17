@@ -746,7 +746,10 @@ fn sync_directory(_path: &Path) -> Result<(), RevisionError> {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::sync::Arc;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    };
 
     use super::*;
     use crate::{
@@ -782,13 +785,15 @@ mod tests {
     }
 
     fn temporary_state() -> PathBuf {
+        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
         std::env::temp_dir().join(format!(
-            "aegisproxy-revisions-{}-{}",
+            "aegisproxy-revisions-{}-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("test clock")
-                .as_nanos()
+                .as_nanos(),
+            SEQUENCE.fetch_add(1, Ordering::Relaxed),
         ))
     }
 
