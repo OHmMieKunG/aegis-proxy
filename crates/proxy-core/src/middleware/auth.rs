@@ -4,14 +4,27 @@ use aegisproxy_config::{Config, MiddlewareConfig, RouteConfig};
 use aegisproxy_secrets::{SecretBytes, SecretRef};
 use argon2::{ARGON2ID_IDENT, Argon2, Params, PasswordHash, PasswordVerifier};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use hyper::{HeaderMap, header::AUTHORIZATION};
+use http_body_util::{BodyExt, Limited};
+use hyper::{
+    HeaderMap, Method, Request, StatusCode, Uri,
+    header::{AUTHORIZATION, HeaderName, HeaderValue, LOCATION, SET_COOKIE, WWW_AUTHENTICATE},
+};
 use thiserror::Error;
 use tokio::sync::Semaphore;
 use zeroize::Zeroizing;
 
+use crate::{
+    UpstreamClients, UpstreamPools, endpoint_authority, endpoint_key, full_body,
+    middleware::normalize::RequestContext, route::canonical_host, upstream_uri,
+};
+
 const MAX_HASH_BYTES: usize = 1_024;
 const MAX_AUTHORIZATION_BYTES: usize = 2_048;
 const MAX_PASSWORD_BYTES: usize = 1_024;
+const MAX_FORWARD_AUTH_BODY_BYTES: usize = 16 * 1024;
+const MAX_FORWARD_AUTH_HEADER_BYTES: usize = 16 * 1024;
+const MAX_FORWARD_AUTH_HEADER_VALUES: usize = 64;
+const MAX_PRINCIPAL_BYTES: usize = 256;
 
 pub(crate) type BasicAuthPolicies = Arc<HashMap<String, Arc<BasicAuthPolicy>>>;
 
@@ -38,6 +51,30 @@ pub(crate) enum Outcome {
     Authenticated(String),
     Unauthorized(String),
     Unavailable,
+}
+
+#[derive(Debug)]
+pub(crate) enum ForwardOutcome {
+    NotConfigured,
+    Authenticated {
+        principal: String,
+        headers: HeaderMap,
+    },
+    Denied {
+        status: StatusCode,
+        headers: HeaderMap,
+    },
+    Unavailable,
+}
+
+struct ForwardPolicy<'a> {
+    upstream_group: &'a str,
+    path: &'a str,
+    request_headers: &'a [String],
+    response_headers: &'a [String],
+    principal_header: &'a str,
+    redirect_hosts: &'a [String],
+    timeout: Duration,
 }
 
 pub(crate) fn build(config: &Config) -> Result<BasicAuthPolicies, BuildError> {
@@ -139,6 +176,268 @@ pub(crate) async fn authenticate(
         Ok(Ok(_)) => Outcome::Unauthorized(policy.realm.clone()),
         Ok(Err(_)) | Err(_) => Outcome::Unavailable,
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn forward_authenticate<B>(
+    clients: &UpstreamClients,
+    pools: &UpstreamPools,
+    config: &Config,
+    route: &RouteConfig,
+    request: &mut Request<B>,
+    identity: &RequestContext,
+    scheme: &str,
+    host: &str,
+    port: u16,
+) -> ForwardOutcome {
+    let Some(policy) = forward_policy(config, route) else {
+        return ForwardOutcome::NotConfigured;
+    };
+    let auth_headers = match forward_request_headers(request, identity, scheme, host, port, &policy)
+    {
+        Ok(headers) => headers,
+        Err(()) => return ForwardOutcome::Unavailable,
+    };
+    for name in policy.response_headers {
+        request.headers_mut().remove(name);
+    }
+    let Some(pool) = pools.get(policy.upstream_group) else {
+        return ForwardOutcome::Unavailable;
+    };
+    let Ok(selected) = pool.select() else {
+        return ForwardOutcome::Unavailable;
+    };
+    let endpoint = selected.config();
+    let key = endpoint_key(policy.upstream_group, &endpoint.id);
+    let Some(client) = clients.get(&key) else {
+        selected.record_failure();
+        return ForwardOutcome::Unavailable;
+    };
+    let Some(uri) = upstream_uri(endpoint, policy.path, None) else {
+        selected.record_failure();
+        return ForwardOutcome::Unavailable;
+    };
+    let mut auth_request = match Request::builder()
+        .method(Method::GET)
+        .uri(uri)
+        .version(hyper::Version::HTTP_11)
+        .body(full_body(b""))
+    {
+        Ok(request) => request,
+        Err(_) => {
+            selected.record_failure();
+            return ForwardOutcome::Unavailable;
+        }
+    };
+    *auth_request.headers_mut() = auth_headers;
+    if let Some(authority) = endpoint_authority(endpoint) {
+        auth_request
+            .headers_mut()
+            .insert(hyper::header::HOST, authority);
+    } else {
+        selected.record_failure();
+        return ForwardOutcome::Unavailable;
+    }
+    let deadline = tokio::time::Instant::now() + policy.timeout;
+    let response = match tokio::time::timeout(policy.timeout, client.request(auth_request)).await {
+        Ok(Ok(response)) => response,
+        Ok(Err(_)) | Err(_) => {
+            selected.record_failure();
+            return ForwardOutcome::Unavailable;
+        }
+    };
+    let status = response.status();
+    if !bounded_headers(response.headers()) {
+        selected.record_failure();
+        return ForwardOutcome::Unavailable;
+    }
+    let response_headers = response.headers().clone();
+    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+    let body = tokio::time::timeout(
+        remaining,
+        Limited::new(response.into_body(), MAX_FORWARD_AUTH_BODY_BYTES).collect(),
+    )
+    .await;
+    if remaining.is_zero() || !matches!(body, Ok(Ok(_))) {
+        selected.record_failure();
+        return ForwardOutcome::Unavailable;
+    }
+    if status.is_server_error() {
+        selected.record_failure();
+        return ForwardOutcome::Unavailable;
+    }
+    let outcome = if status.is_success() {
+        allowed_response(&policy, &response_headers)
+    } else if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
+        let mut headers = HeaderMap::new();
+        if let Some(value) = single_header(&response_headers, WWW_AUTHENTICATE) {
+            headers.insert(WWW_AUTHENTICATE, value.clone());
+        }
+        ForwardOutcome::Denied { status, headers }
+    } else if status.is_redirection() {
+        redirect_response(&policy, status, &response_headers)
+    } else {
+        ForwardOutcome::Unavailable
+    };
+    if matches!(outcome, ForwardOutcome::Unavailable) {
+        selected.record_failure();
+    } else {
+        selected.record_success();
+    }
+    outcome
+}
+
+fn forward_policy<'a>(config: &'a Config, route: &RouteConfig) -> Option<ForwardPolicy<'a>> {
+    route.middlewares.iter().find_map(|id| {
+        let MiddlewareConfig::ForwardAuth {
+            upstream_group,
+            path,
+            request_headers,
+            response_headers,
+            principal_header,
+            redirect_hosts,
+            timeout_secs,
+        } = config.middlewares.get(id)?
+        else {
+            return None;
+        };
+        Some(ForwardPolicy {
+            upstream_group,
+            path,
+            request_headers,
+            response_headers,
+            principal_header,
+            redirect_hosts,
+            timeout: Duration::from_secs(*timeout_secs),
+        })
+    })
+}
+
+fn forward_request_headers<B>(
+    request: &Request<B>,
+    identity: &RequestContext,
+    scheme: &str,
+    host: &str,
+    port: u16,
+    policy: &ForwardPolicy<'_>,
+) -> Result<HeaderMap, ()> {
+    let mut headers = HeaderMap::new();
+    for name in policy.request_headers {
+        let name = HeaderName::from_bytes(name.as_bytes()).map_err(|_| ())?;
+        for value in request.headers().get_all(&name) {
+            headers.append(name.clone(), value.clone());
+        }
+    }
+    let original_uri = request.uri().path_and_query().ok_or(())?.as_str();
+    insert_header(&mut headers, "x-original-uri", original_uri)?;
+    insert_header(
+        &mut headers,
+        "x-forwarded-method",
+        request.method().as_str(),
+    )?;
+    insert_header(&mut headers, "x-forwarded-uri", original_uri)?;
+    insert_header(&mut headers, "x-forwarded-host", host)?;
+    insert_header(&mut headers, "x-forwarded-proto", scheme)?;
+    insert_header(&mut headers, "x-forwarded-port", &port.to_string())?;
+    insert_header(&mut headers, "x-forwarded-for", &identity.ip.to_string())?;
+    insert_header(&mut headers, "x-real-ip", &identity.ip.to_string())?;
+    insert_header(&mut headers, "x-request-id", &identity.request_id)?;
+    Ok(headers)
+}
+
+fn insert_header(headers: &mut HeaderMap, name: &'static str, value: &str) -> Result<(), ()> {
+    headers.insert(
+        HeaderName::from_static(name),
+        HeaderValue::from_str(value).map_err(|_| ())?,
+    );
+    Ok(())
+}
+
+fn bounded_headers(headers: &HeaderMap) -> bool {
+    headers.len() <= MAX_FORWARD_AUTH_HEADER_VALUES
+        && headers
+            .iter()
+            .try_fold(0_usize, |total, (name, value)| {
+                total.checked_add(name.as_str().len() + value.len())
+            })
+            .is_some_and(|total| total <= MAX_FORWARD_AUTH_HEADER_BYTES)
+}
+
+fn allowed_response(policy: &ForwardPolicy<'_>, source: &HeaderMap) -> ForwardOutcome {
+    let principal_name = match HeaderName::from_bytes(policy.principal_header.as_bytes()) {
+        Ok(name) => name,
+        Err(_) => return ForwardOutcome::Unavailable,
+    };
+    let Some(principal) = single_header(source, principal_name)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= MAX_PRINCIPAL_BYTES
+                && !value.chars().any(char::is_control)
+        })
+        .map(str::to_owned)
+    else {
+        return ForwardOutcome::Unavailable;
+    };
+    let mut headers = HeaderMap::new();
+    for name in policy.response_headers {
+        let Ok(name) = HeaderName::from_bytes(name.as_bytes()) else {
+            return ForwardOutcome::Unavailable;
+        };
+        for value in source.get_all(&name) {
+            headers.append(name.clone(), value.clone());
+        }
+    }
+    ForwardOutcome::Authenticated { principal, headers }
+}
+
+fn redirect_response(
+    policy: &ForwardPolicy<'_>,
+    status: StatusCode,
+    source: &HeaderMap,
+) -> ForwardOutcome {
+    if !matches!(status.as_u16(), 301 | 302 | 303 | 307 | 308) {
+        return ForwardOutcome::Unavailable;
+    }
+    let Some(location) = single_header(source, LOCATION)
+        .filter(|value| valid_redirect(value, policy.redirect_hosts))
+        .cloned()
+    else {
+        return ForwardOutcome::Unavailable;
+    };
+    let mut headers = HeaderMap::new();
+    headers.insert(LOCATION, location);
+    let cookies: Vec<_> = source.get_all(SET_COOKIE).iter().take(9).cloned().collect();
+    if cookies.len() > 8 {
+        return ForwardOutcome::Unavailable;
+    }
+    for cookie in cookies {
+        headers.append(SET_COOKIE, cookie);
+    }
+    ForwardOutcome::Denied { status, headers }
+}
+
+fn valid_redirect(value: &HeaderValue, allowed_hosts: &[String]) -> bool {
+    let Ok(value) = value.to_str() else {
+        return false;
+    };
+    let Ok(uri) = value.parse::<Uri>() else {
+        return false;
+    };
+    match (uri.scheme_str(), uri.authority()) {
+        (None, None) => uri.path().starts_with('/') && !uri.path().starts_with("//"),
+        (Some("https"), Some(authority)) if !authority.as_str().contains('@') => {
+            canonical_host(authority.host())
+                .is_ok_and(|host| allowed_hosts.iter().any(|allowed| allowed == &host))
+        }
+        _ => false,
+    }
+}
+
+fn single_header(headers: &HeaderMap, name: HeaderName) -> Option<&HeaderValue> {
+    let mut values = headers.get_all(name).iter();
+    let value = values.next()?;
+    values.next().is_none().then_some(value)
 }
 
 fn credentials(headers: &HeaderMap) -> Option<(String, Zeroizing<Vec<u8>>)> {
@@ -293,6 +592,31 @@ mod tests {
             .to_string()
             .replace("m=19456", "m=999999");
         assert!(validate_hash(hash.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn forward_auth_redirects_require_relative_or_allowlisted_https() {
+        let allowed = vec!["auth.example.test".into()];
+        assert!(valid_redirect(
+            &HeaderValue::from_static("/outpost.goauthentik.io/start"),
+            &allowed
+        ));
+        assert!(valid_redirect(
+            &HeaderValue::from_static("https://auth.example.test/start"),
+            &allowed
+        ));
+        assert!(!valid_redirect(
+            &HeaderValue::from_static("https://evil.example/start"),
+            &allowed
+        ));
+        assert!(!valid_redirect(
+            &HeaderValue::from_static("http://auth.example.test/start"),
+            &allowed
+        ));
+        assert!(!valid_redirect(
+            &HeaderValue::from_static("//evil.example/start"),
+            &allowed
+        ));
     }
 
     fn test_route() -> RouteConfig {

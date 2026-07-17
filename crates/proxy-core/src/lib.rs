@@ -59,7 +59,7 @@ use upstream::{
     DnsEndpoint, GuardedBody, PolicyResolver, UpstreamPool, prepare_dns, start_dns_refreshes,
 };
 
-use middleware::auth::{BasicAuthPolicies, Outcome as AuthOutcome};
+use middleware::auth::{BasicAuthPolicies, ForwardOutcome, Outcome as AuthOutcome};
 use middleware::normalize::{normalize_forwarding_headers, rebuild_proxy_headers};
 use middleware::rate::{Outcome as RateOutcome, RateLimiters};
 
@@ -1240,6 +1240,46 @@ impl PinnedProxyService {
                 return response;
             }
             AuthOutcome::Unavailable => {
+                return error_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "authentication unavailable\n",
+                );
+            }
+        }
+        match middleware::auth::forward_authenticate(
+            &self.clients,
+            &self.pools,
+            &self.config,
+            route,
+            &mut request,
+            &identity,
+            scheme,
+            &host,
+            listener.bind.port(),
+        )
+        .await
+        {
+            ForwardOutcome::NotConfigured => {}
+            ForwardOutcome::Authenticated { principal, headers } => {
+                for name in headers.keys() {
+                    request.headers_mut().remove(name);
+                    for value in headers.get_all(name) {
+                        request.headers_mut().append(name.clone(), value.clone());
+                    }
+                }
+                identity.principal = Some(principal);
+            }
+            ForwardOutcome::Denied { status, headers } => {
+                let mut response = error_response(status, "authentication required\n");
+                for name in headers.keys() {
+                    response.headers_mut().remove(name);
+                    for value in headers.get_all(name) {
+                        response.headers_mut().append(name.clone(), value.clone());
+                    }
+                }
+                return response;
+            }
+            ForwardOutcome::Unavailable => {
                 return error_response(
                     StatusCode::SERVICE_UNAVAILABLE,
                     "authentication unavailable\n",
@@ -2678,6 +2718,133 @@ mod tests {
         let captured = captured.expect("upstream request");
         assert!(captured.contains("x-aegisproxy-user: alice\r\n"));
         assert!(!captured.contains("authorization:"));
+    }
+
+    #[tokio::test]
+    async fn forward_auth_is_bounded_allowlisted_and_identity_scoped() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let auth = TcpListener::bind("127.0.0.1:0").await.expect("auth bind");
+        let auth_addr = auth.local_addr().expect("auth address");
+        let auth_task = tokio::spawn(async move {
+            let (mut stream, _) = auth.accept().await.expect("auth accept");
+            let mut request = [0_u8; 4096];
+            let count = stream.read(&mut request).await.expect("auth read");
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nX-Authentik-Username: alice\r\nX-Authentik-Email: alice@example.test\r\nX-Authentik-Untrusted: discard\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .expect("auth response");
+            String::from_utf8(request[..count].to_vec()).expect("auth request")
+        });
+        let (_, _, status, _, captured) = tls_request_custom(
+            false,
+            "example.test",
+            "1.2",
+            &[&rustls::version::TLS13, &rustls::version::TLS12],
+            Some("Bearer client-token".into()),
+            |config| {
+                add_forward_auth(config, auth_addr, 3);
+            },
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let auth_request = auth_task.await.expect("auth task");
+        assert!(auth_request.starts_with("GET /outpost.goauthentik.io/auth/traefik HTTP/1.1\r\n"));
+        assert!(auth_request.contains("authorization: Bearer client-token\r\n"));
+        assert!(auth_request.contains("x-original-uri: /\r\n"));
+        assert!(auth_request.contains("x-forwarded-host: example.test\r\n"));
+        assert!(auth_request.contains("x-forwarded-proto: https\r\n"));
+        let captured = captured.expect("application request");
+        assert!(captured.contains("x-authentik-username: alice\r\n"));
+        assert!(captured.contains("x-authentik-email: alice@example.test\r\n"));
+        assert!(captured.contains("x-aegisproxy-user: alice\r\n"));
+        assert!(!captured.contains("x-authentik-untrusted:"));
+    }
+
+    #[tokio::test]
+    async fn forward_auth_denial_and_timeout_fail_closed() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let denied = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("deny auth bind");
+        let denied_addr = denied.local_addr().expect("deny auth address");
+        let denied_task = tokio::spawn(async move {
+            let (mut stream, _) = denied.accept().await.expect("deny auth accept");
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).await.expect("deny auth read");
+            stream
+                .write_all(
+                    b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .expect("deny auth response");
+        });
+        let (_, _, denied_status, _, _) = tls_request_custom(
+            false,
+            "example.test",
+            "1.2",
+            &[&rustls::version::TLS13, &rustls::version::TLS12],
+            None,
+            |config| add_forward_auth(config, denied_addr, 3),
+        )
+        .await;
+        denied_task.await.expect("deny auth task");
+        assert_eq!(denied_status, StatusCode::FORBIDDEN);
+
+        let slow = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("slow auth bind");
+        let slow_addr = slow.local_addr().expect("slow auth address");
+        let slow_task = tokio::spawn(async move {
+            let (mut stream, _) = slow.accept().await.expect("slow auth accept");
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).await.expect("slow auth read");
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        });
+        let (_, _, timeout_status, _, _) = tls_request_custom(
+            false,
+            "example.test",
+            "1.2",
+            &[&rustls::version::TLS13, &rustls::version::TLS12],
+            None,
+            |config| add_forward_auth(config, slow_addr, 1),
+        )
+        .await;
+        slow_task.abort();
+        assert_eq!(timeout_status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    fn add_forward_auth(config: &mut Config, auth_addr: SocketAddr, timeout_secs: u64) {
+        config.upstream_groups.push(UpstreamGroupConfig {
+            id: "auth".into(),
+            allowed_cidrs: vec!["127.0.0.1/32".parse().expect("CIDR")],
+            endpoints: vec![EndpointConfig {
+                id: "auth-1".into(),
+                url: format!("http://{auth_addr}").parse().expect("auth URL"),
+                weight: 1,
+                server_name: None,
+                ca_bundle: None,
+            }],
+            ..UpstreamGroupConfig::default()
+        });
+        config.middlewares.insert(
+            "forward".into(),
+            MiddlewareConfig::ForwardAuth {
+                upstream_group: "auth".into(),
+                path: "/outpost.goauthentik.io/auth/traefik".into(),
+                request_headers: vec!["authorization".into()],
+                response_headers: vec!["x-authentik-username".into(), "x-authentik-email".into()],
+                principal_header: "x-authentik-username".into(),
+                redirect_hosts: vec![],
+                timeout_secs,
+            },
+        );
+        config.routes[0].middlewares = vec!["forward".into()];
     }
 
     #[tokio::test]

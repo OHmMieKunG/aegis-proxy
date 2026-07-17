@@ -679,6 +679,26 @@ pub enum MiddlewareConfig {
         #[serde(default = "default_auth_timeout_secs")]
         timeout_secs: u64,
     },
+    /// Fail-closed authentication subrequest to a configured HTTP upstream.
+    ForwardAuth {
+        /// Existing HTTP-family upstream group used only for authentication.
+        upstream_group: String,
+        /// Canonical authentication endpoint path.
+        path: String,
+        /// Client headers explicitly copied to the authentication request.
+        #[serde(default)]
+        request_headers: Vec<String>,
+        /// Authentication response headers copied to the application request.
+        response_headers: Vec<String>,
+        /// Required response header used as the bounded principal identifier.
+        principal_header: String,
+        /// Exact hosts allowed in authentication redirects. Relative redirects remain allowed.
+        #[serde(default)]
+        redirect_hosts: Vec<String>,
+        /// Complete authentication subrequest deadline in seconds.
+        #[serde(default = "default_forward_auth_timeout_secs")]
+        timeout_secs: u64,
+    },
     /// Post-authentication path rewrite. Query parameters are preserved.
     Rewrite {
         /// Optional segment-aware prefix to replace. Omit for an exact replacement.
@@ -734,6 +754,10 @@ fn default_auth_verifications() -> usize {
 
 fn default_auth_timeout_secs() -> u64 {
     5
+}
+
+fn default_forward_auth_timeout_secs() -> u64 {
+    3
 }
 
 /// HTTP route.
@@ -1398,6 +1422,37 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                         )));
                     }
                 }
+                MiddlewareConfig::ForwardAuth { upstream_group, .. } => {
+                    authentication += 1;
+                    if route.listeners.iter().any(|listener| {
+                        listener_protocols.get(listener.as_str()).copied() != Some("https")
+                    }) {
+                        return Err(ConfigError::Invalid(format!(
+                            "route {} applies ForwardAuth to a non-HTTPS listener",
+                            route.id
+                        )));
+                    }
+                    let Some(group) = config
+                        .upstream_groups
+                        .iter()
+                        .find(|group| group.id == *upstream_group)
+                    else {
+                        return Err(ConfigError::Invalid(format!(
+                            "route {} ForwardAuth references unknown upstream group {}",
+                            route.id, upstream_group
+                        )));
+                    };
+                    if group
+                        .endpoints
+                        .iter()
+                        .any(|endpoint| endpoint.url.scheme() == "tcp")
+                    {
+                        return Err(ConfigError::Invalid(format!(
+                            "route {} ForwardAuth requires an HTTP-family upstream group",
+                            route.id
+                        )));
+                    }
+                }
                 MiddlewareConfig::Rewrite { .. } => rewrites += 1,
                 MiddlewareConfig::HeaderMutation { .. } => header_mutations += 1,
             }
@@ -1681,6 +1736,50 @@ fn validate_middleware(id: &str, middleware: &MiddlewareConfig) -> Result<(), Co
                 }
             }
         }
+        MiddlewareConfig::ForwardAuth {
+            upstream_group,
+            path,
+            request_headers,
+            response_headers,
+            principal_header,
+            redirect_hosts,
+            timeout_secs,
+        } => {
+            valid_id(upstream_group)?;
+            validate_rewrite_path(id, path, false)?;
+            if request_headers.len() > 32
+                || response_headers.is_empty()
+                || response_headers.len() > 32
+                || redirect_hosts.len() > 16
+                || !(1..=10).contains(timeout_secs)
+            {
+                return Err(ConfigError::Invalid(format!(
+                    "middleware {id} ForwardAuth policy exceeds safe bounds"
+                )));
+            }
+            validate_forward_auth_headers(id, "request", request_headers, true)?;
+            validate_forward_auth_headers(id, "response", response_headers, false)?;
+            let principal = validate_forward_auth_header(id, "principal", principal_header, false)?;
+            if !principal.starts_with("x-")
+                || !response_headers.iter().any(|name| name == principal)
+            {
+                return Err(ConfigError::Invalid(format!(
+                    "middleware {id} ForwardAuth principal_header must be response-allowlisted"
+                )));
+            }
+            let mut hosts = HashSet::new();
+            for host in redirect_hosts {
+                if host.starts_with("*.")
+                    || host != &host.to_ascii_lowercase()
+                    || !hosts.insert(host.as_str())
+                {
+                    return Err(ConfigError::Invalid(format!(
+                        "middleware {id} has an unsafe or duplicate ForwardAuth redirect host"
+                    )));
+                }
+                valid_certificate_host(host)?;
+            }
+        }
         MiddlewareConfig::Rewrite { from_prefix, to } => {
             validate_rewrite_path(id, to, from_prefix.is_some())?;
             if let Some(from_prefix) = from_prefix {
@@ -1892,11 +1991,79 @@ fn prohibited_mutation_header(name: &HeaderName, request: bool) -> bool {
             | "x-aegisproxy-user"
             | "x-forwarded-for"
             | "x-forwarded-host"
+            | "x-forwarded-method"
             | "x-forwarded-port"
             | "x-forwarded-proto"
+            | "x-forwarded-uri"
+            | "x-original-uri"
             | "x-real-ip"
             | "x-request-id"
     ) || (!request && name.as_str() == "www-authenticate")
+}
+
+fn validate_forward_auth_headers(
+    id: &str,
+    field: &str,
+    values: &[String],
+    request: bool,
+) -> Result<(), ConfigError> {
+    let mut unique = HashSet::new();
+    for value in values {
+        let name = validate_forward_auth_header(id, field, value, request)?;
+        if !unique.insert(name) {
+            return Err(ConfigError::Invalid(format!(
+                "middleware {id} has duplicate ForwardAuth {field} headers"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_forward_auth_header<'a>(
+    id: &str,
+    field: &str,
+    value: &'a str,
+    request: bool,
+) -> Result<&'a str, ConfigError> {
+    let name = HeaderName::from_bytes(value.as_bytes()).map_err(|_| {
+        ConfigError::Invalid(format!(
+            "middleware {id} has an invalid ForwardAuth {field} header"
+        ))
+    })?;
+    let forbidden = matches!(
+        name.as_str(),
+        "connection"
+            | "content-encoding"
+            | "content-length"
+            | "forwarded"
+            | "host"
+            | "keep-alive"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+            | "proxy-connection"
+            | "set-cookie"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
+            | "upgrade"
+            | "x-aegisproxy-user"
+            | "x-forwarded-for"
+            | "x-forwarded-host"
+            | "x-forwarded-method"
+            | "x-forwarded-port"
+            | "x-forwarded-proto"
+            | "x-forwarded-uri"
+            | "x-original-uri"
+            | "x-real-ip"
+            | "x-request-id"
+    ) || (request && name.as_str().starts_with("x-authentik-"))
+        || (!request && matches!(name.as_str(), "cookie" | "www-authenticate"));
+    if value.len() > MAX_HEADER_NAME_BYTES || name.as_str() != value || forbidden {
+        return Err(ConfigError::Invalid(format!(
+            "middleware {id} cannot use protected ForwardAuth {field} header {value}"
+        )));
+    }
+    Ok(value)
 }
 
 fn validate_acme<'a>(
@@ -3233,6 +3400,38 @@ mod tests {
         config.middlewares.insert("basic".into(), policy);
         let mut route = test_route();
         route.middlewares = vec!["basic".into()];
+        config.routes.push(route);
+        assert!(validate(&config).is_err());
+    }
+
+    #[test]
+    fn validates_forward_auth_header_contract_and_requires_https() {
+        let policy = MiddlewareConfig::ForwardAuth {
+            upstream_group: "auth".into(),
+            path: "/outpost.goauthentik.io/auth/traefik".into(),
+            request_headers: vec!["authorization".into(), "cookie".into()],
+            response_headers: vec!["x-authentik-username".into(), "x-authentik-email".into()],
+            principal_header: "x-authentik-username".into(),
+            redirect_hosts: vec!["auth.example.test".into()],
+            timeout_secs: 3,
+        };
+        validate_middleware("forward", &policy).expect("ForwardAuth policy");
+        let spoofable = MiddlewareConfig::ForwardAuth {
+            upstream_group: "auth".into(),
+            path: "/auth".into(),
+            request_headers: vec!["x-authentik-username".into()],
+            response_headers: vec!["x-authentik-username".into()],
+            principal_header: "x-authentik-username".into(),
+            redirect_hosts: vec![],
+            timeout_secs: 3,
+        };
+        assert!(validate_middleware("forward", &spoofable).is_err());
+
+        let mut config = base_config();
+        add_http_upstream(&mut config);
+        config.middlewares.insert("forward".into(), policy);
+        let mut route = test_route();
+        route.middlewares = vec!["forward".into()];
         config.routes.push(route);
         assert!(validate(&config).is_err());
     }

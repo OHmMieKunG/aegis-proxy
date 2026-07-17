@@ -55,6 +55,20 @@ pub(crate) fn normalize_forwarding_headers(
     for name in FORWARDED_HEADERS {
         headers.remove(name);
     }
+    let internal_headers: Vec<_> = headers
+        .keys()
+        .filter(|name| {
+            name.as_str().starts_with("x-authentik-")
+                || matches!(
+                    name.as_str(),
+                    "x-original-uri" | "x-forwarded-method" | "x-forwarded-uri"
+                )
+        })
+        .cloned()
+        .collect();
+    for name in internal_headers {
+        headers.remove(name);
+    }
     let context = RequestContext {
         ip: client_ip,
         request_id,
@@ -192,6 +206,11 @@ mod tests {
             "x-request-id",
             HeaderValue::from_static("client-controlled"),
         );
+        headers.insert(
+            "x-authentik-username",
+            HeaderValue::from_static("spoofed-admin"),
+        );
+        headers.insert("x-original-uri", HeaderValue::from_static("/spoofed"));
         let identity = normalize_forwarding_headers(
             &mut headers,
             "203.0.113.5".parse().expect("IP"),
@@ -205,6 +224,8 @@ mod tests {
         assert_eq!(headers["x-forwarded-for"], "203.0.113.5");
         assert_eq!(headers["x-request-id"].as_bytes().len(), 32);
         assert_ne!(headers["x-request-id"], "client-controlled");
+        assert!(!headers.contains_key("x-authentik-username"));
+        assert!(!headers.contains_key("x-original-uri"));
     }
 
     #[test]
