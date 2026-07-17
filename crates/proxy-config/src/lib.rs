@@ -781,11 +781,18 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             "trusted_proxies exceeds configured CIDR or hop bounds".into(),
         ));
     }
-    if !config.trusted_proxies.cidrs.is_empty() || config.trusted_proxies.trusted_hops != 0 {
+    if config.trusted_proxies.cidrs.is_empty() != (config.trusted_proxies.trusted_hops == 0) {
         return Err(ConfigError::Invalid(
-            "trusted proxy reconstruction is not activated yet; inbound forwarding headers remain stripped"
-                .into(),
+            "trusted_proxies cidrs and trusted_hops must be configured together".into(),
         ));
+    }
+    let mut trusted_cidrs = HashSet::new();
+    for cidr in &config.trusted_proxies.cidrs {
+        if !trusted_cidrs.insert(cidr) {
+            return Err(ConfigError::Invalid(
+                "trusted_proxies contains a duplicate CIDR".into(),
+            ));
+        }
     }
     if !matches!(config.tls.minimum_version.as_str(), "1.2" | "1.3") {
         return Err(ConfigError::Invalid(
@@ -2410,12 +2417,24 @@ mod tests {
     }
 
     #[test]
-    fn refuses_configured_features_before_runtime_support() {
+    fn activates_only_complete_bounded_trusted_proxy_policy() {
         let mut config = base_config();
         config.trusted_proxies.cidrs = vec!["127.0.0.1/32".parse().expect("CIDR")];
         config.trusted_proxies.trusted_hops = 1;
-        assert!(validate(&config).is_err());
+        validate(&config).expect("complete trusted proxy policy");
 
+        config.trusted_proxies.trusted_hops = 0;
+        assert!(validate(&config).is_err());
+        config.trusted_proxies.trusted_hops = 1;
+        config
+            .trusted_proxies
+            .cidrs
+            .push("127.0.0.1/32".parse().expect("CIDR"));
+        assert!(validate(&config).is_err());
+    }
+
+    #[test]
+    fn refuses_middleware_before_runtime_support() {
         let mut config = base_config();
         config.middlewares.insert(
             "headers".into(),

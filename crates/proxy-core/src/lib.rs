@@ -3,6 +3,7 @@
 //! Data-plane HTTP forwarding primitives.
 
 mod acme_manager;
+mod middleware;
 mod route;
 mod runtime;
 mod tcp;
@@ -55,6 +56,8 @@ use tokio_util::task::TaskTracker;
 use upstream::{
     DnsEndpoint, GuardedBody, PolicyResolver, UpstreamPool, prepare_dns, start_dns_refreshes,
 };
+
+use middleware::normalize::{normalize_forwarding_headers, rebuild_forwarding_headers};
 
 pub use route::RouteIndex;
 use route::{PathError, canonical_host, canonicalize_request_path, request_host};
@@ -1054,17 +1057,43 @@ impl PinnedProxyService {
                 return error_response(StatusCode::BAD_REQUEST, "request path is not canonical\n");
             }
         }
-        if self
-            .tls_server_name
-            .as_deref()
-            .is_some_and(|server_name| match request_host(&request) {
-                Ok(host) => match canonical_host(server_name) {
-                    Ok(server_name) => host != server_name,
-                    Err(()) => true,
-                },
+        let host = match request_host(&request) {
+            Ok(host) => host,
+            Err(()) => return error_response(StatusCode::BAD_REQUEST, "invalid authority\n"),
+        };
+        let Some(listener) = self
+            .config
+            .listeners
+            .iter()
+            .find(|listener| listener.id == self.listener_id)
+        else {
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, "listener unavailable\n");
+        };
+        let scheme = if listener.protocol == "https" {
+            "https"
+        } else {
+            "http"
+        };
+        let identity = match normalize_forwarding_headers(
+            request.headers_mut(),
+            self.peer.ip(),
+            &self.config.trusted_proxies,
+            scheme,
+            &host,
+            listener.bind.port(),
+        ) {
+            Ok(identity) => identity,
+            Err(_) => {
+                return error_response(StatusCode::BAD_REQUEST, "invalid forwarding headers\n");
+            }
+        };
+        request.extensions_mut().insert(identity);
+        if self.tls_server_name.as_deref().is_some_and(|server_name| {
+            match canonical_host(server_name) {
+                Ok(server_name) => host != server_name,
                 Err(()) => true,
-            })
-        {
+            }
+        }) {
             return error_response(
                 StatusCode::MISDIRECTED_REQUEST,
                 "authority does not match TLS server name\n",
@@ -1136,16 +1165,16 @@ impl PinnedProxyService {
         let request_path = parts.uri.path().to_owned();
         let request_query = parts.uri.query().map(str::to_owned);
         strip_hop_by_hop_headers(&mut parts.headers, websocket, preserve_te_trailers);
-        for name in [
-            "forwarded",
-            "x-forwarded-for",
-            "x-forwarded-host",
-            "x-forwarded-proto",
-            "x-forwarded-port",
-            "x-real-ip",
-            "x-request-id",
-        ] {
-            parts.headers.remove(name);
+        if rebuild_forwarding_headers(
+            &mut parts.headers,
+            identity.ip,
+            scheme,
+            &host,
+            listener.bind.port(),
+        )
+        .is_err()
+        {
+            return error_response(StatusCode::BAD_REQUEST, "invalid forwarding headers\n");
         }
         let retryable_method = is_idempotent_retry_method(&parts.method);
         let body_size = hyper::body::Body::size_hint(&body).exact();
@@ -2722,6 +2751,63 @@ mod tests {
         assert!(response.starts_with(b"HTTP/1.1 200 OK"));
         assert!(response.ends_with(b"ok"));
         task.await.expect("proxy task").expect("proxy run");
+        upstream_task.await.expect("upstream task");
+    }
+
+    #[tokio::test]
+    async fn trusted_proxy_headers_are_rebuilt_before_upstream() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        use tokio::sync::oneshot;
+
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("upstream bind");
+        let upstream_addr = upstream.local_addr().expect("upstream address");
+        let (captured_tx, captured_rx) = oneshot::channel();
+        let upstream_task = tokio::spawn(async move {
+            let (mut stream, _) = upstream.accept().await.expect("upstream accept");
+            let mut request = vec![0_u8; 4096];
+            let count = stream.read(&mut request).await.expect("upstream read");
+            captured_tx
+                .send(String::from_utf8(request[..count].to_vec()).expect("request text"))
+                .expect("capture request");
+            stream
+                .write_all(b"HTTP/1.1 204 No Content\r\nconnection: close\r\n\r\n")
+                .await
+                .expect("upstream write");
+        });
+        let (proxy_addr, shutdown, proxy_task) = start_test_proxy(upstream_addr, |config| {
+            config.trusted_proxies = TrustedProxyConfig {
+                cidrs: vec!["127.0.0.1/32".parse().expect("CIDR")],
+                trusted_hops: 1,
+            };
+        })
+        .await;
+        let mut client = connect_to_proxy(proxy_addr).await;
+        client
+            .write_all(
+                b"GET / HTTP/1.1\r\nHost: example.test\r\nX-Forwarded-For: 198.51.100.9\r\nForwarded: for=malicious\r\nX-Forwarded-Host: malicious.test\r\nX-Request-Id: malicious\r\nConnection: close, x-forwarded-for\r\n\r\n",
+            )
+            .await
+            .expect("client write");
+        let request = captured_rx.await.expect("captured request");
+        assert!(request.contains("x-forwarded-for: 198.51.100.9\r\n"));
+        assert!(request.contains("x-real-ip: 198.51.100.9\r\n"));
+        assert!(request.contains("x-forwarded-host: example.test\r\n"));
+        assert!(request.contains("x-forwarded-proto: http\r\n"));
+        assert!(
+            request.contains("forwarded: for=198.51.100.9;proto=http;host=\"example.test\"\r\n")
+        );
+        assert!(!request.contains("malicious"));
+        shutdown.cancel();
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("client read");
+        assert!(response.starts_with(b"HTTP/1.1 204 No Content"));
+        proxy_task.await.expect("proxy task").expect("proxy run");
         upstream_task.await.expect("upstream task");
     }
 
