@@ -1145,6 +1145,24 @@ impl PinnedProxyService {
         else {
             return error_response(StatusCode::NOT_FOUND, "no matching route\n");
         };
+        match middleware::redirect::response(&self.config, route, request.uri().query()) {
+            Ok(Some(mut response)) => {
+                if middleware::headers::apply(&self.config, route, scheme, &mut response).is_err() {
+                    return error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "middleware response failed\n",
+                    );
+                }
+                return response;
+            }
+            Ok(None) => {}
+            Err(()) => {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "redirect response failed\n",
+                );
+            }
+        }
         let Some(group_id) = route.upstream_group.as_deref() else {
             return error_response(StatusCode::BAD_GATEWAY, "route has no upstream\n");
         };
@@ -1311,6 +1329,14 @@ impl PinnedProxyService {
                         strip_hop_by_hop_headers(response.headers_mut(), false, false);
                         Some(selected)
                     };
+                    if middleware::headers::apply(&self.config, route, scheme, &mut response)
+                        .is_err()
+                    {
+                        return error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "middleware response failed\n",
+                        );
+                    }
                     return response.map(|body| {
                         let body = body.map_err(|error| Box::new(error) as BoxError);
                         match body_guard {
@@ -1523,7 +1549,8 @@ mod tests {
     use super::*;
     use aegisproxy_config::{
         AdminConfig, BalancingAlgorithm, CertificateConfig, Config, EndpointConfig, LimitsConfig,
-        ListenerConfig, RouteConfig, RuntimeConfig, TrustedProxyConfig, UpstreamGroupConfig,
+        ListenerConfig, MiddlewareConfig, RouteConfig, RuntimeConfig, TrustedProxyConfig,
+        UpstreamGroupConfig,
     };
     use http_body_util::Empty;
     use std::collections::BTreeMap;
@@ -2810,6 +2837,52 @@ mod tests {
         assert!(response.starts_with(b"HTTP/1.1 204 No Content"));
         proxy_task.await.expect("proxy task").expect("proxy run");
         upstream_task.await.expect("upstream task");
+    }
+
+    #[tokio::test]
+    async fn redirect_terminal_never_dials_upstream() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("upstream bind");
+        let upstream_addr = upstream.local_addr().expect("upstream address");
+        let (proxy_addr, shutdown, proxy_task) = start_test_proxy(upstream_addr, |config| {
+            config.middlewares.insert(
+                "redirect".into(),
+                MiddlewareConfig::Redirect {
+                    location: "/maintenance".into(),
+                    status: 307,
+                    preserve_query: true,
+                },
+            );
+            config.routes[0].middlewares = vec!["redirect".into()];
+            config.routes[0].upstream_group = None;
+        })
+        .await;
+        let mut client = connect_to_proxy(proxy_addr).await;
+        client
+            .write_all(
+                b"GET /old?page=2 HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .expect("client write");
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("client read");
+        let response = String::from_utf8(response).expect("response text");
+        assert!(response.starts_with("HTTP/1.1 307 Temporary Redirect\r\n"));
+        assert!(response.contains("location: /maintenance?page=2\r\n"));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), upstream.accept())
+                .await
+                .is_err()
+        );
+        shutdown.cancel();
+        proxy_task.await.expect("proxy task").expect("proxy run");
     }
 
     #[tokio::test]

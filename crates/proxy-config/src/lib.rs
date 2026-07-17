@@ -14,7 +14,7 @@ use std::{
 };
 
 use aegisproxy_secrets::{SecretRef, validate_age_recipient};
-use http::{HeaderName, HeaderValue, Method};
+use http::{HeaderName, HeaderValue, Method, Uri};
 use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -619,6 +619,12 @@ pub enum MiddlewareConfig {
         hsts: Option<String>,
         /// Content-Security-Policy value.
         content_security_policy: Option<String>,
+        /// Replace an upstream value instead of preserving it.
+        #[serde(default)]
+        override_existing: bool,
+        /// Explicit acknowledgement for HSTS subdomain/preload persistence.
+        #[serde(default)]
+        acknowledge_hsts_risk: bool,
     },
     /// Edge request rate limit.
     RateLimit {
@@ -633,6 +639,9 @@ pub enum MiddlewareConfig {
         location: String,
         /// HTTP redirect status.
         status: u16,
+        /// Append the original query when the fixed target has no query.
+        #[serde(default)]
+        preserve_query: bool,
     },
 }
 
@@ -769,10 +778,9 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             "middlewares exceeds {MAX_MIDDLEWARES} entries"
         )));
     }
-    if !config.middlewares.is_empty() {
-        return Err(ConfigError::Invalid(
-            "middlewares are not activated until Phase 7; refusing silent no-op policy".into(),
-        ));
+    for (id, middleware) in &config.middlewares {
+        valid_id(id)?;
+        validate_middleware(id, middleware)?;
     }
     if config.trusted_proxies.cidrs.len() > MAX_TRUSTED_PROXY_CIDRS
         || config.trusted_proxies.trusted_hops > 32
@@ -1189,13 +1197,11 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             )));
         }
         validate_route_matchers(route)?;
-        if route.upstream_group.is_none() {
-            return Err(ConfigError::Invalid(format!(
-                "route {} has no upstream_group",
-                route.id
-            )));
-        }
-        if !group_ids.contains(route.upstream_group.as_deref().unwrap_or_default()) {
+        if route
+            .upstream_group
+            .as_deref()
+            .is_some_and(|group| !group_ids.contains(group))
+        {
             return Err(ConfigError::Invalid(format!(
                 "routes[{route_index}].upstream_group references unknown upstream"
             )));
@@ -1227,14 +1233,22 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             }
             route_protocol = Some(family);
         }
-        let upstream_is_tcp = group_is_tcp
-            .get(route.upstream_group.as_deref().unwrap_or_default())
+        let upstream_is_tcp = route
+            .upstream_group
+            .as_deref()
+            .and_then(|group| group_is_tcp.get(group))
             .copied()
             .unwrap_or(false);
         match route_protocol {
-            Some("http") if upstream_is_tcp => {
+            Some("http") if route.upstream_group.is_some() && upstream_is_tcp => {
                 return Err(ConfigError::Invalid(format!(
                     "route {} uses a TCP upstream on an HTTP-family listener",
+                    route.id
+                )));
+            }
+            Some("tcp") | Some("tls_passthrough") if route.upstream_group.is_none() => {
+                return Err(ConfigError::Invalid(format!(
+                    "route {} requires a TCP upstream",
                     route.id
                 )));
             }
@@ -1249,13 +1263,57 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             _ => {}
         }
         validate_unique_strings(&route.id, "middleware", &route.middlewares)?;
+        let mut redirects = 0_usize;
+        let mut security_headers = 0_usize;
         for middleware in &route.middlewares {
-            if !config.middlewares.contains_key(middleware) {
+            let Some(definition) = config.middlewares.get(middleware) else {
                 return Err(ConfigError::Invalid(format!(
                     "route {} references unknown middleware {}",
                     route.id, middleware
                 )));
+            };
+            match definition {
+                MiddlewareConfig::Redirect { .. } => redirects += 1,
+                MiddlewareConfig::SecurityHeaders { hsts, .. } => {
+                    security_headers += 1;
+                    if hsts.is_some()
+                        && route.listeners.iter().any(|listener| {
+                            listener_protocols.get(listener.as_str()).copied() != Some("https")
+                        })
+                    {
+                        return Err(ConfigError::Invalid(format!(
+                            "route {} applies HSTS to a non-HTTPS listener",
+                            route.id
+                        )));
+                    }
+                }
+                MiddlewareConfig::RateLimit { .. } => {
+                    return Err(ConfigError::Invalid(format!(
+                        "route {} references rate limiting before runtime support",
+                        route.id
+                    )));
+                }
             }
+        }
+        if redirects > 1 || security_headers > 1 {
+            return Err(ConfigError::Invalid(format!(
+                "route {} contains an ambiguous duplicate middleware stage",
+                route.id
+            )));
+        }
+        if (route.upstream_group.is_some(), redirects) != (true, 0)
+            && (route.upstream_group.is_some(), redirects) != (false, 1)
+        {
+            return Err(ConfigError::Invalid(format!(
+                "route {} must select exactly one proxy or redirect terminal action",
+                route.id
+            )));
+        }
+        if redirects == 1 && route_protocol != Some("http") {
+            return Err(ConfigError::Invalid(format!(
+                "route {} uses redirect outside an HTTP-family listener",
+                route.id
+            )));
         }
     }
     conflict::validate_route_conflicts(&config.routes)?;
@@ -1280,6 +1338,130 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             }
             _ => {}
         }
+    }
+    Ok(())
+}
+
+fn validate_middleware(id: &str, middleware: &MiddlewareConfig) -> Result<(), ConfigError> {
+    match middleware {
+        MiddlewareConfig::SecurityHeaders {
+            hsts,
+            content_security_policy,
+            acknowledge_hsts_risk,
+            ..
+        } => {
+            if hsts.is_none() && content_security_policy.is_none() {
+                return Err(ConfigError::Invalid(format!(
+                    "middleware {id} has no security headers"
+                )));
+            }
+            if let Some(value) = hsts {
+                validate_header_value(id, "hsts", value)?;
+                let mut max_age = None;
+                let mut persistent = false;
+                for directive in value.split(';').map(str::trim) {
+                    if let Some(value) = directive
+                        .to_ascii_lowercase()
+                        .strip_prefix("max-age=")
+                        .map(str::to_owned)
+                    {
+                        if max_age.replace(value).is_some() {
+                            return Err(ConfigError::Invalid(format!(
+                                "middleware {id} repeats HSTS max-age"
+                            )));
+                        }
+                    } else if directive.eq_ignore_ascii_case("includesubdomains")
+                        || directive.eq_ignore_ascii_case("preload")
+                    {
+                        persistent = true;
+                    } else {
+                        return Err(ConfigError::Invalid(format!(
+                            "middleware {id} contains an unsupported HSTS directive"
+                        )));
+                    }
+                }
+                if max_age
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .filter(|seconds| *seconds <= 63_072_000)
+                    .is_none()
+                {
+                    return Err(ConfigError::Invalid(format!(
+                        "middleware {id} HSTS requires max-age within 0..=63072000"
+                    )));
+                }
+                if persistent && !acknowledge_hsts_risk {
+                    return Err(ConfigError::Invalid(format!(
+                        "middleware {id} must acknowledge HSTS subdomain/preload risk"
+                    )));
+                }
+            }
+            if let Some(value) = content_security_policy {
+                validate_header_value(id, "content_security_policy", value)?;
+            }
+        }
+        MiddlewareConfig::RateLimit {
+            requests_per_second,
+            burst,
+        } => {
+            if !(1..=1_000_000).contains(requests_per_second) || !(1..=1_000_000).contains(burst) {
+                return Err(ConfigError::Invalid(format!(
+                    "middleware {id} rate limit is outside safe bounds"
+                )));
+            }
+        }
+        MiddlewareConfig::Redirect {
+            location,
+            status,
+            preserve_query,
+        } => {
+            if !matches!(*status, 301 | 302 | 303 | 307 | 308) {
+                return Err(ConfigError::Invalid(format!(
+                    "middleware {id} has an invalid redirect status"
+                )));
+            }
+            validate_header_value(id, "location", location)?;
+            if let Ok(url) = Url::parse(location) {
+                if !matches!(url.scheme(), "http" | "https")
+                    || url.host_str().is_none()
+                    || !url.username().is_empty()
+                    || url.password().is_some()
+                    || url.fragment().is_some()
+                    || (*preserve_query && url.query().is_some())
+                {
+                    return Err(ConfigError::Invalid(format!(
+                        "middleware {id} has an unsafe absolute redirect"
+                    )));
+                }
+            } else {
+                let uri = location.parse::<Uri>().map_err(|_| {
+                    ConfigError::Invalid(format!(
+                        "middleware {id} has an invalid relative redirect"
+                    ))
+                })?;
+                if !uri.path().starts_with('/')
+                    || uri.path().starts_with("//")
+                    || uri.scheme().is_some()
+                    || uri.authority().is_some()
+                    || (*preserve_query && uri.query().is_some())
+                {
+                    return Err(ConfigError::Invalid(format!(
+                        "middleware {id} has an unsafe relative redirect"
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_header_value(id: &str, field: &str, value: &str) -> Result<(), ConfigError> {
+    if value.is_empty()
+        || value.len() > MAX_HEADER_VALUE_BYTES
+        || HeaderValue::from_str(value).is_err()
+    {
+        return Err(ConfigError::Invalid(format!(
+            "middleware {id} has an invalid {field} header value"
+        )));
     }
     Ok(())
 }
@@ -2434,15 +2616,77 @@ mod tests {
     }
 
     #[test]
-    fn refuses_middleware_before_runtime_support() {
+    fn rejects_empty_security_header_middleware() {
         let mut config = base_config();
         config.middlewares.insert(
             "headers".into(),
             MiddlewareConfig::SecurityHeaders {
                 hsts: None,
                 content_security_policy: None,
+                override_existing: false,
+                acknowledge_hsts_risk: false,
             },
         );
+        assert!(validate(&config).is_err());
+    }
+
+    #[test]
+    fn validates_safe_redirect_and_hsts_policies() {
+        let redirect = MiddlewareConfig::Redirect {
+            location: "/maintenance".into(),
+            status: 307,
+            preserve_query: true,
+        };
+        validate_middleware("redirect", &redirect).expect("safe redirect");
+        let unsafe_redirect = MiddlewareConfig::Redirect {
+            location: "//attacker.test".into(),
+            status: 307,
+            preserve_query: false,
+        };
+        assert!(validate_middleware("redirect", &unsafe_redirect).is_err());
+
+        let hsts = MiddlewareConfig::SecurityHeaders {
+            hsts: Some("max-age=31536000; includeSubDomains".into()),
+            content_security_policy: None,
+            override_existing: false,
+            acknowledge_hsts_risk: false,
+        };
+        assert!(validate_middleware("headers", &hsts).is_err());
+        let acknowledged = MiddlewareConfig::SecurityHeaders {
+            hsts: Some("max-age=31536000; includeSubDomains".into()),
+            content_security_policy: None,
+            override_existing: false,
+            acknowledge_hsts_risk: true,
+        };
+        validate_middleware("headers", &acknowledged).expect("acknowledged HSTS");
+    }
+
+    #[test]
+    fn redirect_is_an_exclusive_terminal_action() {
+        let mut config = base_config();
+        config.middlewares.insert(
+            "redirect".into(),
+            MiddlewareConfig::Redirect {
+                location: "/maintenance".into(),
+                status: 307,
+                preserve_query: false,
+            },
+        );
+        config.routes.push(RouteConfig {
+            id: "redirect".into(),
+            listeners: vec!["public".into()],
+            hosts: vec![],
+            paths: vec![],
+            path_prefixes: vec![],
+            methods: vec![],
+            headers: vec![],
+            default: true,
+            priority: 0,
+            middlewares: vec!["redirect".into()],
+            upstream_group: None,
+        });
+        validate(&config).expect("redirect terminal");
+        config.routes[0].middlewares.clear();
         assert!(validate(&config).is_err());
     }
 

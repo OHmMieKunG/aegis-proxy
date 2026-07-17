@@ -395,9 +395,7 @@ fn route_fingerprint(routes: &[RouteConfig]) -> u64 {
         hash.set("header", &headers);
         hash.field("default", if route.default { "true" } else { "false" });
         hash.field("priority", &route.priority.to_string());
-        for middleware in &route.middlewares {
-            hash.field("middleware", middleware);
-        }
+        hash.set("middleware", &route.middlewares);
         hash.field(
             "upstream",
             route.upstream_group.as_deref().unwrap_or("<none>"),
@@ -597,9 +595,11 @@ mod tests {
     fn route_order_and_fingerprint_ignore_declaration_and_set_order() {
         let mut first = route("b");
         first.hosts = vec!["b.example.test".into(), "a.example.test".into()];
+        first.middlewares = vec!["headers".into(), "redirect".into()];
         let second = route("a");
         let left = config(vec![first.clone(), second.clone()]);
         first.hosts.reverse();
+        first.middlewares.reverse();
         let right = config(vec![second, first]);
         let left_index = RouteIndex::compile(&left);
         let right_index = RouteIndex::compile(&right);
