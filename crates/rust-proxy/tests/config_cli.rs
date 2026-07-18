@@ -65,6 +65,7 @@ fn shipped_valid_and_invalid_corpus_has_expected_result() {
             .output()
             .expect("run validator");
         assert!(!output.status.success(), "invalid fixture passed: {path}");
+        assert_eq!(output.status.code(), Some(3), "wrong invalid-config code");
     }
 }
 
@@ -80,8 +81,22 @@ fn last_known_good_requires_explicit_state_directory() {
         .output()
         .expect("run recovery argument validation");
     assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(2));
     let error = String::from_utf8(output.stderr).expect("stderr UTF-8");
     assert!(error.contains("--state-dir"));
+}
+
+#[test]
+fn unavailable_private_socket_has_stable_exit_code() {
+    let output = Command::new(env!("CARGO_BIN_EXE_rust-proxy"))
+        .args([
+            "health",
+            "--socket",
+            "/tmp/aegisproxy-test-does-not-exist/admin.sock",
+        ])
+        .output()
+        .expect("run health");
+    assert_eq!(output.status.code(), Some(6));
 }
 
 #[test]

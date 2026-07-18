@@ -2328,15 +2328,23 @@ dependencies = [
  "aegisproxy-admin",
  "aegisproxy-config",
  "aegisproxy-core",
+ "aegisproxy-secrets",
  "aegisproxy-tls",
  "age",
+ "bytes",
  "clap",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "rcgen",
+ "serde",
+ "serde_json",
  "tokio",
  "tokio-util",
  "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
+ "zeroize",
 ]
 
 [[package]]
