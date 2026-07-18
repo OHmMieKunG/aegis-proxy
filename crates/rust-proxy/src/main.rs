@@ -159,9 +159,12 @@ async fn main() -> Result<(), BoxError> {
                 let state_dir = state_dir.ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidInput, "--state-dir is required")
                 })?;
-                aegisproxy_core::run_last_known_good(config, state_dir, cancel).await?;
+                aegisproxy_core::run_last_known_good_with_control(
+                    config, state_dir, cancel, run_admin,
+                )
+                .await?;
             } else {
-                aegisproxy_core::run_managed(config, cancel).await?;
+                aegisproxy_core::run_managed_with_control(config, cancel, run_admin).await?;
             }
         }
         Command::Config { command } => {
@@ -174,6 +177,12 @@ async fn main() -> Result<(), BoxError> {
         }
     }
     Ok(())
+}
+
+async fn run_admin(control: aegisproxy_core::ManagedControl, shutdown: CancellationToken) {
+    if let Err(error) = aegisproxy_admin::serve(control, shutdown).await {
+        tracing::error!(%error, "administrative service stopped");
+    }
 }
 
 fn run_config_command(command: ConfigCommand) -> Result<(), BoxError> {
