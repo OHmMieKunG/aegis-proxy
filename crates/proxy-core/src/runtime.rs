@@ -6,6 +6,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    time::Instant,
 };
 
 use aegisproxy_config::{
@@ -298,6 +299,17 @@ impl RuntimeHandle {
 
     /// Encode process metrics using OpenMetrics text exposition.
     pub fn render_openmetrics(&self) -> Result<String, fmt::Error> {
+        let snapshot = self.current.load();
+        for (upstream, pool) in snapshot.upstream_pools.iter() {
+            for endpoint in pool.endpoints() {
+                self.telemetry.update_upstream_state(
+                    upstream,
+                    &endpoint.config().id,
+                    endpoint.active(),
+                    endpoint.healthy(),
+                );
+            }
+        }
         self.telemetry.render()
     }
 
@@ -309,6 +321,11 @@ impl RuntimeHandle {
     /// Record one bounded durable administrative-audit outcome.
     pub fn record_audit_operation(&self, outcome: &'static str) {
         self.telemetry.audit_operation(outcome);
+    }
+
+    /// Record a bounded certificate automation outcome.
+    pub fn record_certificate_renewal(&self, certificate: &str, outcome: &'static str) {
+        self.telemetry.certificate_renewal(certificate, outcome);
     }
 
     /// Return the process-wide HTTP-01 registry retained across configuration reloads.
@@ -457,14 +474,16 @@ impl ActivationCoordinator {
         candidate_id: &str,
         expected_active: Option<&str>,
     ) -> Result<ActivationResult, ActivationError> {
+        let started = Instant::now();
         let result = self
             .activate_with_probe(candidate_id, expected_active, async { true })
             .await;
-        self.runtime.telemetry().reload(if result.is_ok() {
-            "success"
-        } else {
-            "rejected"
-        });
+        let outcome = match &result {
+            Ok(_) => "success",
+            Err(ActivationError::Probation) => "rolled_back",
+            Err(_) => "rejected",
+        };
+        self.runtime.telemetry().reload(outcome, started.elapsed());
         result
     }
 

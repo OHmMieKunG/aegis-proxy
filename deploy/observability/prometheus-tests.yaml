@@ -24,6 +24,8 @@ tests:
         values: '0x20'
       - series: 'aegisproxy_upstream_attempts_total{upstream="app",outcome="connect_error"}'
         values: '0+10x20'
+      - series: 'aegisproxy_upstream_healthy{upstream="app",endpoint="app-1"}'
+        values: '0x20'
     alert_rule_test:
       - eval_time: 15m
         alertname: AegisProxyHighErrorRatio
@@ -31,10 +33,10 @@ tests:
           - exp_labels: {severity: warning}
             exp_annotations: {summary: AegisProxy HTTP 5xx ratio exceeds 5 percent}
       - eval_time: 10m
-        alertname: AegisProxyNoSuccessfulUpstream
+        alertname: AegisProxyNoHealthyUpstream
         exp_alerts:
           - exp_labels: {upstream: app, severity: critical}
-            exp_annotations: {summary: A configured upstream group has attempts but no successes}
+            exp_annotations: {summary: A configured upstream group has no healthy endpoint}
   - name: capacity certificate reload audit and drops
     interval: 1m
     input_series:

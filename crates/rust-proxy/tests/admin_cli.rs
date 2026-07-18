@@ -217,6 +217,9 @@ upstream_group = "app"
         assert!(metrics.contains("aegisproxy_http_requests_total"));
         assert!(metrics.contains("route=\"app\""));
         assert!(metrics.contains("aegisproxy_upstream_attempts_total"));
+        assert!(metrics.contains("aegisproxy_upstream_active_connections"));
+        assert!(metrics.contains("aegisproxy_upstream_healthy"));
+        assert!(metrics.contains("aegisproxy_config_reload_duration_seconds"));
         assert!(metrics.contains("outcome=\"connect_error\""));
         assert!(!metrics.contains("example.test"));
         for canary in [

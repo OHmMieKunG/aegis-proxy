@@ -211,7 +211,7 @@ impl ManagedControl {
         })
         .await
         .map_err(|error| ProxyError::Preparation(error.to_string()))?;
-        self.runtime.telemetry().certificate_renewal(
+        self.runtime.record_certificate_renewal(
             &certificate_id,
             if result.is_ok() {
                 "requested"
@@ -1839,6 +1839,9 @@ impl PinnedProxyService {
                 return proxy_error(StatusCode::SERVICE_UNAVAILABLE, "upstream unavailable\n");
             };
             let endpoint = selected.config();
+            if attempt > 1 {
+                self.telemetry.upstream_retry(group_id, &endpoint.id);
+            }
             let attempt_started = tokio::time::Instant::now();
             let key = endpoint_key(group_id, &endpoint.id);
             let Some(client) = self.clients.get(&key) else {

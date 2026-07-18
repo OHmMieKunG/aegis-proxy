@@ -72,6 +72,10 @@ impl EndpointRuntime {
     pub(crate) fn health(&self) -> &EndpointHealth {
         &self.health
     }
+
+    pub(crate) fn healthy(&self) -> bool {
+        self.health.state() == EndpointState::Healthy
+    }
 }
 
 #[derive(Debug)]

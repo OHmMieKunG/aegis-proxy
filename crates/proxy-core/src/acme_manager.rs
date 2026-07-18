@@ -228,6 +228,7 @@ async fn reconcile(
     for certificate in due {
         let Some(client) = clients.get(&certificate.issuer).cloned() else {
             record_failure(&certificate.id, attempts, retry_at);
+            runtime.record_certificate_renewal(&certificate.id, "failed");
             continue;
         };
         let Some(issuer) = config
@@ -238,10 +239,12 @@ async fn reconcile(
             .cloned()
         else {
             record_failure(&certificate.id, attempts, retry_at);
+            runtime.record_certificate_renewal(&certificate.id, "failed");
             continue;
         };
         let Some(issuer_limit) = issuer_limits.get(&issuer.id).cloned() else {
             record_failure(&certificate.id, attempts, retry_at);
+            runtime.record_certificate_renewal(&certificate.id, "failed");
             continue;
         };
         let global = Arc::clone(&global);
@@ -273,11 +276,13 @@ async fn reconcile(
             Ok((id, Ok(()))) => {
                 attempts.remove(&id);
                 retry_at.remove(&id);
+                runtime.record_certificate_renewal(&id, "completed");
                 tracing::info!(certificate = %id, "ACME certificate activated");
             }
             Ok((id, Err(error))) => {
                 tracing::error!(certificate = %id, %error, "ACME certificate order failed");
                 record_failure(&id, attempts, retry_at);
+                runtime.record_certificate_renewal(&id, "failed");
             }
             Err(error) => tracing::error!(%error, "ACME order task failed"),
         }

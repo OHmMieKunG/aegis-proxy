@@ -14,12 +14,12 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: AegisProxy HTTP 5xx ratio exceeds 5 percent
-      - alert: AegisProxyNoSuccessfulUpstream
-        expr: sum by (upstream) (rate(aegisproxy_upstream_attempts_total{outcome="success"}[5m])) == 0 and sum by (upstream) (rate(aegisproxy_upstream_attempts_total[5m])) > 0
+      - alert: AegisProxyNoHealthyUpstream
+        expr: max by (upstream) (aegisproxy_upstream_healthy) == 0
         for: 5m
         labels: {severity: critical}
         annotations:
-          summary: A configured upstream group has attempts but no successes
+          summary: A configured upstream group has no healthy endpoint
       - alert: AegisProxyTlsCapacityPressure
         expr: sum(rate(aegisproxy_tls_handshakes_total{outcome="capacity"}[5m])) > 0
         for: 5m

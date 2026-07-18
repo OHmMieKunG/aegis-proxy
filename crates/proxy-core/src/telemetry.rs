@@ -103,9 +103,13 @@ pub struct Telemetry {
     connections: Family<ConnectionLabels, Counter>,
     active_connections: Family<ConnectionLabels, Gauge>,
     reloads: Family<OutcomeLabels, Counter>,
+    reload_duration: Histogram,
     telemetry_drops: Family<OutcomeLabels, Counter>,
     upstream_attempts: Family<UpstreamAttemptLabels, Counter>,
     upstream_duration: UpstreamDurationFamily,
+    upstream_active: Family<UpstreamLabels, Gauge>,
+    upstream_health: Family<UpstreamLabels, Gauge>,
+    upstream_retries: Family<UpstreamLabels, Counter>,
     rate_decisions: Family<MiddlewareDecisionLabels, Counter>,
     tls_handshakes: Family<TlsLabels, Counter>,
     certificate_expiry: Family<CertificateLabels, Gauge>,
@@ -141,9 +145,13 @@ impl Telemetry {
         let connections = Family::default();
         let active_connections = Family::default();
         let reloads = Family::default();
+        let reload_duration = histogram();
         let telemetry_drops = Family::default();
         let upstream_attempts = Family::default();
         let upstream_duration = Family::new_with_constructor(histogram as fn() -> Histogram);
+        let upstream_active = Family::default();
+        let upstream_health = Family::default();
+        let upstream_retries = Family::default();
         let rate_decisions = Family::default();
         let tls_handshakes = Family::default();
         let certificate_expiry = Family::default();
@@ -187,6 +195,11 @@ impl Telemetry {
             reloads.clone(),
         );
         registry.register(
+            "config_reload_duration_seconds",
+            "Configuration activation duration",
+            reload_duration.clone(),
+        );
+        registry.register(
             "telemetry_drops",
             "Best-effort telemetry dropped by bounded component and reason",
             telemetry_drops.clone(),
@@ -200,6 +213,21 @@ impl Telemetry {
             "upstream_response_duration_seconds",
             "Upstream response-header latency by configured IDs",
             upstream_duration.clone(),
+        );
+        registry.register(
+            "upstream_active_connections",
+            "Active proxied requests by configured upstream endpoint",
+            upstream_active.clone(),
+        );
+        registry.register(
+            "upstream_healthy",
+            "Whether a configured upstream endpoint is currently healthy",
+            upstream_health.clone(),
+        );
+        registry.register(
+            "upstream_retries",
+            "Retry attempts by configured upstream endpoint",
+            upstream_retries.clone(),
         );
         registry.register(
             "rate_limit_decisions",
@@ -249,9 +277,13 @@ impl Telemetry {
             connections,
             active_connections,
             reloads,
+            reload_duration,
             telemetry_drops,
             upstream_attempts,
             upstream_duration,
+            upstream_active,
+            upstream_health,
+            upstream_retries,
             rate_decisions,
             tls_handshakes,
             certificate_expiry,
@@ -329,14 +361,56 @@ impl Telemetry {
         })
     }
 
-    pub(crate) fn reload(&self, outcome: &'static str) {
+    pub(crate) fn reload(&self, outcome: &'static str, duration: Duration) {
         if self.enabled {
             self.reloads
                 .get_or_create(&OutcomeLabels {
                     outcome: bounded_reload_outcome(outcome).to_owned(),
                 })
                 .inc();
+            self.reload_duration.observe(duration.as_secs_f64());
         }
+    }
+
+    pub(crate) fn update_upstream_state(
+        &self,
+        upstream: &str,
+        endpoint: &str,
+        active: usize,
+        healthy: bool,
+    ) {
+        if !self.enabled || !self.allowed_endpoint(upstream, endpoint) {
+            return;
+        }
+        let labels = UpstreamLabels {
+            upstream: upstream.to_owned(),
+            endpoint: endpoint.to_owned(),
+        };
+        self.upstream_labels
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(labels.clone());
+        self.upstream_active
+            .get_or_create(&labels)
+            .set(i64::try_from(active).unwrap_or(i64::MAX));
+        self.upstream_health
+            .get_or_create(&labels)
+            .set(i64::from(healthy));
+    }
+
+    pub(crate) fn upstream_retry(&self, upstream: &str, endpoint: &str) {
+        if !self.enabled || !self.allowed_endpoint(upstream, endpoint) {
+            return;
+        }
+        let labels = UpstreamLabels {
+            upstream: upstream.to_owned(),
+            endpoint: endpoint.to_owned(),
+        };
+        self.upstream_labels
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(labels.clone());
+        self.upstream_retries.get_or_create(&labels).inc();
     }
 
     pub(crate) fn upstream_attempt(
@@ -488,6 +562,9 @@ impl Telemetry {
                     true
                 } else {
                     self.upstream_duration.remove(labels);
+                    self.upstream_active.remove(labels);
+                    self.upstream_health.remove(labels);
+                    self.upstream_retries.remove(labels);
                     false
                 }
             });
@@ -863,6 +940,9 @@ mod tests {
         telemetry.certificate_renewal("edge-cert", "requested");
         telemetry.audit_ready(true);
         telemetry.audit_operation("success");
+        telemetry.update_upstream_state("app", "app-1", 2, true);
+        telemetry.upstream_retry("app", "app-1");
+        telemetry.reload("success", Duration::from_millis(10));
         let output = telemetry.render().expect("metrics");
         assert!(output.contains("listener=\"public\""));
         assert!(output.contains("route=\"app\""));
@@ -872,6 +952,9 @@ mod tests {
         assert!(output.contains("certificate=\"edge-cert\""));
         assert!(output.contains("issuer=\"manual\""));
         assert!(output.contains("aegisproxy_admin_audit_ready 1"));
+        assert!(output.contains("aegisproxy_upstream_healthy"));
+        assert!(output.contains("endpoint=\"app-1\""));
+        assert!(output.contains("aegisproxy_upstream_retries_total"));
         assert!(!output.contains("attacker-cert"));
 
         let guard = telemetry
