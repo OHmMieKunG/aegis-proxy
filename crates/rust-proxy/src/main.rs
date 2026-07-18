@@ -3,6 +3,7 @@
 //! Command-line entry point for the AegisProxy daemon.
 
 mod admin_client;
+mod telemetry;
 
 use std::{
     error::Error,
@@ -266,11 +267,14 @@ type BoxError = Box<dyn Error + Send + Sync>;
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .json()
-        .init();
-    match run(Cli::parse()).await {
+    let cli = Cli::parse();
+    if !matches!(&cli.command, Command::Run { .. }) {
+        if let Err(error) = telemetry::init(&Default::default()) {
+            eprintln!("telemetry initialization failed: {error}");
+            return ExitCode::from(6);
+        }
+    }
+    match run(cli).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
@@ -309,23 +313,40 @@ async fn run(cli: Cli) -> Result<(), BoxError> {
             resume_last_known_good,
             state_dir,
         } => {
+            let startup_config = if resume_last_known_good {
+                let state_dir = state_dir.as_ref().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "--state-dir is required")
+                })?;
+                aegisproxy_core::load_last_known_good(state_dir.clone()).await?
+            } else {
+                load_config(config.clone()).await?
+            };
+            let telemetry = telemetry::init(&startup_config.observability)?;
             let cancel = CancellationToken::new();
             let signal = cancel.clone();
             tokio::spawn(async move {
                 let _ = tokio::signal::ctrl_c().await;
                 signal.cancel();
             });
-            if resume_last_known_good {
+            let result = if resume_last_known_good {
                 let state_dir = state_dir.ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidInput, "--state-dir is required")
                 })?;
                 aegisproxy_core::run_last_known_good_with_control(
                     config, state_dir, cancel, run_admin,
                 )
-                .await?;
+                .await
             } else {
-                aegisproxy_core::run_managed_with_control(config, cancel, run_admin).await?;
-            }
+                aegisproxy_core::run_managed_config_with_control(
+                    config,
+                    startup_config,
+                    cancel,
+                    run_admin,
+                )
+                .await
+            };
+            telemetry.shutdown().await;
+            result?;
         }
         Command::Config { command } => {
             run_config_command(command).await?;

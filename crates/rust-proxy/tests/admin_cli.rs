@@ -54,6 +54,13 @@ audit_key = {audit:?}
 requests_per_second = 100
 burst = 200
 
+[observability.otlp_traces]
+endpoint = "http://127.0.0.1:1/v1/traces"
+sample_per_million = 1000000
+max_queue_size = 4
+max_export_batch_size = 2
+export_timeout_secs = 1
+
 [[listeners]]
 id = "public"
 bind = "127.0.0.1:{port}"
@@ -127,11 +134,14 @@ upstream_group = "app"
         write_config(&first, &state, &audit_key, port, 1);
         write_config(&second, &state, &audit_key, port, 2);
 
+        let log_path = root.join("daemon.jsonl");
+        let log = fs::File::create(&log_path).expect("log file");
+        let error_log = log.try_clone().expect("log clone");
         let child = Command::new(binary())
             .args(["run", "--config"])
             .arg(&configured)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(Stdio::from(log))
+            .stderr(Stdio::from(error_log))
             .spawn()
             .expect("start daemon");
         let mut daemon = Daemon { child, root };
@@ -162,13 +172,15 @@ upstream_group = "app"
         let mut codes = [first_output.status.code(), second_output.status.code()];
         codes.sort_unstable();
         assert_eq!(codes, [Some(0), Some(4)]);
+        let request_started = std::time::Instant::now();
         let mut client = std::net::TcpStream::connect(("127.0.0.1", port)).expect("proxy");
         client
-            .write_all(b"GET / HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n")
+            .write_all(b"GET /private?token=QUERY_CANARY HTTP/1.1\r\nHost: example.test\r\nAuthorization: Bearer AUTH_CANARY\r\nCookie: session=COOKIE_CANARY\r\nUser-Agent: AGENT_CANARY\r\nX-Secret: HEADER_CANARY\r\nConnection: close\r\n\r\n")
             .expect("request");
         let mut response = String::new();
         client.read_to_string(&mut response).expect("response");
         assert!(response.starts_with("HTTP/1.1 502"));
+        assert!(request_started.elapsed() < Duration::from_secs(2));
         let metrics = run(&["metrics", "--socket", socket]);
         assert!(metrics.status.success());
         let metrics = String::from_utf8(metrics.stdout).expect("OpenMetrics UTF-8");
@@ -178,6 +190,15 @@ upstream_group = "app"
         assert!(metrics.contains("aegisproxy_upstream_attempts_total"));
         assert!(metrics.contains("outcome=\"connect_error\""));
         assert!(!metrics.contains("example.test"));
+        for canary in [
+            "QUERY_CANARY",
+            "AUTH_CANARY",
+            "COOKIE_CANARY",
+            "AGENT_CANARY",
+            "HEADER_CANARY",
+        ] {
+            assert!(!metrics.contains(canary));
+        }
 
         let current = active_revision(&state);
         let token = run(&[
@@ -228,5 +249,20 @@ upstream_group = "app"
         assert!(audit.contains("\"outcome\":\"failed\""));
         assert!(audit.contains("\"outcome\":\"denied\""));
         assert!(!audit.contains(plaintext));
+        let logs = fs::read_to_string(log_path).expect("structured logs");
+        assert!(
+            logs.lines()
+                .all(|line| serde_json::from_str::<serde_json::Value>(line).is_ok())
+        );
+        for canary in [
+            "QUERY_CANARY",
+            "AUTH_CANARY",
+            "COOKIE_CANARY",
+            "AGENT_CANARY",
+            "HEADER_CANARY",
+            plaintext,
+        ] {
+            assert!(!logs.contains(canary));
+        }
     }
 }

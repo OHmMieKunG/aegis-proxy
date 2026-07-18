@@ -16,12 +16,16 @@ clap = { version = "4", features = ["derive"] }
 http-body-util = "0.1"
 hyper = { version = "1", default-features = false, features = ["client", "http1"] }
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
+opentelemetry = { version = "0.32.0", default-features = false, features = ["trace"] }
+opentelemetry-otlp = { version = "0.32.0", default-features = false, features = ["http-proto", "reqwest-blocking-client", "reqwest-rustls-webpki-roots", "trace"] }
+opentelemetry_sdk = { version = "0.32.1", default-features = false, features = ["trace"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 tracing = "0.1"
+tracing-opentelemetry = { version = "0.33.0", default-features = false }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 zeroize = { version = "1", features = ["std"] }
 

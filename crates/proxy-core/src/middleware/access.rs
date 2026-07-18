@@ -79,10 +79,12 @@ impl AccessEvent {
 
     pub(crate) fn set_request_id(&mut self, request_id: &str) {
         self.request_id = Some(request_id.to_owned());
+        tracing::Span::current().record("request_id", request_id);
     }
 
     pub(crate) fn set_route(&mut self, route_id: &str) {
         self.route_id = Some(route_id.to_owned());
+        tracing::Span::current().record("route_id", route_id);
         self.request_guard = self.telemetry.as_ref().and_then(|telemetry| {
             telemetry.request_started(&self.listener_id, route_id, self.protocol)
         });
@@ -127,6 +129,7 @@ impl AccessEvent {
         let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
         tracing::info!(
             target: "aegisproxy_access",
+            event_name = "http.access",
             listener_id = %self.listener_id,
             route_id,
             request_id = self.request_id.as_deref().unwrap_or("unavailable"),

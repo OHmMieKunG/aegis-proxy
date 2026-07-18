@@ -46,6 +46,11 @@ use hyper_util::{
     client::legacy::{Client, connect::HttpConnector},
     rt::{TokioExecutor, TokioIo, TokioTimer},
 };
+use opentelemetry::{
+    global,
+    propagation::{Extractor, Injector},
+    trace::TraceContextExt as _,
+};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::{
@@ -55,6 +60,8 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
+use tracing::Instrument as _;
+use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use upstream::{
     DnsEndpoint, GuardedBody, PolicyResolver, UpstreamPool, prepare_dns, start_dns_refreshes,
@@ -76,6 +83,35 @@ use tcp::{TcpListenerContext, accept_loop as tcp_accept_loop};
 pub type BoxError = Box<dyn Error + Send + Sync>;
 /// Boxed response body used by the server and upstream client.
 pub type ResponseBody = BoxBody<bytes::Bytes, BoxError>;
+
+struct HeaderExtractor<'a>(&'a hyper::HeaderMap);
+
+impl Extractor for HeaderExtractor<'_> {
+    fn get(&self, key: &str) -> Option<&str> {
+        self.0.get(key).and_then(|value| value.to_str().ok())
+    }
+
+    fn keys(&self) -> Vec<&str> {
+        self.0
+            .keys()
+            .map(hyper::header::HeaderName::as_str)
+            .collect()
+    }
+}
+
+struct HeaderInjector<'a>(&'a mut hyper::HeaderMap);
+
+impl Injector for HeaderInjector<'_> {
+    fn set(&mut self, key: &str, value: String) {
+        let Ok(name) = key.parse::<hyper::header::HeaderName>() else {
+            return;
+        };
+        let Ok(value) = HeaderValue::from_str(&value) else {
+            return;
+        };
+        self.0.insert(name, value);
+    }
+}
 type UpstreamClient = Client<HttpsConnector<HttpConnector<PolicyResolver>>, ResponseBody>;
 type UpstreamClients = Arc<HashMap<String, UpstreamClient>>;
 type UpstreamPools = Arc<HashMap<String, Arc<UpstreamPool>>>;
@@ -237,6 +273,20 @@ where
     })
     .await
     .map_err(|error| ProxyError::Preparation(error.to_string()))??;
+    run_managed_config_with_control(config_path, config, shutdown, start_control).await
+}
+
+/// Run an already validated file-backed configuration with an isolated management service.
+pub async fn run_managed_config_with_control<F, Fut>(
+    config_path: PathBuf,
+    config: Config,
+    shutdown: CancellationToken,
+    start_control: F,
+) -> Result<(), ProxyError>
+where
+    F: FnOnce(ManagedControl, CancellationToken) -> Fut + Send + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
     let state_dir = PathBuf::from(&config.runtime.state_dir);
     let revisions = Arc::new(
         tokio::task::spawn_blocking(move || RevisionStore::open(state_dir))
@@ -293,6 +343,20 @@ pub async fn run_last_known_good(
         shutdown.cancelled().await;
     })
     .await
+}
+
+/// Load the durable last-known-good configuration without starting listeners.
+pub async fn load_last_known_good(state_dir: PathBuf) -> Result<Config, ProxyError> {
+    tokio::task::spawn_blocking(move || {
+        let revisions = RevisionStore::open(state_dir)?;
+        let active = revisions.recover_incomplete()?.ok_or_else(|| {
+            RevisionError::InvalidStored("no last-known-good revision is available".into())
+        })?;
+        revisions.load(&active.active.id)
+    })
+    .await
+    .map_err(|error| ProxyError::Preparation(error.to_string()))?
+    .map_err(ProxyError::Revision)
 }
 
 /// Start from last-known-good and start an isolated management service.
@@ -1217,6 +1281,14 @@ impl Service<Request<Incoming>> for ProxyService {
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn call(&self, request: Request<Incoming>) -> Self::Future {
+        let parent = global::get_text_map_propagator(|propagator| {
+            propagator.extract(&HeaderExtractor(request.headers()))
+        });
+        let method = request.method().clone();
+        let protocol = match request.version() {
+            hyper::Version::HTTP_2 => "http2",
+            _ => "http1",
+        };
         let service = self.clone();
         let snapshot = service.runtime.load();
         let pinned = PinnedProxyService {
@@ -1237,7 +1309,21 @@ impl Service<Request<Incoming>> for ProxyService {
             http_challenges: service.runtime.http_challenges(),
             telemetry: service.runtime.telemetry(),
         };
-        Box::pin(async move { Ok(pinned.forward(request).await) })
+        let span = tracing::info_span!(
+            "proxy.request",
+            event_name = "proxy.request",
+            listener_id = %pinned.listener_id,
+            route_id = tracing::field::Empty,
+            request_id = tracing::field::Empty,
+            method = %method,
+            protocol,
+        );
+        if parent.span().span_context().is_valid()
+            && let Err(error) = span.set_parent(parent)
+        {
+            tracing::debug!(event_name = "trace.parent_rejected", %error);
+        }
+        Box::pin(async move { Ok(pinned.forward(request).instrument(span).await) })
     }
 }
 
@@ -1740,6 +1826,14 @@ impl PinnedProxyService {
                 return proxy_error(StatusCode::BAD_GATEWAY, "invalid upstream URI\n");
             };
             let mut request_headers = headers.clone();
+            request_headers.remove("traceparent");
+            request_headers.remove("tracestate");
+            global::get_text_map_propagator(|propagator| {
+                propagator.inject_context(
+                    &tracing::Span::current().context(),
+                    &mut HeaderInjector(&mut request_headers),
+                );
+            });
             if let Some(authority) = endpoint_authority(endpoint) {
                 request_headers.insert(HOST, authority);
             }
@@ -3468,6 +3562,7 @@ mod tests {
             let request = std::str::from_utf8(&request[..count]).expect("request text");
             assert!(request.contains(&format!("host: {upstream_addr}")));
             assert!(request.starts_with("GET /hello/~user HTTP/1.1\r\n"));
+            assert!(!request.contains("trace-canary"));
             request_seen_tx.send(()).expect("signal request");
             release_rx.await.expect("release response");
             stream
@@ -3502,7 +3597,7 @@ mod tests {
         let mut client = connect_to_proxy(proxy_addr).await;
         client
             .write_all(
-                b"GET /hello/%7euser HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n",
+                b"GET /hello/%7euser HTTP/1.1\r\nHost: example.test\r\nTraceparent: trace-canary\r\nTracestate: trace-canary\r\nConnection: close\r\n\r\n",
             )
             .await
             .expect("client write");
