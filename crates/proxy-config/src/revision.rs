@@ -774,7 +774,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        AdminConfig, LimitsConfig, ListenerConfig, RuntimeConfig, TlsConfig, TrustedProxyConfig,
+        AdminConfig, LimitsConfig, ListenerConfig, ObservabilityConfig, RuntimeConfig, TlsConfig,
+        TrustedProxyConfig,
     };
 
     fn config() -> Config {
@@ -802,6 +803,7 @@ mod tests {
             middlewares: BTreeMap::new(),
             routes: vec![],
             admin: AdminConfig::default(),
+            observability: ObservabilityConfig::default(),
         }
     }
 

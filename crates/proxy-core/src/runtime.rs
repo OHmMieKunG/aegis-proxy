@@ -561,6 +561,7 @@ impl ActivationCoordinator {
 fn hot_reload_compatible(current: &Config, candidate: &Config) -> bool {
     current.runtime.state_dir == candidate.runtime.state_dir
         && current.limits == candidate.limits
+        && current.observability == candidate.observability
         && current.tls.max_handshakes == candidate.tls.max_handshakes
         && current.listeners.len() == candidate.listeners.len()
         && current.listeners.iter().all(|listener| {
@@ -650,6 +651,7 @@ mod tests {
             middlewares: BTreeMap::new(),
             routes: vec![],
             admin: AdminConfig::default(),
+            observability: aegisproxy_config::ObservabilityConfig::default(),
         })
     }
 

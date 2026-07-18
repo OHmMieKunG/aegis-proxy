@@ -52,7 +52,8 @@ mod tests {
     use crate::{
         AcmeConfig, AcmeDnsProviderConfig, AcmeEnvironment, AcmeExternalAccountConfig,
         AcmeIssuerConfig, AdminConfig, CertificateConfig, Config, EndpointConfig, LimitsConfig,
-        ListenerConfig, RuntimeConfig, TlsConfig, TrustedProxyConfig, UpstreamGroupConfig,
+        ListenerConfig, ObservabilityConfig, RuntimeConfig, TlsConfig, TrustedProxyConfig,
+        UpstreamGroupConfig,
     };
 
     use super::*;
@@ -120,6 +121,7 @@ mod tests {
                 audit_key: Some("env://CANARY_AUDIT".into()),
                 ..AdminConfig::default()
             },
+            observability: ObservabilityConfig::default(),
         };
         let serialized = toml::to_string(&redacted(&config)).expect("serialize redacted config");
         assert!(!serialized.contains("CANARY"));

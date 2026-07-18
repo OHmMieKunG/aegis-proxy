@@ -84,6 +84,9 @@ pub struct Config {
     /// Administrative settings.
     #[serde(default)]
     pub admin: AdminConfig,
+    /// Logs, metrics, and optional trace export.
+    #[serde(default)]
+    pub observability: ObservabilityConfig,
 }
 
 /// Runtime settings.
@@ -952,6 +955,47 @@ impl Default for AdminConfig {
     }
 }
 
+/// Bounded process telemetry policy.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ObservabilityConfig {
+    /// Emit structured access events.
+    pub access_log: bool,
+    /// Access events retained per million completed requests.
+    pub access_log_sample_per_million: u32,
+    /// Expose OpenMetrics on the private administrative socket.
+    pub metrics: bool,
+    /// Optional OTLP/HTTP protobuf trace exporter.
+    pub otlp_traces: Option<OtlpTraceConfig>,
+}
+
+impl Default for ObservabilityConfig {
+    fn default() -> Self {
+        Self {
+            access_log: true,
+            access_log_sample_per_million: 1_000_000,
+            metrics: true,
+            otlp_traces: None,
+        }
+    }
+}
+
+/// Bounded OTLP trace-export configuration.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OtlpTraceConfig {
+    /// Full OTLP/HTTP protobuf traces endpoint.
+    pub endpoint: Url,
+    /// Locally sampled root traces per million requests.
+    pub sample_per_million: u32,
+    /// Maximum queued spans waiting for export.
+    pub max_queue_size: usize,
+    /// Maximum spans in one export batch.
+    pub max_export_batch_size: usize,
+    /// Export attempt timeout in seconds.
+    pub export_timeout_secs: u64,
+}
+
 /// Configuration error.
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -1021,6 +1065,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         ));
     }
     validate_admin(&config.admin)?;
+    validate_observability(&config.observability)?;
     if config.upstream_groups.len() > MAX_UPSTREAM_GROUPS {
         return Err(ConfigError::Invalid(format!(
             "upstream_groups exceeds {MAX_UPSTREAM_GROUPS} entries"
@@ -1812,6 +1857,56 @@ fn validate_admin(admin: &AdminConfig) -> Result<(), ConfigError> {
     {
         return Err(ConfigError::Invalid(
             "administrative resource limits are outside safe bounds".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_observability(observability: &ObservabilityConfig) -> Result<(), ConfigError> {
+    if observability.access_log_sample_per_million > 1_000_000 {
+        return Err(ConfigError::Invalid(
+            "observability.access_log_sample_per_million exceeds 1000000".into(),
+        ));
+    }
+    let Some(otlp) = &observability.otlp_traces else {
+        return Ok(());
+    };
+    let endpoint = &otlp.endpoint;
+    if !matches!(endpoint.scheme(), "http" | "https")
+        || endpoint.host_str().is_none()
+        || !endpoint.username().is_empty()
+        || endpoint.password().is_some()
+        || endpoint.query().is_some()
+        || endpoint.fragment().is_some()
+    {
+        return Err(ConfigError::Invalid(
+            "observability.otlp_traces.endpoint must be an HTTP(S) URL without credentials, query, or fragment"
+                .into(),
+        ));
+    }
+    if endpoint.scheme() == "http" {
+        let is_loopback = endpoint
+            .host_str()
+            .and_then(|host| host.parse::<IpAddr>().ok())
+            .is_some_and(|address| address.is_loopback());
+        if !is_loopback {
+            return Err(ConfigError::Invalid(
+                "observability.otlp_traces.endpoint requires HTTPS unless it uses a loopback IP"
+                    .into(),
+            ));
+        }
+    }
+    if otlp.sample_per_million == 0
+        || otlp.sample_per_million > 1_000_000
+        || otlp.max_queue_size == 0
+        || otlp.max_queue_size > 16_384
+        || otlp.max_export_batch_size == 0
+        || otlp.max_export_batch_size > otlp.max_queue_size
+        || otlp.export_timeout_secs == 0
+        || otlp.export_timeout_secs > 30
+    {
+        return Err(ConfigError::Invalid(
+            "observability.otlp_traces limits are outside safe bounds".into(),
         ));
     }
     Ok(())
@@ -3200,6 +3295,7 @@ mod tests {
             middlewares: BTreeMap::new(),
             routes: vec![],
             admin: AdminConfig::default(),
+            observability: ObservabilityConfig::default(),
         }
     }
 
@@ -4230,5 +4326,65 @@ mod tests {
         let error = toml::from_str::<Config>(source)
             .expect_err("the schema must not expose an unimplemented remote admin listener");
         assert!(error.to_string().contains("unknown field `tcp_bind`"));
+    }
+
+    #[test]
+    fn validates_bounded_private_observability_policy() {
+        let mut config = base_config();
+        config.observability.access_log_sample_per_million = 100_000;
+        config.observability.otlp_traces = Some(OtlpTraceConfig {
+            endpoint: "http://127.0.0.1:4318/v1/traces".parse().expect("OTLP URL"),
+            sample_per_million: 10_000,
+            max_queue_size: 2_048,
+            max_export_batch_size: 512,
+            export_timeout_secs: 5,
+        });
+        validate(&config).expect("bounded loopback exporter");
+
+        config
+            .observability
+            .otlp_traces
+            .as_mut()
+            .expect("OTLP")
+            .endpoint = "http://collector.example/v1/traces".parse().expect("URL");
+        assert!(validate(&config).is_err());
+        config
+            .observability
+            .otlp_traces
+            .as_mut()
+            .expect("OTLP")
+            .endpoint = "https://collector.example/v1/traces?token=secret"
+            .parse()
+            .expect("URL");
+        assert!(validate(&config).is_err());
+        config
+            .observability
+            .otlp_traces
+            .as_mut()
+            .expect("OTLP")
+            .endpoint = "https://collector.example/v1/traces".parse().expect("URL");
+        config
+            .observability
+            .otlp_traces
+            .as_mut()
+            .expect("OTLP")
+            .max_export_batch_size = 2_049;
+        assert!(validate(&config).is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_observability_fields() {
+        let source = r#"
+            schema_version = 1
+
+            [[listeners]]
+            id = "public"
+            bind = "127.0.0.1:8080"
+            protocol = "http"
+
+            [observability]
+            secret_headers = ["authorization"]
+        "#;
+        assert!(toml::from_str::<Config>(source).is_err());
     }
 }

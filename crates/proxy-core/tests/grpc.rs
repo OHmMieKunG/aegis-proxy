@@ -243,6 +243,7 @@ async fn proxies_unary_and_streaming_grpc_with_trailers() {
             upstream_group: Some("grpc".into()),
         }],
         admin: AdminConfig::default(),
+        observability: aegisproxy_config::ObservabilityConfig::default(),
     };
     let shutdown = CancellationToken::new();
     let proxy_task = tokio::spawn(aegisproxy_core::run(Arc::new(config), shutdown.clone()));

@@ -512,6 +512,7 @@ mod tests {
             middlewares: BTreeMap::new(),
             routes,
             admin: AdminConfig::default(),
+            observability: aegisproxy_config::ObservabilityConfig::default(),
         }
     }
 

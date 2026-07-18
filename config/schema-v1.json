@@ -38,7 +38,8 @@
       "maxItems": 4096,
       "items": { "$ref": "#/$defs/route" }
     },
-    "admin": { "$ref": "#/$defs/admin" }
+    "admin": { "$ref": "#/$defs/admin" },
+    "observability": { "$ref": "#/$defs/observability" }
   },
   "$defs": {
     "id": {
@@ -448,6 +449,27 @@
         "request_timeout_secs": { "type": "integer", "minimum": 1, "maximum": 60, "default": 10 },
         "requests_per_second": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 20 },
         "burst": { "type": "integer", "minimum": 1, "maximum": 5000, "default": 40 }
+      }
+    },
+    "observability": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "access_log": { "type": "boolean", "default": true },
+        "access_log_sample_per_million": { "type": "integer", "minimum": 0, "maximum": 1000000, "default": 1000000 },
+        "metrics": { "type": "boolean", "default": true },
+        "otlp_traces": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["endpoint", "sample_per_million", "max_queue_size", "max_export_batch_size", "export_timeout_secs"],
+          "properties": {
+            "endpoint": { "type": "string", "format": "uri", "maxLength": 2048, "pattern": "^https?://" },
+            "sample_per_million": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+            "max_queue_size": { "type": "integer", "minimum": 1, "maximum": 16384 },
+            "max_export_batch_size": { "type": "integer", "minimum": 1, "maximum": 16384 },
+            "export_timeout_secs": { "type": "integer", "minimum": 1, "maximum": 30 }
+          }
+        }
       }
     }
   }
