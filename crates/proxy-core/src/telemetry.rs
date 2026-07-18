@@ -43,7 +43,33 @@ struct OutcomeLabels {
     outcome: String,
 }
 
+#[derive(Clone, Debug, EncodeLabelSet, Eq, Hash, PartialEq)]
+struct UpstreamLabels {
+    upstream: String,
+    endpoint: String,
+}
+
+#[derive(Clone, Debug, EncodeLabelSet, Eq, Hash, PartialEq)]
+struct UpstreamAttemptLabels {
+    upstream: String,
+    endpoint: String,
+    outcome: String,
+}
+
+#[derive(Clone, Debug, EncodeLabelSet, Eq, Hash, PartialEq)]
+struct MiddlewareDecisionLabels {
+    middleware: String,
+    decision: String,
+}
+
+#[derive(Clone, Debug, EncodeLabelSet, Eq, Hash, PartialEq)]
+struct TlsLabels {
+    listener: String,
+    outcome: String,
+}
+
 type DurationFamily = Family<RequestLabels, Histogram, fn() -> Histogram>;
+type UpstreamDurationFamily = Family<UpstreamLabels, Histogram, fn() -> Histogram>;
 
 /// Process telemetry with no labels derived from raw request data.
 pub struct Telemetry {
@@ -52,6 +78,9 @@ pub struct Telemetry {
     allowed: RwLock<AllowedLabels>,
     request_labels: Mutex<HashSet<RequestLabels>>,
     active_request_labels: Mutex<HashSet<ActiveRequestLabels>>,
+    upstream_labels: Mutex<HashSet<UpstreamLabels>>,
+    upstream_attempt_labels: Mutex<HashSet<UpstreamAttemptLabels>>,
+    rate_labels: Mutex<HashSet<MiddlewareDecisionLabels>>,
     requests: Family<RequestLabels, Counter>,
     response_bytes: Family<RequestLabels, Counter>,
     request_duration: DurationFamily,
@@ -60,12 +89,18 @@ pub struct Telemetry {
     active_connections: Family<ConnectionLabels, Gauge>,
     reloads: Family<OutcomeLabels, Counter>,
     telemetry_drops: Family<OutcomeLabels, Counter>,
+    upstream_attempts: Family<UpstreamAttemptLabels, Counter>,
+    upstream_duration: UpstreamDurationFamily,
+    rate_decisions: Family<MiddlewareDecisionLabels, Counter>,
+    tls_handshakes: Family<TlsLabels, Counter>,
 }
 
 #[derive(Debug)]
 struct AllowedLabels {
     listeners: HashSet<String>,
     routes: HashSet<String>,
+    endpoints: HashSet<(String, String)>,
+    middlewares: HashSet<String>,
 }
 
 impl fmt::Debug for Telemetry {
@@ -87,6 +122,10 @@ impl Telemetry {
         let active_connections = Family::default();
         let reloads = Family::default();
         let telemetry_drops = Family::default();
+        let upstream_attempts = Family::default();
+        let upstream_duration = Family::new_with_constructor(histogram as fn() -> Histogram);
+        let rate_decisions = Family::default();
+        let tls_handshakes = Family::default();
         let mut registry = Registry::with_prefix("aegisproxy");
         registry.register(
             "http_requests",
@@ -128,12 +167,35 @@ impl Telemetry {
             "Best-effort telemetry dropped by bounded component and reason",
             telemetry_drops.clone(),
         );
+        registry.register(
+            "upstream_attempts",
+            "Upstream request attempts by configured IDs and bounded outcome",
+            upstream_attempts.clone(),
+        );
+        registry.register(
+            "upstream_response_duration_seconds",
+            "Upstream response-header latency by configured IDs",
+            upstream_duration.clone(),
+        );
+        registry.register(
+            "rate_limit_decisions",
+            "Rate-limit decisions by configured middleware ID",
+            rate_decisions.clone(),
+        );
+        registry.register(
+            "tls_handshakes",
+            "TLS handshake outcomes by configured listener ID",
+            tls_handshakes.clone(),
+        );
         Arc::new(Self {
             registry,
             enabled: config.observability.metrics,
             allowed: RwLock::new(allowed(config)),
             request_labels: Mutex::new(HashSet::new()),
             active_request_labels: Mutex::new(HashSet::new()),
+            upstream_labels: Mutex::new(HashSet::new()),
+            upstream_attempt_labels: Mutex::new(HashSet::new()),
+            rate_labels: Mutex::new(HashSet::new()),
             requests,
             response_bytes,
             request_duration,
@@ -142,6 +204,10 @@ impl Telemetry {
             active_connections,
             reloads,
             telemetry_drops,
+            upstream_attempts,
+            upstream_duration,
+            rate_decisions,
+            tls_handshakes,
         })
     }
 
@@ -223,6 +289,66 @@ impl Telemetry {
         }
     }
 
+    pub(crate) fn upstream_attempt(
+        &self,
+        upstream: &str,
+        endpoint: &str,
+        outcome: &'static str,
+        duration: Duration,
+    ) {
+        if !self.enabled || !self.allowed_endpoint(upstream, endpoint) {
+            return;
+        }
+        let base = UpstreamLabels {
+            upstream: upstream.to_owned(),
+            endpoint: endpoint.to_owned(),
+        };
+        let attempt = UpstreamAttemptLabels {
+            upstream: upstream.to_owned(),
+            endpoint: endpoint.to_owned(),
+            outcome: bounded_upstream_outcome(outcome).to_owned(),
+        };
+        self.upstream_labels
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(base.clone());
+        self.upstream_attempt_labels
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(attempt.clone());
+        self.upstream_attempts.get_or_create(&attempt).inc();
+        self.upstream_duration
+            .get_or_create(&base)
+            .observe(duration.as_secs_f64());
+    }
+
+    pub(crate) fn rate_decision(&self, middleware: &str, decision: &'static str) {
+        if !self.enabled || !self.allowed_middleware(middleware) {
+            return;
+        }
+        let labels = MiddlewareDecisionLabels {
+            middleware: middleware.to_owned(),
+            decision: bounded_rate_decision(decision).to_owned(),
+        };
+        self.rate_labels
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(labels.clone());
+        self.rate_decisions.get_or_create(&labels).inc();
+    }
+
+    pub(crate) fn tls_handshake(&self, listener: &str, outcome: &'static str) {
+        if !self.enabled || !self.allowed_listener(listener) {
+            return;
+        }
+        self.tls_handshakes
+            .get_or_create(&TlsLabels {
+                listener: listener.to_owned(),
+                outcome: bounded_tls_outcome(outcome).to_owned(),
+            })
+            .inc();
+    }
+
     pub(crate) fn drop_signal(&self, reason: &'static str) {
         if self.enabled {
             self.telemetry_drops
@@ -248,6 +374,39 @@ impl Telemetry {
                     self.requests.remove(labels);
                     self.response_bytes.remove(labels);
                     self.request_duration.remove(labels);
+                    false
+                }
+            });
+        self.upstream_labels
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|labels| {
+                if self.allowed_endpoint(&labels.upstream, &labels.endpoint) {
+                    true
+                } else {
+                    self.upstream_duration.remove(labels);
+                    false
+                }
+            });
+        self.upstream_attempt_labels
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|labels| {
+                if self.allowed_endpoint(&labels.upstream, &labels.endpoint) {
+                    true
+                } else {
+                    self.upstream_attempts.remove(labels);
+                    false
+                }
+            });
+        self.rate_labels
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|labels| {
+                if self.allowed_middleware(&labels.middleware) {
+                    true
+                } else {
+                    self.rate_decisions.remove(labels);
                     false
                 }
             });
@@ -281,6 +440,22 @@ impl Telemetry {
             .contains(listener)
     }
 
+    fn allowed_endpoint(&self, upstream: &str, endpoint: &str) -> bool {
+        self.allowed
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .endpoints
+            .contains(&(upstream.to_owned(), endpoint.to_owned()))
+    }
+
+    fn allowed_middleware(&self, middleware: &str) -> bool {
+        self.allowed
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .middlewares
+            .contains(middleware)
+    }
+
     fn prune_inactive_request_labels(&self) {
         self.active_request_labels
             .lock()
@@ -308,6 +483,17 @@ fn allowed(config: &Config) -> AllowedLabels {
             .map(|listener| listener.id.clone())
             .collect(),
         routes: config.routes.iter().map(|route| route.id.clone()).collect(),
+        endpoints: config
+            .upstream_groups
+            .iter()
+            .flat_map(|group| {
+                group
+                    .endpoints
+                    .iter()
+                    .map(|endpoint| (group.id.clone(), endpoint.id.clone()))
+            })
+            .collect(),
+        middlewares: config.middlewares.keys().cloned().collect(),
     }
 }
 
@@ -425,6 +611,33 @@ fn bounded_drop_reason(reason: &str) -> &'static str {
         "trace_queue_full" => "trace_queue_full",
         "export_failed" => "export_failed",
         _ => "internal_error",
+    }
+}
+
+fn bounded_upstream_outcome(outcome: &str) -> &'static str {
+    match outcome {
+        "success" => "success",
+        "server_error" => "server_error",
+        "timeout" => "timeout",
+        "connect_error" => "connect_error",
+        _ => "protocol_error",
+    }
+}
+
+fn bounded_rate_decision(decision: &str) -> &'static str {
+    match decision {
+        "allowed" => "allowed",
+        "limited" => "limited",
+        _ => "unavailable",
+    }
+}
+
+fn bounded_tls_outcome(outcome: &str) -> &'static str {
+    match outcome {
+        "success" => "success",
+        "timeout" => "timeout",
+        "capacity" => "capacity",
+        _ => "handshake_error",
     }
 }
 

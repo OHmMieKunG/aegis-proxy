@@ -175,6 +175,8 @@ upstream_group = "app"
         assert!(metrics.contains("aegisproxy_config_reloads_total{outcome=\"success\"} 1"));
         assert!(metrics.contains("aegisproxy_http_requests_total"));
         assert!(metrics.contains("route=\"app\""));
+        assert!(metrics.contains("aegisproxy_upstream_attempts_total"));
+        assert!(metrics.contains("outcome=\"connect_error\""));
         assert!(!metrics.contains("example.test"));
 
         let current = active_revision(&state);

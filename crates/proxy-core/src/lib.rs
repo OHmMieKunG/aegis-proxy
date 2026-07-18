@@ -1004,6 +1004,7 @@ async fn accept_loop(listener: TcpListener, context: ListenerContext) {
         drop(snapshot);
         let handshake_permit = if tls_acceptor.is_some() {
             let Ok(permit) = handshake_permits.clone().try_acquire_owned() else {
+                runtime.telemetry().tls_handshake(&listener_id, "capacity");
                 tracing::debug!(%peer, "TLS handshake limit reached");
                 continue;
             };
@@ -1017,6 +1018,7 @@ async fn accept_loop(listener: TcpListener, context: ListenerContext) {
         let listener_id = listener_id.clone();
         let tls_acceptor = tls_acceptor.clone();
         let upgrade_tasks = upgrade_tasks.clone();
+        let telemetry = runtime.telemetry();
         connections.spawn(async move {
             let _permit = permit;
             let _connection_metric = connection_metric;
@@ -1038,12 +1040,21 @@ async fn accept_loop(listener: TcpListener, context: ListenerContext) {
                     .await;
                     drop(handshake_permit);
                     match accepted {
-                        Ok(Ok(stream)) => serve_tls_connection(stream, connection).await,
-                        Ok(Err(error)) => Err(Box::new(error) as BoxError),
-                        Err(_) => Err(Box::new(std::io::Error::new(
-                            std::io::ErrorKind::TimedOut,
-                            "TLS handshake timed out",
-                        )) as BoxError),
+                        Ok(Ok(stream)) => {
+                            telemetry.tls_handshake(&connection.listener_id, "success");
+                            serve_tls_connection(stream, connection).await
+                        }
+                        Ok(Err(error)) => {
+                            telemetry.tls_handshake(&connection.listener_id, "handshake_error");
+                            Err(Box::new(error) as BoxError)
+                        }
+                        Err(_) => {
+                            telemetry.tls_handshake(&connection.listener_id, "timeout");
+                            Err(Box::new(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                "TLS handshake timed out",
+                            )) as BoxError)
+                        }
                     }
                 }
                 None => {
@@ -1392,9 +1403,21 @@ impl PinnedProxyService {
                 );
             }
         }
+        let edge_limiter = middleware::rate::configured_id(
+            &self.config,
+            route,
+            aegisproxy_config::RateLimitKey::ClientIp,
+        );
         match middleware::rate::check(&self.rate_limiters, &self.config, route, identity.ip) {
-            Ok(RateOutcome::Allowed) => {}
+            Ok(RateOutcome::Allowed) => {
+                if let Some(id) = edge_limiter {
+                    self.telemetry.rate_decision(id, "allowed");
+                }
+            }
             Ok(RateOutcome::Limited { retry_after_secs }) => {
+                if let Some(id) = edge_limiter {
+                    self.telemetry.rate_decision(id, "limited");
+                }
                 let mut response = error_response(StatusCode::TOO_MANY_REQUESTS, "rate limited\n");
                 let Ok(retry_after) = HeaderValue::from_str(&retry_after_secs.to_string()) else {
                     return error_response(
@@ -1406,6 +1429,9 @@ impl PinnedProxyService {
                 return response;
             }
             Err(()) => {
+                if let Some(id) = edge_limiter {
+                    self.telemetry.rate_decision(id, "unavailable");
+                }
                 return error_response(StatusCode::SERVICE_UNAVAILABLE, "rate limit unavailable\n");
             }
         }
@@ -1536,14 +1562,26 @@ impl PinnedProxyService {
                 );
             }
         }
+        let principal_limiter = middleware::rate::configured_id(
+            &self.config,
+            route,
+            aegisproxy_config::RateLimitKey::Principal,
+        );
         match middleware::rate::check_principal(
             &self.rate_limiters,
             &self.config,
             route,
             identity.principal.as_deref(),
         ) {
-            Ok(RateOutcome::Allowed) => {}
+            Ok(RateOutcome::Allowed) => {
+                if let Some(id) = principal_limiter {
+                    self.telemetry.rate_decision(id, "allowed");
+                }
+            }
             Ok(RateOutcome::Limited { retry_after_secs }) => {
+                if let Some(id) = principal_limiter {
+                    self.telemetry.rate_decision(id, "limited");
+                }
                 let mut response = error_response(StatusCode::TOO_MANY_REQUESTS, "rate limited\n");
                 let Ok(retry_after) = HeaderValue::from_str(&retry_after_secs.to_string()) else {
                     return error_response(
@@ -1555,6 +1593,9 @@ impl PinnedProxyService {
                 return response;
             }
             Err(()) => {
+                if let Some(id) = principal_limiter {
+                    self.telemetry.rate_decision(id, "unavailable");
+                }
                 return error_response(StatusCode::SERVICE_UNAVAILABLE, "rate limit unavailable\n");
             }
         }
@@ -1690,6 +1731,7 @@ impl PinnedProxyService {
                 return proxy_error(StatusCode::SERVICE_UNAVAILABLE, "upstream unavailable\n");
             };
             let endpoint = selected.config();
+            let attempt_started = tokio::time::Instant::now();
             let key = endpoint_key(group_id, &endpoint.id);
             let Some(client) = self.clients.get(&key) else {
                 return proxy_error(StatusCode::BAD_GATEWAY, "upstream client missing\n");
@@ -1740,6 +1782,12 @@ impl PinnedProxyService {
                     Ok(result) => result,
                     Err(_) => {
                         selected.record_failure();
+                        self.telemetry.upstream_attempt(
+                            group_id,
+                            &endpoint.id,
+                            "timeout",
+                            attempt_started.elapsed(),
+                        );
                         if attempt < max_attempts {
                             continue;
                         }
@@ -1751,6 +1799,16 @@ impl PinnedProxyService {
                 };
             match result {
                 Ok(response) => {
+                    self.telemetry.upstream_attempt(
+                        group_id,
+                        &endpoint.id,
+                        if response.status().is_server_error() {
+                            "server_error"
+                        } else {
+                            "success"
+                        },
+                        attempt_started.elapsed(),
+                    );
                     let mut response = response
                         .map(|body| body.map_err(|error| Box::new(error) as BoxError).boxed());
                     let body_guard = if response.status() == StatusCode::SWITCHING_PROTOCOLS {
@@ -1803,6 +1861,16 @@ impl PinnedProxyService {
                     });
                 }
                 Err(error) => {
+                    self.telemetry.upstream_attempt(
+                        group_id,
+                        &endpoint.id,
+                        if error.is_connect() {
+                            "connect_error"
+                        } else {
+                            "protocol_error"
+                        },
+                        attempt_started.elapsed(),
+                    );
                     if error.is_connect() {
                         selected.record_failure();
                         if attempt < max_attempts {

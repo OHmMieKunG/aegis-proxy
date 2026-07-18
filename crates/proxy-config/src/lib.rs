@@ -1933,9 +1933,19 @@ pub fn estimated_metric_series(config: &Config) -> usize {
         .fold(config.listeners.len(), |total, route| {
             total.saturating_add(route.listeners.len())
         });
+    let endpoint_count = config.upstream_groups.iter().fold(0_usize, |total, group| {
+        total.saturating_add(group.endpoints.len())
+    });
+    let rate_limiters = config
+        .middlewares
+        .values()
+        .filter(|middleware| matches!(middleware, MiddlewareConfig::RateLimit { .. }))
+        .count();
     route_listener_pairs
         .saturating_mul(170)
-        .saturating_add(config.listeners.len().saturating_mul(2))
+        .saturating_add(endpoint_count.saturating_mul(17))
+        .saturating_add(rate_limiters.saturating_mul(3))
+        .saturating_add(config.listeners.len().saturating_mul(6))
         .saturating_add(8)
 }
 

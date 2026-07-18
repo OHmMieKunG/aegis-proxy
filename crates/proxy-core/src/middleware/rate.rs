@@ -58,15 +58,7 @@ pub(crate) fn check(
     route: &RouteConfig,
     address: IpAddr,
 ) -> Result<Outcome, ()> {
-    let Some(id) = route.middlewares.iter().find(|id| {
-        matches!(
-            config.middlewares.get(id.as_str()),
-            Some(MiddlewareConfig::RateLimit {
-                key: RateLimitKey::ClientIp,
-                ..
-            })
-        )
-    }) else {
+    let Some(id) = configured_id(config, route, RateLimitKey::ClientIp) else {
         return Ok(Outcome::Allowed);
     };
     limiters
@@ -81,15 +73,7 @@ pub(crate) fn check_principal(
     route: &RouteConfig,
     principal: Option<&str>,
 ) -> Result<Outcome, ()> {
-    let Some(id) = route.middlewares.iter().find(|id| {
-        matches!(
-            config.middlewares.get(id.as_str()),
-            Some(MiddlewareConfig::RateLimit {
-                key: RateLimitKey::Principal,
-                ..
-            })
-        )
-    }) else {
+    let Some(id) = configured_id(config, route, RateLimitKey::Principal) else {
         return Ok(Outcome::Allowed);
     };
     let principal = principal.ok_or(())?;
@@ -97,6 +81,23 @@ pub(crate) fn check_principal(
         .get(id)
         .ok_or(())?
         .check(LimiterKey::Principal(principal.to_owned()), Instant::now())
+}
+
+pub(crate) fn configured_id<'a>(
+    config: &'a Config,
+    route: &'a RouteConfig,
+    key: RateLimitKey,
+) -> Option<&'a str> {
+    route.middlewares.iter().find_map(|id| {
+        matches!(
+            config.middlewares.get(id),
+            Some(MiddlewareConfig::RateLimit {
+                key: configured,
+                ..
+            }) if *configured == key
+        )
+        .then_some(id.as_str())
+    })
 }
 
 #[derive(Debug)]
