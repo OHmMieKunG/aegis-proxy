@@ -203,13 +203,23 @@ impl ManagedControl {
             ));
         }
         let state_dir = PathBuf::from(&config.runtime.state_dir);
-        let id = id.to_owned();
-        tokio::task::spawn_blocking(move || {
-            aegisproxy_tls::acme::request_certificate_renewal(&state_dir, &id)
+        let certificate_id = id.to_owned();
+        let renewal_id = certificate_id.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            aegisproxy_tls::acme::request_certificate_renewal(&state_dir, &renewal_id)
                 .map_err(|_| ProxyError::Preparation("renewal request failed".into()))
         })
         .await
-        .map_err(|error| ProxyError::Preparation(error.to_string()))?
+        .map_err(|error| ProxyError::Preparation(error.to_string()))?;
+        self.runtime.telemetry().certificate_renewal(
+            &certificate_id,
+            if result.is_ok() {
+                "requested"
+            } else {
+                "failed"
+            },
+        );
+        result
     }
 
     /// Load bounded public certificate-generation metadata off runtime workers.
@@ -235,6 +245,18 @@ impl ManagedControl {
         })
         .await
         .map_err(|error| ProxyError::Preparation(error.to_string()))?
+    }
+
+    /// Refresh certificate expiry gauges, then encode bounded OpenMetrics output.
+    pub async fn render_openmetrics(&self) -> Result<String, ProxyError> {
+        for status in self.certificate_statuses().await? {
+            self.runtime
+                .telemetry()
+                .update_certificate_expiry(&status.id, status.not_after_unix_secs);
+        }
+        self.runtime
+            .render_openmetrics()
+            .map_err(|_| ProxyError::Preparation("metrics output exceeded its bound".into()))
     }
 }
 

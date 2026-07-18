@@ -1941,12 +1941,17 @@ pub fn estimated_metric_series(config: &Config) -> usize {
         .values()
         .filter(|middleware| matches!(middleware, MiddlewareConfig::RateLimit { .. }))
         .count();
+    let certificate_count = config
+        .certificates
+        .len()
+        .saturating_add(config.acme.certificates.len());
     route_listener_pairs
         .saturating_mul(170)
         .saturating_add(endpoint_count.saturating_mul(17))
         .saturating_add(rate_limiters.saturating_mul(3))
         .saturating_add(config.listeners.len().saturating_mul(6))
-        .saturating_add(8)
+        .saturating_add(certificate_count.saturating_mul(4))
+        .saturating_add(14)
 }
 
 fn validate_middleware(id: &str, middleware: &MiddlewareConfig) -> Result<(), ConfigError> {

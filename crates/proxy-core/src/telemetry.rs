@@ -1,7 +1,7 @@
 //! Bounded OpenMetrics state shared by data and control planes.
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fmt,
     sync::{Arc, Mutex, RwLock},
     time::Duration,
@@ -68,6 +68,19 @@ struct TlsLabels {
     outcome: String,
 }
 
+#[derive(Clone, Debug, EncodeLabelSet, Eq, Hash, PartialEq)]
+struct CertificateLabels {
+    certificate: String,
+    issuer: String,
+}
+
+#[derive(Clone, Debug, EncodeLabelSet, Eq, Hash, PartialEq)]
+struct CertificateOutcomeLabels {
+    certificate: String,
+    issuer: String,
+    outcome: String,
+}
+
 type DurationFamily = Family<RequestLabels, Histogram, fn() -> Histogram>;
 type UpstreamDurationFamily = Family<UpstreamLabels, Histogram, fn() -> Histogram>;
 
@@ -81,6 +94,8 @@ pub struct Telemetry {
     upstream_labels: Mutex<HashSet<UpstreamLabels>>,
     upstream_attempt_labels: Mutex<HashSet<UpstreamAttemptLabels>>,
     rate_labels: Mutex<HashSet<MiddlewareDecisionLabels>>,
+    certificate_labels: Mutex<HashSet<CertificateLabels>>,
+    certificate_outcome_labels: Mutex<HashSet<CertificateOutcomeLabels>>,
     requests: Family<RequestLabels, Counter>,
     response_bytes: Family<RequestLabels, Counter>,
     request_duration: DurationFamily,
@@ -93,6 +108,10 @@ pub struct Telemetry {
     upstream_duration: UpstreamDurationFamily,
     rate_decisions: Family<MiddlewareDecisionLabels, Counter>,
     tls_handshakes: Family<TlsLabels, Counter>,
+    certificate_expiry: Family<CertificateLabels, Gauge>,
+    certificate_renewals: Family<CertificateOutcomeLabels, Counter>,
+    audit_operations: Family<OutcomeLabels, Counter>,
+    audit_ready: Gauge,
 }
 
 #[derive(Debug)]
@@ -101,6 +120,7 @@ struct AllowedLabels {
     routes: HashSet<String>,
     endpoints: HashSet<(String, String)>,
     middlewares: HashSet<String>,
+    certificates: HashMap<String, String>,
 }
 
 impl fmt::Debug for Telemetry {
@@ -126,6 +146,10 @@ impl Telemetry {
         let upstream_duration = Family::new_with_constructor(histogram as fn() -> Histogram);
         let rate_decisions = Family::default();
         let tls_handshakes = Family::default();
+        let certificate_expiry = Family::default();
+        let certificate_renewals = Family::default();
+        let audit_operations = Family::default();
+        let audit_ready = Gauge::default();
         let mut registry = Registry::with_prefix("aegisproxy");
         registry.register(
             "http_requests",
@@ -187,6 +211,26 @@ impl Telemetry {
             "TLS handshake outcomes by configured listener ID",
             tls_handshakes.clone(),
         );
+        registry.register(
+            "certificate_expiry_timestamp_seconds",
+            "Certificate expiry time by configured certificate and issuer IDs",
+            certificate_expiry.clone(),
+        );
+        registry.register(
+            "certificate_renewals",
+            "Certificate renewal request outcomes by configured IDs",
+            certificate_renewals.clone(),
+        );
+        registry.register(
+            "admin_audit_operations",
+            "Durable administrative audit append outcomes",
+            audit_operations.clone(),
+        );
+        registry.register(
+            "admin_audit_ready",
+            "Whether durable administrative audit is available",
+            audit_ready.clone(),
+        );
         Arc::new(Self {
             registry,
             enabled: config.observability.metrics,
@@ -196,6 +240,8 @@ impl Telemetry {
             upstream_labels: Mutex::new(HashSet::new()),
             upstream_attempt_labels: Mutex::new(HashSet::new()),
             rate_labels: Mutex::new(HashSet::new()),
+            certificate_labels: Mutex::new(HashSet::new()),
+            certificate_outcome_labels: Mutex::new(HashSet::new()),
             requests,
             response_bytes,
             request_duration,
@@ -208,6 +254,10 @@ impl Telemetry {
             upstream_duration,
             rate_decisions,
             tls_handshakes,
+            certificate_expiry,
+            certificate_renewals,
+            audit_operations,
+            audit_ready,
         })
     }
 
@@ -359,6 +409,59 @@ impl Telemetry {
         }
     }
 
+    pub(crate) fn update_certificate_expiry(&self, certificate: &str, expiry: i64) {
+        if !self.enabled {
+            return;
+        }
+        let Some(issuer) = self.allowed_certificate(certificate) else {
+            return;
+        };
+        let labels = CertificateLabels {
+            certificate: certificate.to_owned(),
+            issuer,
+        };
+        self.certificate_labels
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(labels.clone());
+        self.certificate_expiry.get_or_create(&labels).set(expiry);
+    }
+
+    pub(crate) fn certificate_renewal(&self, certificate: &str, outcome: &'static str) {
+        if !self.enabled {
+            return;
+        }
+        let Some(issuer) = self.allowed_certificate(certificate) else {
+            return;
+        };
+        let labels = CertificateOutcomeLabels {
+            certificate: certificate.to_owned(),
+            issuer,
+            outcome: bounded_certificate_outcome(outcome).to_owned(),
+        };
+        self.certificate_outcome_labels
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(labels.clone());
+        self.certificate_renewals.get_or_create(&labels).inc();
+    }
+
+    pub(crate) fn audit_ready(&self, ready: bool) {
+        if self.enabled {
+            self.audit_ready.set(i64::from(ready));
+        }
+    }
+
+    pub(crate) fn audit_operation(&self, outcome: &'static str) {
+        if self.enabled {
+            self.audit_operations
+                .get_or_create(&OutcomeLabels {
+                    outcome: bounded_audit_outcome(outcome).to_owned(),
+                })
+                .inc();
+        }
+    }
+
     pub(crate) fn reconcile(&self, config: &Config) {
         *self
             .allowed
@@ -410,6 +513,32 @@ impl Telemetry {
                     false
                 }
             });
+        self.certificate_labels
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|labels| {
+                if self.allowed_certificate(&labels.certificate).as_deref()
+                    == Some(labels.issuer.as_str())
+                {
+                    true
+                } else {
+                    self.certificate_expiry.remove(labels);
+                    false
+                }
+            });
+        self.certificate_outcome_labels
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|labels| {
+                if self.allowed_certificate(&labels.certificate).as_deref()
+                    == Some(labels.issuer.as_str())
+                {
+                    true
+                } else {
+                    self.certificate_renewals.remove(labels);
+                    false
+                }
+            });
         self.prune_inactive_request_labels();
     }
 
@@ -456,6 +585,15 @@ impl Telemetry {
             .contains(middleware)
     }
 
+    fn allowed_certificate(&self, certificate: &str) -> Option<String> {
+        self.allowed
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .certificates
+            .get(certificate)
+            .cloned()
+    }
+
     fn prune_inactive_request_labels(&self) {
         self.active_request_labels
             .lock()
@@ -494,6 +632,18 @@ fn allowed(config: &Config) -> AllowedLabels {
             })
             .collect(),
         middlewares: config.middlewares.keys().cloned().collect(),
+        certificates: config
+            .certificates
+            .iter()
+            .map(|certificate| (certificate.id.clone(), "manual".to_owned()))
+            .chain(
+                config
+                    .acme
+                    .certificates
+                    .iter()
+                    .map(|certificate| (certificate.id.clone(), certificate.issuer.clone())),
+            )
+            .collect(),
     }
 }
 
@@ -641,6 +791,24 @@ fn bounded_tls_outcome(outcome: &str) -> &'static str {
     }
 }
 
+fn bounded_certificate_outcome(outcome: &str) -> &'static str {
+    match outcome {
+        "requested" => "requested",
+        "completed" => "completed",
+        _ => "failed",
+    }
+}
+
+fn bounded_audit_outcome(outcome: &str) -> &'static str {
+    match outcome {
+        "intent" => "intent",
+        "success" => "success",
+        "failed" => "failed",
+        "denied" => "denied",
+        _ => "unavailable",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -665,6 +833,11 @@ mod tests {
             [[upstream_groups.endpoints]]
             id = "app-1"
             url = "http://127.0.0.1:9000"
+            [[certificates]]
+            id = "edge-cert"
+            hosts = ["example.test"]
+            certificate_chain = "file:///run/aegis/cert.pem"
+            private_key = "file:///run/aegis/key.age"
             "#,
         )
         .expect("config");
@@ -685,12 +858,21 @@ mod tests {
             response_bytes: 1,
             duration: Duration::ZERO,
         });
+        telemetry.update_certificate_expiry("edge-cert", 2_000_000_000);
+        telemetry.update_certificate_expiry("attacker-cert", 2_000_000_001);
+        telemetry.certificate_renewal("edge-cert", "requested");
+        telemetry.audit_ready(true);
+        telemetry.audit_operation("success");
         let output = telemetry.render().expect("metrics");
         assert!(output.contains("listener=\"public\""));
         assert!(output.contains("route=\"app\""));
         assert!(!output.contains("attacker.example"));
         assert!(!output.contains("raw/path"));
         assert!(!output.contains("canary"));
+        assert!(output.contains("certificate=\"edge-cert\""));
+        assert!(output.contains("issuer=\"manual\""));
+        assert!(output.contains("aegisproxy_admin_audit_ready 1"));
+        assert!(!output.contains("attacker-cert"));
 
         let guard = telemetry
             .request_started("public", "app", "http1")

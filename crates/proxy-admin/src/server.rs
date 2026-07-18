@@ -13,7 +13,7 @@ use aegisproxy_config::{
     BalancingAlgorithm, Config,
     revision::{RevisionError, RevisionMetadata},
 };
-use aegisproxy_core::{ActivationError, ManagedControl, RouteIndex};
+use aegisproxy_core::{ActivationError, ManagedControl, RouteIndex, RuntimeHandle};
 use aegisproxy_secrets::SecretRef;
 use axum::{
     Router,
@@ -442,6 +442,7 @@ struct RestoreValidateRequest {
 #[derive(Debug)]
 struct MutationAudit {
     log: Arc<AuditLog>,
+    runtime: RuntimeHandle,
     actor_type: String,
     actor_id: String,
     action: String,
@@ -512,6 +513,10 @@ pub async fn serve(
         started: Instant::now(),
         timeout: Duration::from_secs(config.admin.request_timeout_secs),
     };
+    state
+        .control
+        .runtime()
+        .set_audit_ready(state.audit.is_some());
     let app = Router::new()
         .route("/v1/live", get(live))
         .route("/v1/ready", get(ready))
@@ -669,8 +674,8 @@ async fn metrics(
     }
     let body = state
         .control
-        .runtime()
         .render_openmetrics()
+        .await
         .map_err(|_| ApiError::Unavailable)?;
     let mut response = Response::new(axum::body::Body::from(body));
     response.headers_mut().insert(
@@ -1536,6 +1541,7 @@ async fn begin_mutation(
 ) -> Result<MutationAudit, ApiError> {
     let audit = MutationAudit {
         log: state.audit.clone().ok_or(ApiError::Unavailable)?,
+        runtime: state.control.runtime(),
         actor_type: principal.actor_type.to_owned(),
         actor_id: principal.actor_id.clone(),
         action: spec.action.to_owned(),
@@ -1579,11 +1585,25 @@ impl MutationAudit {
             outcome,
             error_code: error_code.map(str::to_owned),
         };
-        tokio::task::spawn_blocking(move || log.append(event))
+        let result = tokio::task::spawn_blocking(move || log.append(event))
             .await
             .map_err(|_| ApiError::Internal)?
             .map(|_| ())
-            .map_err(|_| ApiError::Unavailable)
+            .map_err(|_| ApiError::Unavailable);
+        self.runtime.record_audit_operation(if result.is_ok() {
+            match outcome {
+                AuditOutcome::Intent => "intent",
+                AuditOutcome::Success => "success",
+                AuditOutcome::Denied => "denied",
+                AuditOutcome::Failed => "failed",
+            }
+        } else {
+            "unavailable"
+        });
+        if result.is_err() {
+            self.runtime.set_audit_ready(false);
+        }
+        result
     }
 }
 

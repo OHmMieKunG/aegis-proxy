@@ -301,6 +301,16 @@ impl RuntimeHandle {
         self.telemetry.render()
     }
 
+    /// Update the bounded administrative-audit readiness gauge.
+    pub fn set_audit_ready(&self, ready: bool) {
+        self.telemetry.audit_ready(ready);
+    }
+
+    /// Record one bounded durable administrative-audit outcome.
+    pub fn record_audit_operation(&self, outcome: &'static str) {
+        self.telemetry.audit_operation(outcome);
+    }
+
     /// Return the process-wide HTTP-01 registry retained across configuration reloads.
     #[must_use]
     pub fn http_challenges(&self) -> HttpChallengeRegistry {
