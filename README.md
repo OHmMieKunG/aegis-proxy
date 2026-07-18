@@ -4,7 +4,7 @@ Security-first Rust reverse proxy. Initial scope: one Tokio process, strict TOML
 
 Status: implementation in progress. See [`PLAN.md`](PLAN.md) and [`docs/implementation-readiness-review.md`](docs/implementation-readiness-review.md).
 
-Operator guides: [configuration v1](docs/configuration-v1.md), [configuration reload](docs/config-reload.md), [ACME certificates](docs/operations/acme.md), and [TLS key recovery](docs/tls-key-recovery.md).
+Operator guides: [configuration v1](docs/configuration-v1.md), [configuration reload](docs/config-reload.md), [ACME certificates](docs/operations/acme.md), [private administration](docs/operations/admin.md), [observability](docs/operations/observability.md), [SIEM/audit export](docs/operations/siem.md), and [TLS key recovery](docs/tls-key-recovery.md).
 
 ## Local checks
 
