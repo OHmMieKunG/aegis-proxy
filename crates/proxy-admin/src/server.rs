@@ -215,7 +215,7 @@ impl RateLimiter {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 enum ApiError {
     Unauthorized,
     Forbidden,
@@ -231,6 +231,17 @@ enum ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        let (status, code, _) = self.contract();
+        let mut response = status.into_response();
+        response
+            .headers_mut()
+            .insert("x-aegis-error-code", HeaderValue::from_static(code));
+        response
+    }
+}
+
+impl ApiError {
+    fn contract(self) -> (StatusCode, &'static str, &'static str) {
         let (status, code) = match self {
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),
             Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden"),
@@ -243,13 +254,39 @@ impl IntoResponse for ApiError {
             Self::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
             Self::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
         };
-        (status, axum::Json(ErrorResponse { error: code })).into_response()
+        let message = match self {
+            Self::Unauthorized => "authentication required",
+            Self::Forbidden => "operation is not permitted",
+            Self::Busy => "administrative capacity is exhausted",
+            Self::RateLimited => "administrative rate limit exceeded",
+            Self::Timeout => "administrative request timed out",
+            Self::InvalidRequest => "request is invalid",
+            Self::NotFound => "resource was not found",
+            Self::Conflict => "active revision changed",
+            Self::Unavailable => "administrative dependency is unavailable",
+            Self::Internal => "administrative request failed",
+        };
+        (status, code, message)
     }
 }
 
 #[derive(Debug, Serialize)]
 struct ErrorResponse {
-    error: &'static str,
+    error: ErrorBody,
+}
+
+#[derive(Debug, Serialize)]
+struct ErrorBody {
+    code: String,
+    message: String,
+    details: Vec<ErrorDetail>,
+    request_id: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ErrorDetail {
+    path: String,
+    reason: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -518,20 +555,83 @@ async fn bound_request(
     State(state): State<AppState>,
     mut request: Request,
     next: Next,
-) -> Result<Response, ApiError> {
-    let _permit = Arc::clone(&state.request_permits)
-        .try_acquire_owned()
-        .map_err(|_| ApiError::Busy)?;
-    let request_id = request_id().ok_or(ApiError::Internal)?;
+) -> Response {
+    let request_id = request_id().unwrap_or_else(|| "request-id-unavailable".into());
+    let _permit = match Arc::clone(&state.request_permits).try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => return error_contract(ApiError::Busy.into_response(), &request_id),
+    };
     request
         .extensions_mut()
         .insert(RequestId(request_id.clone()));
-    let mut response = tokio::time::timeout(state.timeout, next.run(request))
-        .await
-        .map_err(|_| ApiError::Timeout)?;
-    let value = HeaderValue::from_str(&request_id).map_err(|_| ApiError::Internal)?;
-    response.headers_mut().insert("x-request-id", value);
-    Ok(response)
+    let response = match tokio::time::timeout(state.timeout, next.run(request)).await {
+        Ok(response) => response,
+        Err(_) => ApiError::Timeout.into_response(),
+    };
+    let mut response = if response.status().is_client_error()
+        || (response.status().is_server_error()
+            && !response
+                .headers()
+                .get(CONTENT_TYPE)
+                .is_some_and(|value| value.as_bytes().starts_with(b"application/json")))
+    {
+        error_contract(response, &request_id)
+    } else {
+        response
+    };
+    if let Ok(value) = HeaderValue::from_str(&request_id) {
+        response.headers_mut().insert("x-request-id", value);
+    }
+    response
+}
+
+fn error_contract(mut response: Response, request_id: &str) -> Response {
+    let status = response.status();
+    let tagged = response
+        .headers_mut()
+        .remove("x-aegis-error-code")
+        .and_then(|value| value.to_str().ok().map(str::to_owned));
+    let (code, message) = tagged.as_deref().map_or_else(
+        || match status {
+            StatusCode::NOT_FOUND => ("not_found", "resource was not found"),
+            StatusCode::METHOD_NOT_ALLOWED => ("method_not_allowed", "method is not allowed"),
+            StatusCode::PAYLOAD_TOO_LARGE => ("body_too_large", "request body is too large"),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE => {
+                ("invalid_content_type", "content type is not supported")
+            }
+            _ => ("request_failed", "request failed"),
+        },
+        |code| {
+            let message = match code {
+                "unauthorized" => "authentication required",
+                "forbidden" => "operation is not permitted",
+                "capacity_exhausted" => "administrative capacity is exhausted",
+                "rate_limited" => "administrative rate limit exceeded",
+                "request_timeout" => "administrative request timed out",
+                "invalid_request" => "request is invalid",
+                "not_found" => "resource was not found",
+                "revision_conflict" => "active revision changed",
+                "unavailable" => "administrative dependency is unavailable",
+                _ => "administrative request failed",
+            };
+            (code, message)
+        },
+    );
+    let body = serde_json::to_vec(&ErrorResponse {
+        error: ErrorBody {
+            code: code.to_owned(),
+            message: message.to_owned(),
+            details: Vec::new(),
+            request_id: request_id.to_owned(),
+        },
+    })
+    .unwrap_or_else(|_| b"{\"error\":{\"code\":\"internal_error\"}}".to_vec());
+    let mut contract = Response::new(axum::body::Body::from(body));
+    *contract.status_mut() = status;
+    contract
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    contract
 }
 
 async fn live() -> axum::Json<HealthResponse> {
@@ -1602,6 +1702,20 @@ mod tests {
         drop(guard);
         assert!(!path.exists());
         fs::remove_dir(root).expect("remove root");
+    }
+
+    #[tokio::test]
+    async fn errors_use_stable_nested_contract_and_hide_internal_tag() {
+        let response = error_contract(ApiError::Forbidden.into_response(), "request-123");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(response.headers().get("x-aegis-error-code").is_none());
+        let body = axum::body::to_bytes(response.into_body(), 4_096)
+            .await
+            .expect("error body");
+        let value: serde_json::Value = serde_json::from_slice(&body).expect("error JSON");
+        assert_eq!(value["error"]["code"], "forbidden");
+        assert_eq!(value["error"]["request_id"], "request-123");
+        assert_eq!(value["error"]["details"], serde_json::json!([]));
     }
 
     #[test]
