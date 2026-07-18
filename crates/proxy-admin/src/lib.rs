@@ -2,9 +2,11 @@
 #![warn(missing_debug_implementations, missing_docs)]
 //! Administrative control-plane boundary.
 
+mod audit;
 mod auth;
 mod rbac;
 
+pub use audit::{AuditError, AuditEvent, AuditLog, AuditOutcome, AuditRecord};
 pub use auth::{IssuedToken, TokenError, TokenRecord};
 pub use rbac::{Action, Role};
 
