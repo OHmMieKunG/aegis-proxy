@@ -7,6 +7,25 @@ servers:
   - url: http://localhost
     description: HTTP over the configured private Unix socket
 paths:
+  /live:
+    get:
+      operationId: liveProbe
+      security: []
+      responses:
+        "200": {description: Process event loop is live}
+  /ready:
+    get:
+      operationId: readyProbe
+      security: []
+      responses:
+        "200": {description: Administration is ready}
+        "503": {description: Durable recovery is required}
+  /health/details:
+    get:
+      operationId: healthDetails
+      responses:
+        "200": {description: Authenticated redacted process and control-plane health}
+        default: {$ref: "#/components/responses/Error"}
   /v1/live:
     get:
       operationId: live

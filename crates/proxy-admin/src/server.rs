@@ -518,6 +518,9 @@ pub async fn serve(
         .runtime()
         .set_audit_ready(state.audit.is_some());
     let app = Router::new()
+        .route("/live", get(live))
+        .route("/ready", get(ready))
+        .route("/health/details", get(status))
         .route("/v1/live", get(live))
         .route("/v1/ready", get(ready))
         .route("/metrics", get(metrics))
@@ -1804,7 +1807,10 @@ mod tests {
     fn checked_openapi_contains_every_private_route() {
         let openapi = include_str!("../../../config/schema/admin-openapi.yaml");
         for path in [
+            "/health/details:",
+            "/live:",
             "/metrics:",
+            "/ready:",
             "/v1/live:",
             "/v1/ready:",
             "/v1/status:",
