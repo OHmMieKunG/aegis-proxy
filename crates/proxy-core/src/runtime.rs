@@ -608,6 +608,8 @@ async fn finish_drains(drains: Vec<(String, DrainingEndpoint)>) {
 mod tests {
     use std::collections::BTreeMap;
     use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use aegisproxy_config::{
@@ -811,6 +813,9 @@ mod tests {
             identity.to_string().expose_secret().as_bytes(),
         )
         .expect("identity file");
+        #[cfg(unix)]
+        fs::set_permissions(&identity_path, fs::Permissions::from_mode(0o600))
+            .expect("private identity permissions");
         let mut managed = (*config(8080)).clone();
         managed.runtime.state_dir = state.display().to_string();
         managed.tls.identity = Some(format!("file://{}", identity_path.display()));
