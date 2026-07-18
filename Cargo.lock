@@ -23,6 +23,8 @@ name = "aegisproxy-admin"
 version = "0.1.0"
 dependencies = [
  "aegisproxy-config",
+ "aegisproxy-secrets",
+ "age",
  "argon2",
  "base64 0.22.1",
  "getrandom 0.3.4",
