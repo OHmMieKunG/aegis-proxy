@@ -275,6 +275,12 @@ impl RuntimeHandle {
         Arc::clone(&self.current.load().revision)
     }
 
+    /// Return the active immutable configuration.
+    #[must_use]
+    pub fn config(&self) -> Arc<Config> {
+        Arc::clone(&self.current.load().config)
+    }
+
     /// Return the process-wide HTTP-01 registry retained across configuration reloads.
     #[must_use]
     pub fn http_challenges(&self) -> HttpChallengeRegistry {

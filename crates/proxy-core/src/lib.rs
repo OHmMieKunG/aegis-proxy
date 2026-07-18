@@ -106,6 +106,34 @@ pub enum ProxyError {
     Revision(#[from] RevisionError),
 }
 
+/// Handles exposed to an isolated management service.
+#[derive(Clone, Debug)]
+pub struct ManagedControl {
+    revisions: Arc<RevisionStore>,
+    coordinator: Arc<ActivationCoordinator>,
+    runtime: RuntimeHandle,
+}
+
+impl ManagedControl {
+    /// Return the durable revision store.
+    #[must_use]
+    pub fn revisions(&self) -> Arc<RevisionStore> {
+        Arc::clone(&self.revisions)
+    }
+
+    /// Return the transactional activation coordinator.
+    #[must_use]
+    pub fn coordinator(&self) -> Arc<ActivationCoordinator> {
+        Arc::clone(&self.coordinator)
+    }
+
+    /// Return the current runtime handle.
+    #[must_use]
+    pub fn runtime(&self) -> RuntimeHandle {
+        self.runtime.clone()
+    }
+}
+
 /// Run configured public listeners until cancellation.
 pub async fn run(config: Arc<Config>, shutdown: CancellationToken) -> Result<(), ProxyError> {
     let snapshot = RuntimeSnapshot::prepare(config, "startup", &shutdown).await?;
@@ -119,6 +147,22 @@ pub async fn run_managed(
     config_path: PathBuf,
     shutdown: CancellationToken,
 ) -> Result<(), ProxyError> {
+    run_managed_with_control(config_path, shutdown, |_, shutdown| async move {
+        shutdown.cancelled().await;
+    })
+    .await
+}
+
+/// Run a file-backed daemon and start an isolated management service.
+pub async fn run_managed_with_control<F, Fut>(
+    config_path: PathBuf,
+    shutdown: CancellationToken,
+    start_control: F,
+) -> Result<(), ProxyError>
+where
+    F: FnOnce(ManagedControl, CancellationToken) -> Fut + Send + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
     let config = tokio::task::spawn_blocking({
         let config_path = config_path.clone();
         move || aegisproxy_config::load_file(config_path)
@@ -157,7 +201,15 @@ pub async fn run_managed(
         .await
         .map_err(|error| ProxyError::Preparation(error.to_string()))??;
     }
-    serve_managed(config_path, revisions, snapshot, listeners, shutdown).await
+    serve_managed(
+        config_path,
+        revisions,
+        snapshot,
+        listeners,
+        shutdown,
+        start_control,
+    )
+    .await
 }
 
 /// Explicitly start from the durable last-known-good revision.
@@ -169,6 +221,23 @@ pub async fn run_last_known_good(
     state_dir: PathBuf,
     shutdown: CancellationToken,
 ) -> Result<(), ProxyError> {
+    run_last_known_good_with_control(config_path, state_dir, shutdown, |_, shutdown| async move {
+        shutdown.cancelled().await;
+    })
+    .await
+}
+
+/// Start from last-known-good and start an isolated management service.
+pub async fn run_last_known_good_with_control<F, Fut>(
+    config_path: PathBuf,
+    state_dir: PathBuf,
+    shutdown: CancellationToken,
+    start_control: F,
+) -> Result<(), ProxyError>
+where
+    F: FnOnce(ManagedControl, CancellationToken) -> Fut + Send + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
     let revisions = Arc::new(
         tokio::task::spawn_blocking(move || RevisionStore::open(state_dir))
             .await
@@ -192,7 +261,15 @@ pub async fn run_last_known_good(
     };
     tracing::warn!(revision = %active.active.id, "explicit last-known-good recovery selected");
     let (snapshot, listeners) = prepare_bound(config, active.active.id, &shutdown).await?;
-    serve_managed(config_path, revisions, snapshot, listeners, shutdown).await
+    serve_managed(
+        config_path,
+        revisions,
+        snapshot,
+        listeners,
+        shutdown,
+        start_control,
+    )
+    .await
 }
 
 async fn prepare_bound(
@@ -205,13 +282,18 @@ async fn prepare_bound(
     Ok((snapshot, listeners))
 }
 
-async fn serve_managed(
+async fn serve_managed<F, Fut>(
     config_path: PathBuf,
     revisions: Arc<RevisionStore>,
     snapshot: Arc<RuntimeSnapshot>,
     listeners: Vec<(ListenerConfig, TcpListener)>,
     shutdown: CancellationToken,
-) -> Result<(), ProxyError> {
+    start_control: F,
+) -> Result<(), ProxyError>
+where
+    F: FnOnce(ManagedControl, CancellationToken) -> Fut + Send + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
     let runtime = RuntimeHandle::new(Arc::clone(&snapshot));
     let coordinator = Arc::new(ActivationCoordinator::new(
         Arc::clone(&revisions),
@@ -220,14 +302,25 @@ async fn serve_managed(
     ));
     let watcher = tokio::spawn(watch_config_file(
         config_path,
-        revisions,
+        Arc::clone(&revisions),
         Arc::clone(&coordinator),
         runtime.clone(),
+        shutdown.clone(),
+    ));
+    let control = tokio::spawn(start_control(
+        ManagedControl {
+            revisions,
+            coordinator,
+            runtime: runtime.clone(),
+        },
         shutdown.clone(),
     ));
     let result = serve_bound(runtime, snapshot, listeners, shutdown).await;
     if let Err(error) = watcher.await {
         tracing::error!(%error, "configuration watcher task failed");
+    }
+    if let Err(error) = control.await {
+        tracing::error!(%error, "management service task failed");
     }
     result
 }
