@@ -9,19 +9,27 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use aegisproxy_config::{BalancingAlgorithm, Config, revision::RevisionMetadata};
 use aegisproxy_core::ManagedControl;
 use aegisproxy_secrets::SecretRef;
 use axum::{
     Router,
-    extract::{ConnectInfo, Extension, FromRequestParts, Request, State, connect_info::Connected},
-    http::{HeaderMap, HeaderValue, StatusCode, header::AUTHORIZATION, request::Parts},
+    extract::{
+        ConnectInfo, Extension, FromRequestParts, Path as AxumPath, Query, Request, State,
+        connect_info::Connected,
+    },
+    http::{
+        HeaderMap, HeaderValue, StatusCode,
+        header::{AUTHORIZATION, ETAG},
+        request::Parts,
+    },
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::get,
     serve::IncomingStream,
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{net::UnixListener, sync::Semaphore};
 use tokio_util::sync::CancellationToken;
@@ -58,6 +66,7 @@ struct AppState {
     auth_permits: Arc<Semaphore>,
     request_permits: Arc<Semaphore>,
     rate_limiter: Arc<RateLimiter>,
+    started: Instant,
     timeout: Duration,
 }
 
@@ -209,6 +218,9 @@ enum ApiError {
     Busy,
     RateLimited,
     Timeout,
+    InvalidRequest,
+    NotFound,
+    Unavailable,
     Internal,
 }
 
@@ -220,6 +232,9 @@ impl IntoResponse for ApiError {
             Self::Busy => (StatusCode::SERVICE_UNAVAILABLE, "capacity_exhausted"),
             Self::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
             Self::Timeout => (StatusCode::GATEWAY_TIMEOUT, "request_timeout"),
+            Self::InvalidRequest => (StatusCode::BAD_REQUEST, "invalid_request"),
+            Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
+            Self::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
             Self::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
         };
         (status, axum::Json(ErrorResponse { error: code })).into_response()
@@ -239,11 +254,77 @@ struct HealthResponse {
 #[derive(Debug, Serialize)]
 struct StatusResponse {
     request_id: String,
+    version: &'static str,
+    uptime_secs: u64,
     active_revision: String,
     administration_ready: bool,
     audit_ready: bool,
     actor_type: &'static str,
     actor_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Page {
+    after_sequence: Option<u64>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+struct RevisionPage {
+    items: Vec<RevisionMetadata>,
+    next_sequence: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+struct RevisionResponse {
+    metadata: RevisionMetadata,
+    status: &'static str,
+    config: Config,
+}
+
+#[derive(Debug, Serialize)]
+struct RouteSummary {
+    id: String,
+    listeners: Vec<String>,
+    hosts: Vec<String>,
+    paths: Vec<String>,
+    path_prefixes: Vec<String>,
+    methods: Vec<String>,
+    default: bool,
+    priority: i32,
+    middlewares: Vec<String>,
+    upstream_group: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct UpstreamSummary {
+    id: String,
+    algorithm: BalancingAlgorithm,
+    max_in_flight: usize,
+    endpoints: Vec<EndpointSummary>,
+}
+
+#[derive(Debug, Serialize)]
+struct EndpointSummary {
+    id: String,
+    transport: String,
+    weight: u32,
+    state: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct CertificateSummary {
+    id: String,
+    hosts: Vec<String>,
+    source: &'static str,
+    issuer: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct AuditPage {
+    items: Vec<crate::AuditRecord>,
+    next_sequence: Option<u64>,
 }
 
 /// Serve private administrative requests until process cancellation.
@@ -297,12 +378,20 @@ pub async fn serve(
             config.admin.requests_per_second,
             config.admin.burst,
         )),
+        started: Instant::now(),
         timeout: Duration::from_secs(config.admin.request_timeout_secs),
     };
     let app = Router::new()
         .route("/v1/live", get(live))
         .route("/v1/ready", get(ready))
         .route("/v1/status", get(status))
+        .route("/v1/config/active", get(active_config))
+        .route("/v1/config/revisions", get(revisions))
+        .route("/v1/config/revisions/{id}", get(revision))
+        .route("/v1/routes", get(routes))
+        .route("/v1/upstreams", get(upstreams))
+        .route("/v1/certificates", get(certificates))
+        .route("/v1/audit", get(audit_records))
         .layer(axum::extract::DefaultBodyLimit::max(
             config.admin.max_body_bytes,
         ))
@@ -367,12 +456,233 @@ async fn status(
     authorize(&principal, Action::ReadStatus)?;
     Ok(axum::Json(StatusResponse {
         request_id: request_id.0,
+        version: env!("CARGO_PKG_VERSION"),
+        uptime_secs: state.started.elapsed().as_secs(),
         active_revision: state.control.runtime().revision().to_string(),
         administration_ready: state.control.coordinator().administration_ready(),
         audit_ready: state.audit.is_some(),
         actor_type: principal.actor_type,
         actor_id: principal.actor_id,
     }))
+}
+
+async fn active_config(
+    State(state): State<AppState>,
+    principal: Principal,
+) -> Result<Response, ApiError> {
+    authorize(&principal, Action::ReadConfig)?;
+    let revision = state.control.runtime().revision();
+    let mut response = axum::Json(aegisproxy_config::redacted(
+        &state.control.runtime().config(),
+    ))
+    .into_response();
+    response
+        .headers_mut()
+        .insert(ETAG, etag(&revision).ok_or(ApiError::Internal)?);
+    Ok(response)
+}
+
+async fn revisions(
+    State(state): State<AppState>,
+    Query(page): Query<Page>,
+    principal: Principal,
+) -> Result<axum::Json<RevisionPage>, ApiError> {
+    authorize(&principal, Action::ReadRevisions)?;
+    let limit = page_limit(&page)?;
+    let store = state.control.revisions();
+    let mut items = tokio::task::spawn_blocking(move || store.list())
+        .await
+        .map_err(|_| ApiError::Internal)?
+        .map_err(|_| ApiError::Unavailable)?;
+    if let Some(sequence) = page.after_sequence {
+        items.retain(|item| item.sequence > sequence);
+    }
+    let next_sequence = if items.len() > limit {
+        items.truncate(limit);
+        items.last().map(|item| item.sequence)
+    } else {
+        None
+    };
+    Ok(axum::Json(RevisionPage {
+        items,
+        next_sequence,
+    }))
+}
+
+async fn revision(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    principal: Principal,
+) -> Result<axum::Json<RevisionResponse>, ApiError> {
+    authorize(&principal, Action::ReadRevisions)?;
+    let store = state.control.revisions();
+    let result = tokio::task::spawn_blocking(move || {
+        let metadata = store.list()?.into_iter().find(|item| item.id == id);
+        let Some(metadata) = metadata else {
+            return Ok(None);
+        };
+        let config = store.load(&metadata.id)?;
+        let active = store.active()?;
+        let status = if active.as_ref().map(|pointer| pointer.active.id.as_str())
+            == Some(metadata.id.as_str())
+        {
+            "active"
+        } else if active
+            .as_ref()
+            .and_then(|pointer| pointer.previous.as_ref())
+            .map(|target| target.id.as_str())
+            == Some(metadata.id.as_str())
+        {
+            "previous"
+        } else {
+            "retained"
+        };
+        Ok::<_, aegisproxy_config::revision::RevisionError>(Some((metadata, config, status)))
+    })
+    .await
+    .map_err(|_| ApiError::Internal)?
+    .map_err(|_| ApiError::Unavailable)?
+    .ok_or(ApiError::NotFound)?;
+    Ok(axum::Json(RevisionResponse {
+        metadata: result.0,
+        config: aegisproxy_config::redacted(&result.1),
+        status: result.2,
+    }))
+}
+
+async fn routes(
+    State(state): State<AppState>,
+    principal: Principal,
+) -> Result<axum::Json<Vec<RouteSummary>>, ApiError> {
+    authorize(&principal, Action::ReadRoutes)?;
+    let mut routes: Vec<_> = state
+        .control
+        .runtime()
+        .config()
+        .routes
+        .iter()
+        .map(|route| RouteSummary {
+            id: route.id.clone(),
+            listeners: route.listeners.clone(),
+            hosts: route.hosts.clone(),
+            paths: route.paths.clone(),
+            path_prefixes: route.path_prefixes.clone(),
+            methods: route.methods.clone(),
+            default: route.default,
+            priority: route.priority,
+            middlewares: route.middlewares.clone(),
+            upstream_group: route.upstream_group.clone(),
+        })
+        .collect();
+    routes.sort_unstable_by(|left, right| {
+        right
+            .priority
+            .cmp(&left.priority)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    Ok(axum::Json(routes))
+}
+
+async fn upstreams(
+    State(state): State<AppState>,
+    principal: Principal,
+) -> Result<axum::Json<Vec<UpstreamSummary>>, ApiError> {
+    authorize(&principal, Action::ReadUpstreams)?;
+    let mut groups: Vec<_> = state
+        .control
+        .runtime()
+        .config()
+        .upstream_groups
+        .iter()
+        .map(|group| UpstreamSummary {
+            id: group.id.clone(),
+            algorithm: group.algorithm,
+            max_in_flight: group.max_in_flight,
+            endpoints: group
+                .endpoints
+                .iter()
+                .map(|endpoint| EndpointSummary {
+                    id: endpoint.id.clone(),
+                    transport: endpoint.url.scheme().to_owned(),
+                    weight: endpoint.weight,
+                    state: "configured",
+                })
+                .collect(),
+        })
+        .collect();
+    groups.sort_unstable_by(|left, right| left.id.cmp(&right.id));
+    Ok(axum::Json(groups))
+}
+
+async fn certificates(
+    State(state): State<AppState>,
+    principal: Principal,
+) -> Result<axum::Json<Vec<CertificateSummary>>, ApiError> {
+    authorize(&principal, Action::ReadCertificates)?;
+    let config = state.control.runtime().config();
+    let mut certificates: Vec<_> = config
+        .certificates
+        .iter()
+        .map(|certificate| CertificateSummary {
+            id: certificate.id.clone(),
+            hosts: certificate.hosts.clone(),
+            source: "imported",
+            issuer: None,
+        })
+        .chain(
+            config
+                .acme
+                .certificates
+                .iter()
+                .map(|certificate| CertificateSummary {
+                    id: certificate.id.clone(),
+                    hosts: certificate.hosts.clone(),
+                    source: "acme",
+                    issuer: Some(certificate.issuer.clone()),
+                }),
+        )
+        .collect();
+    certificates.sort_unstable_by(|left, right| left.id.cmp(&right.id));
+    Ok(axum::Json(certificates))
+}
+
+async fn audit_records(
+    State(state): State<AppState>,
+    Query(page): Query<Page>,
+    principal: Principal,
+) -> Result<axum::Json<AuditPage>, ApiError> {
+    authorize(&principal, Action::ReadAudit)?;
+    let limit = page_limit(&page)?;
+    let audit = state.audit.ok_or(ApiError::Unavailable)?;
+    let mut items = tokio::task::spawn_blocking(move || audit.records())
+        .await
+        .map_err(|_| ApiError::Internal)?
+        .map_err(|_| ApiError::Unavailable)?;
+    if let Some(sequence) = page.after_sequence {
+        items.retain(|item| item.sequence > sequence);
+    }
+    let next_sequence = if items.len() > limit {
+        items.truncate(limit);
+        items.last().map(|item| item.sequence)
+    } else {
+        None
+    };
+    Ok(axum::Json(AuditPage {
+        items,
+        next_sequence,
+    }))
+}
+
+fn page_limit(page: &Page) -> Result<usize, ApiError> {
+    let limit = page.limit.unwrap_or(100);
+    (1..=100)
+        .contains(&limit)
+        .then_some(limit)
+        .ok_or(ApiError::InvalidRequest)
+}
+
+fn etag(revision: &str) -> Option<HeaderValue> {
+    HeaderValue::from_str(&format!("\"{revision}\"")).ok()
 }
 
 fn authorize(principal: &Principal, action: Action) -> Result<(), ApiError> {
@@ -570,6 +880,34 @@ mod tests {
             role: Role::Viewer,
         };
         assert!(limiter.check_at(&second, start).is_err());
+    }
+
+    #[test]
+    fn pagination_and_etags_are_bounded() {
+        assert_eq!(
+            page_limit(&Page {
+                after_sequence: None,
+                limit: None,
+            })
+            .expect("default page"),
+            100
+        );
+        assert!(
+            page_limit(&Page {
+                after_sequence: None,
+                limit: Some(0),
+            })
+            .is_err()
+        );
+        assert!(
+            page_limit(&Page {
+                after_sequence: None,
+                limit: Some(101),
+            })
+            .is_err()
+        );
+        assert_eq!(etag("0001-deadbeef").expect("ETag"), "\"0001-deadbeef\"");
+        assert!(etag("bad\nrevision").is_none());
     }
 
     #[test]

@@ -10,7 +10,7 @@ aegisproxy-config = { path = "../proxy-config" }
 aegisproxy-core = { path = "../proxy-core" }
 aegisproxy-secrets = { path = "../proxy-secrets" }
 argon2 = { version = "0.5.3", default-features = false, features = ["alloc", "password-hash"] }
-axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "query", "tokio"] }
 base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 getrandom = "0.3"
 hmac = "0.12"
