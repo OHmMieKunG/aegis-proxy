@@ -4212,4 +4212,23 @@ mod tests {
         config.admin.max_auth_in_flight = 0;
         assert!(validate(&config).is_err());
     }
+
+    #[test]
+    fn rejects_remote_admin_listener_configuration() {
+        let source = r#"
+            schema_version = 1
+
+            [[listeners]]
+            id = "public"
+            bind = "127.0.0.1:8080"
+            protocol = "http"
+
+            [admin]
+            tcp_bind = "0.0.0.0:9090"
+        "#;
+
+        let error = toml::from_str::<Config>(source)
+            .expect_err("the schema must not expose an unimplemented remote admin listener");
+        assert!(error.to_string().contains("unknown field `tcp_bind`"));
+    }
 }
