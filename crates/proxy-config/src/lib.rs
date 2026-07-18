@@ -913,11 +913,43 @@ pub struct HeaderMatch {
 }
 
 /// Administrative settings.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AdminConfig {
-    /// Unix socket path. Not bound by the Phase 1 server yet.
+    /// Absolute Unix socket path. Omit to use `<state_dir>/admin/admin.sock`.
     pub unix_socket: Option<String>,
+    /// Optional peer-UID allowlist. Empty relies on socket filesystem access.
+    pub allowed_uids: Vec<u32>,
+    /// Secret reference for the durable audit HMAC key.
+    pub audit_key: Option<String>,
+    /// Maximum JSON or TOML request body bytes.
+    pub max_body_bytes: usize,
+    /// Maximum concurrent administrative requests.
+    pub max_in_flight: usize,
+    /// Maximum concurrent Argon2 token verifications.
+    pub max_auth_in_flight: usize,
+    /// Per-request deadline in seconds.
+    pub request_timeout_secs: u64,
+    /// Per-principal request rate.
+    pub requests_per_second: u32,
+    /// Per-principal request burst.
+    pub burst: u32,
+}
+
+impl Default for AdminConfig {
+    fn default() -> Self {
+        Self {
+            unix_socket: None,
+            allowed_uids: Vec::new(),
+            audit_key: None,
+            max_body_bytes: 1024 * 1024,
+            max_in_flight: 16,
+            max_auth_in_flight: 4,
+            request_timeout_secs: 10,
+            requests_per_second: 20,
+            burst: 40,
+        }
+    }
 }
 
 /// Configuration error.
@@ -988,6 +1020,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             "runtime shutdown/config polling durations are outside safe bounds".into(),
         ));
     }
+    validate_admin(&config.admin)?;
     if config.upstream_groups.len() > MAX_UPSTREAM_GROUPS {
         return Err(ConfigError::Invalid(format!(
             "upstream_groups exceeds {MAX_UPSTREAM_GROUPS} entries"
@@ -1731,6 +1764,55 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             }
             _ => {}
         }
+    }
+    Ok(())
+}
+
+fn validate_admin(admin: &AdminConfig) -> Result<(), ConfigError> {
+    if let Some(socket) = admin.unix_socket.as_deref() {
+        let path = Path::new(socket);
+        if socket.is_empty()
+            || socket.len() > 4_096
+            || socket.bytes().any(|byte| byte.is_ascii_control())
+            || !path.is_absolute()
+            || path
+                .components()
+                .any(|component| component == std::path::Component::ParentDir)
+        {
+            return Err(ConfigError::Invalid(
+                "admin.unix_socket must be an absolute path without parent traversal".into(),
+            ));
+        }
+    }
+    if admin.allowed_uids.len() > 64
+        || admin
+            .allowed_uids
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>()
+            .len()
+            != admin.allowed_uids.len()
+    {
+        return Err(ConfigError::Invalid(
+            "admin.allowed_uids must contain at most 64 unique values".into(),
+        ));
+    }
+    if let Some(reference) = admin.audit_key.as_deref() {
+        SecretRef::parse(reference).map_err(|_| {
+            ConfigError::Invalid("admin.audit_key has an invalid secret reference".into())
+        })?;
+    }
+    if !(1..=1024 * 1024).contains(&admin.max_body_bytes)
+        || !(1..=256).contains(&admin.max_in_flight)
+        || !(1..=32).contains(&admin.max_auth_in_flight)
+        || !(1..=60).contains(&admin.request_timeout_secs)
+        || !(1..=1_000).contains(&admin.requests_per_second)
+        || admin.burst < admin.requests_per_second
+        || admin.burst > 5_000
+    {
+        return Err(ConfigError::Invalid(
+            "administrative resource limits are outside safe bounds".into(),
+        ));
     }
     Ok(())
 }
@@ -4105,5 +4187,29 @@ mod tests {
                 .to_string()
                 .contains("unsafe")
         );
+    }
+
+    #[test]
+    fn validates_private_admin_settings() {
+        let mut config = base_config();
+        config.admin = AdminConfig {
+            unix_socket: Some("/run/aegisproxy/admin.sock".into()),
+            allowed_uids: vec![1000, 1001],
+            audit_key: Some("file:///run/secrets/audit-key".into()),
+            ..AdminConfig::default()
+        };
+        validate(&config).expect("private admin settings");
+
+        config.admin.unix_socket = Some("relative/admin.sock".into());
+        assert!(validate(&config).is_err());
+        config.admin.unix_socket = None;
+        config.admin.allowed_uids = vec![1000, 1000];
+        assert!(validate(&config).is_err());
+        config.admin.allowed_uids.clear();
+        config.admin.audit_key = Some("exec://audit-key".into());
+        assert!(validate(&config).is_err());
+        config.admin.audit_key = None;
+        config.admin.max_auth_in_flight = 0;
+        assert!(validate(&config).is_err());
     }
 }

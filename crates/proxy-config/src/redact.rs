@@ -8,6 +8,9 @@ const REDACTED: &str = "<redacted-secret-reference>";
 #[must_use]
 pub fn redacted(config: &Config) -> Config {
     let mut output = config.clone();
+    if output.admin.audit_key.is_some() {
+        output.admin.audit_key = Some(REDACTED.into());
+    }
     if output.tls.identity.is_some() {
         output.tls.identity = Some(REDACTED.into());
     }
@@ -113,10 +116,13 @@ mod tests {
             }],
             middlewares: BTreeMap::new(),
             routes: vec![],
-            admin: AdminConfig::default(),
+            admin: AdminConfig {
+                audit_key: Some("env://CANARY_AUDIT".into()),
+                ..AdminConfig::default()
+            },
         };
         let serialized = toml::to_string(&redacted(&config)).expect("serialize redacted config");
         assert!(!serialized.contains("CANARY"));
-        assert_eq!(serialized.matches(REDACTED).count(), 7);
+        assert_eq!(serialized.matches(REDACTED).count(), 8);
     }
 }
