@@ -18,8 +18,8 @@ use aegisproxy_secrets::SecretRef;
 use axum::{
     Router,
     extract::{
-        ConnectInfo, Extension, FromRequestParts, Path as AxumPath, Query, Request, State,
-        connect_info::Connected,
+        ConnectInfo, Extension, FromRequestParts, Json, Path as AxumPath, Query, Request, State,
+        connect_info::Connected, rejection::JsonRejection,
     },
     http::{
         HeaderMap, HeaderValue, StatusCode,
@@ -42,6 +42,7 @@ use crate::{Action, AuditEvent, AuditLog, AuditOutcome, Role, TokenStore};
 const AUDIT_KEY_BYTES: usize = 64;
 const REQUEST_ID_BYTES: usize = 16;
 const MAX_RATE_LIMIT_KEYS: usize = 2_048;
+const MAX_TOKEN_LIFETIME_SECS: u64 = 365 * 24 * 60 * 60;
 
 /// Administrative service startup or listener failure.
 #[derive(Debug, Error)]
@@ -361,6 +362,24 @@ struct ActivationResponse {
     previous: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TokenCreateRequest {
+    role: Role,
+    expires_unix_secs: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct IssuedTokenBody<'a> {
+    token: &'a str,
+    metadata: &'a crate::TokenMetadata,
+}
+
+#[derive(Debug, Serialize)]
+struct RevocationResponse {
+    revoked: bool,
+}
+
 #[derive(Debug)]
 struct MutationAudit {
     log: Arc<AuditLog>,
@@ -456,6 +475,8 @@ pub async fn serve(
         .route("/v1/upstreams", get(upstreams))
         .route("/v1/certificates", get(certificates))
         .route("/v1/audit", get(audit_records))
+        .route("/v1/tokens", get(list_tokens).post(create_token))
+        .route("/v1/tokens/{id}/revoke", post(revoke_token))
         .layer(axum::extract::DefaultBodyLimit::max(
             config.admin.max_body_bytes,
         ))
@@ -967,6 +988,127 @@ async fn audit_records(
         items,
         next_sequence,
     }))
+}
+
+async fn list_tokens(
+    State(state): State<AppState>,
+    principal: Principal,
+) -> Result<axum::Json<Vec<crate::TokenMetadata>>, ApiError> {
+    authorize(&principal, Action::ManageIdentities)?;
+    Ok(axum::Json(state.tokens.list()))
+}
+
+async fn create_token(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    principal: Principal,
+    payload: Result<Json<TokenCreateRequest>, JsonRejection>,
+) -> Result<Response, ApiError> {
+    let current = state.control.runtime().revision().to_string();
+    let audit = begin_mutation(
+        &state,
+        &principal,
+        &request_id,
+        Some(current.clone()),
+        MutationSpec {
+            permission: Action::ManageIdentities,
+            action: "token_create",
+            resource_id: "token",
+            new_revision: None,
+        },
+    )
+    .await?;
+    let expected = match expected_revision(&headers) {
+        Ok(expected) => expected,
+        Err(error) => return Err(audited_failure(&audit, "invalid_if_match", error).await),
+    };
+    if current != expected || state.control.runtime().revision().as_ref() != expected {
+        return Err(audited_failure(&audit, "revision_conflict", ApiError::Conflict).await);
+    }
+    let request = match payload {
+        Ok(Json(request)) => request,
+        Err(_) => {
+            return Err(audited_failure(&audit, "invalid_json", ApiError::InvalidRequest).await);
+        }
+    };
+    let now = unix_time().ok_or(ApiError::Internal)?;
+    if request.expires_unix_secs <= now
+        || request.expires_unix_secs > now.saturating_add(MAX_TOKEN_LIFETIME_SECS)
+    {
+        return Err(audited_failure(&audit, "invalid_expiry", ApiError::InvalidRequest).await);
+    }
+    let permit = match Arc::clone(&state.auth_permits).try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => return Err(audited_failure(&audit, "capacity_exhausted", ApiError::Busy).await),
+    };
+    let store = Arc::clone(&state.tokens);
+    let result = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        store.issue(request.role, request.expires_unix_secs)
+    })
+    .await;
+    let (metadata, issued) = match result {
+        Ok(Ok(issued)) => issued,
+        Ok(Err(_)) | Err(_) => {
+            return Err(audited_failure(&audit, "token_store_failed", ApiError::Unavailable).await);
+        }
+    };
+    audit.record(AuditOutcome::Success, None, None).await?;
+    let plaintext = issued.into_plaintext();
+    let body = serde_json::to_vec(&IssuedTokenBody {
+        token: plaintext.as_str(),
+        metadata: &metadata,
+    })
+    .map_err(|_| ApiError::Internal)?;
+    let mut response = Response::new(axum::body::Body::from(body));
+    *response.status_mut() = StatusCode::CREATED;
+    response
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    Ok(response)
+}
+
+async fn revoke_token(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+    principal: Principal,
+) -> Result<axum::Json<RevocationResponse>, ApiError> {
+    let current = state.control.runtime().revision().to_string();
+    let audit = begin_mutation(
+        &state,
+        &principal,
+        &request_id,
+        Some(current.clone()),
+        MutationSpec {
+            permission: Action::ManageIdentities,
+            action: "token_revoke",
+            resource_id: &id,
+            new_revision: None,
+        },
+    )
+    .await?;
+    let expected = match expected_revision(&headers) {
+        Ok(expected) => expected,
+        Err(error) => return Err(audited_failure(&audit, "invalid_if_match", error).await),
+    };
+    if current != expected || state.control.runtime().revision().as_ref() != expected {
+        return Err(audited_failure(&audit, "revision_conflict", ApiError::Conflict).await);
+    }
+    let store = Arc::clone(&state.tokens);
+    let revoked = match tokio::task::spawn_blocking(move || store.revoke(&id)).await {
+        Ok(Ok(revoked)) => revoked,
+        Ok(Err(_)) | Err(_) => {
+            return Err(audited_failure(&audit, "token_store_failed", ApiError::Unavailable).await);
+        }
+    };
+    if !revoked {
+        return Err(audited_failure(&audit, "token_not_found", ApiError::NotFound).await);
+    }
+    audit.record(AuditOutcome::Success, None, None).await?;
+    Ok(axum::Json(RevocationResponse { revoked }))
 }
 
 fn page_limit(page: &Page) -> Result<usize, ApiError> {
