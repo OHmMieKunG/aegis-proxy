@@ -1,0 +1,215 @@
+#![forbid(unsafe_code)]
+
+#[cfg(unix)]
+mod unix {
+    use std::{
+        fs,
+        net::TcpListener,
+        os::unix::fs::PermissionsExt,
+        path::{Path, PathBuf},
+        process::{Child, Command, Output, Stdio},
+        thread,
+        time::{Duration, SystemTime, UNIX_EPOCH},
+    };
+
+    struct Daemon {
+        child: Child,
+        root: PathBuf,
+    }
+
+    impl Drop for Daemon {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn binary() -> &'static str {
+        env!("CARGO_BIN_EXE_rust-proxy")
+    }
+
+    fn root() -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "aegisproxy-admin-cli-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("test clock")
+                .as_nanos()
+        ))
+    }
+
+    fn write_config(path: &Path, state: &Path, audit_key: &Path, port: u16, priority: i32) {
+        let config = format!(
+            r#"schema_version = 1
+
+[runtime]
+state_dir = {state:?}
+config_poll_secs = 60
+
+[admin]
+audit_key = {audit:?}
+requests_per_second = 100
+burst = 200
+
+[[listeners]]
+id = "public"
+bind = "127.0.0.1:{port}"
+protocol = "http"
+
+[[upstream_groups]]
+id = "app"
+algorithm = "round_robin"
+allowed_cidrs = ["127.0.0.1/32"]
+
+[[upstream_groups.endpoints]]
+id = "app-1"
+url = "http://127.0.0.1:9"
+weight = 1
+
+[[routes]]
+id = "app"
+listeners = ["public"]
+hosts = ["example.test"]
+path_prefixes = ["/"]
+priority = {priority}
+upstream_group = "app"
+"#,
+            state = state.display().to_string(),
+            audit = format!("file://{}", audit_key.display()),
+        );
+        fs::write(path, config).expect("write config");
+    }
+
+    fn wait_for_socket(child: &mut Child, socket: &Path) {
+        for _ in 0..200 {
+            assert!(child.try_wait().expect("daemon status").is_none());
+            if socket.exists() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        panic!("administrative socket did not appear");
+    }
+
+    fn active_revision(state: &Path) -> String {
+        let bytes = fs::read(state.join("config/active.json")).expect("active pointer");
+        let value: serde_json::Value = serde_json::from_slice(&bytes).expect("active JSON");
+        value["active"]["id"]
+            .as_str()
+            .expect("active ID")
+            .to_owned()
+    }
+
+    fn run(args: &[&str]) -> Output {
+        Command::new(binary()).args(args).output().expect("run CLI")
+    }
+
+    #[test]
+    fn private_cli_enforces_cas_rbac_token_and_audit_contracts() {
+        let root = root();
+        fs::create_dir(&root).expect("test root");
+        let state = root.join("state");
+        let audit_key = root.join("audit.key");
+        fs::write(&audit_key, [0_u8; 32]).expect("audit key");
+        fs::set_permissions(&audit_key, fs::Permissions::from_mode(0o600)).expect("key mode");
+        let port = TcpListener::bind("127.0.0.1:0")
+            .expect("ephemeral listener")
+            .local_addr()
+            .expect("ephemeral address")
+            .port();
+        let configured = root.join("proxy.toml");
+        let first = root.join("first.toml");
+        let second = root.join("second.toml");
+        write_config(&configured, &state, &audit_key, port, 0);
+        write_config(&first, &state, &audit_key, port, 1);
+        write_config(&second, &state, &audit_key, port, 2);
+
+        let child = Command::new(binary())
+            .args(["run", "--config"])
+            .arg(&configured)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("start daemon");
+        let mut daemon = Daemon { child, root };
+        let socket = state.join("admin/admin.sock");
+        wait_for_socket(&mut daemon.child, &socket);
+        let socket = socket.to_str().expect("socket UTF-8");
+        assert!(run(&["health", "--socket", socket]).status.success());
+
+        let expected = active_revision(&state);
+        let first_activation = Command::new(binary())
+            .args(["config", "activate", "--socket", socket, "--file"])
+            .arg(&first)
+            .args(["--expect", &expected])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("first activation");
+        let second_activation = Command::new(binary())
+            .args(["config", "activate", "--socket", socket, "--file"])
+            .arg(&second)
+            .args(["--expect", &expected])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("second activation");
+        let first_output = first_activation.wait_with_output().expect("first output");
+        let second_output = second_activation.wait_with_output().expect("second output");
+        let mut codes = [first_output.status.code(), second_output.status.code()];
+        codes.sort_unstable();
+        assert_eq!(codes, [Some(0), Some(4)]);
+
+        let current = active_revision(&state);
+        let token = run(&[
+            "token",
+            "create",
+            "--socket",
+            socket,
+            "--expect",
+            &current,
+            "--role",
+            "operator",
+            "--ttl-secs",
+            "600",
+        ]);
+        assert!(token.status.success());
+        let token_json: serde_json::Value =
+            serde_json::from_slice(&token.stdout).expect("issued token JSON");
+        let plaintext = token_json["token"].as_str().expect("plaintext token");
+        let token_id = token_json["metadata"]["id"].as_str().expect("token ID");
+        let token_file = daemon.root.join("operator.token");
+        fs::write(&token_file, plaintext).expect("token file");
+        fs::set_permissions(&token_file, fs::Permissions::from_mode(0o600)).expect("token mode");
+        let token_ref = format!("file://{}", token_file.display());
+        let denied = run(&[
+            "token",
+            "revoke",
+            "--socket",
+            socket,
+            "--token-ref",
+            &token_ref,
+            "--expect",
+            &current,
+            token_id,
+        ]);
+        assert_eq!(denied.status.code(), Some(5));
+
+        let revoke = run(&[
+            "token", "revoke", "--socket", socket, "--expect", &current, token_id,
+        ]);
+        assert!(revoke.status.success());
+        let token_store = fs::read_to_string(state.join("admin/tokens.json")).expect("token store");
+        assert!(!token_store.contains(plaintext));
+        assert!(!token_store.contains("operator.token"));
+
+        let audit = fs::read_to_string(state.join("audit/admin.jsonl")).expect("audit log");
+        assert!(audit.contains("\"outcome\":\"intent\""));
+        assert!(audit.contains("\"outcome\":\"success\""));
+        assert!(audit.contains("\"outcome\":\"failed\""));
+        assert!(audit.contains("\"outcome\":\"denied\""));
+        assert!(!audit.contains(plaintext));
+    }
+}
