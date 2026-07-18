@@ -1719,6 +1719,37 @@ mod tests {
     }
 
     #[test]
+    fn checked_openapi_contains_every_private_route() {
+        let openapi = include_str!("../../../config/schema/admin-openapi.yaml");
+        for path in [
+            "/v1/live:",
+            "/v1/ready:",
+            "/v1/status:",
+            "/v1/config/active:",
+            "/v1/config/validate:",
+            "/v1/config/preview:",
+            "/v1/config/candidates:",
+            "/v1/config/candidates/{id}/activate:",
+            "/v1/config/revisions:",
+            "/v1/config/revisions/{id}:",
+            "/v1/config/revisions/{id}/rollback:",
+            "/v1/routes:",
+            "/v1/upstreams:",
+            "/v1/certificates:",
+            "/v1/certificates/{id}/renew:",
+            "/v1/audit:",
+            "/v1/tokens:",
+            "/v1/tokens/{id}/revoke:",
+            "/v1/backups:",
+            "/v1/restore/validate:",
+        ] {
+            assert!(openapi.contains(path), "OpenAPI missing {path}");
+        }
+        assert!(!openapi.contains("0.0.0.0"));
+        assert!(!openapi.contains("private_key"));
+    }
+
+    #[test]
     fn duplicate_or_non_text_authorization_never_downgrades_to_peer_auth() {
         let mut headers = HeaderMap::new();
         headers.append(AUTHORIZATION, HeaderValue::from_static("Bearer first"));

@@ -1,0 +1,253 @@
+openapi: 3.1.0
+info:
+  title: AegisProxy private administration API
+  version: 1.0.0
+  description: Unix-socket-only v1 contract. This document is not served by the daemon.
+servers:
+  - url: http://localhost
+    description: HTTP over the configured private Unix socket
+paths:
+  /v1/live:
+    get:
+      operationId: live
+      security: []
+      responses:
+        "200": {description: Process event loop is live}
+  /v1/ready:
+    get:
+      operationId: ready
+      security: []
+      responses:
+        "200": {description: Administration is ready}
+        "503": {description: Durable recovery is required}
+  /v1/status:
+    get:
+      operationId: status
+      responses:
+        "200": {description: Redacted process status}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/config/active:
+    get:
+      operationId: activeConfig
+      responses:
+        "200": {description: Redacted active configuration, with ETag}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/config/validate:
+    post:
+      operationId: validateConfig
+      requestBody: {$ref: "#/components/requestBodies/TomlConfig"}
+      responses:
+        "200": {description: Candidate is valid}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/config/preview:
+    post:
+      operationId: previewConfig
+      requestBody: {$ref: "#/components/requestBodies/TomlConfig"}
+      responses:
+        "200": {description: Redacted preview and activation class}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/config/candidates:
+    post:
+      operationId: createCandidate
+      parameters: [{$ref: "#/components/parameters/IfMatch"}]
+      requestBody: {$ref: "#/components/requestBodies/TomlConfig"}
+      responses:
+        "201": {description: Immutable candidate persisted}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/config/candidates/{id}/activate:
+    post:
+      operationId: activateCandidate
+      parameters:
+        - {$ref: "#/components/parameters/RevisionId"}
+        - {$ref: "#/components/parameters/IfMatch"}
+      responses:
+        "200": {description: Candidate atomically activated}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/config/revisions:
+    get:
+      operationId: listRevisions
+      parameters:
+        - {$ref: "#/components/parameters/AfterSequence"}
+        - {$ref: "#/components/parameters/Limit"}
+      responses:
+        "200": {description: Bounded revision page}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/config/revisions/{id}:
+    get:
+      operationId: getRevision
+      parameters: [{$ref: "#/components/parameters/RevisionId"}]
+      responses:
+        "200": {description: Redacted immutable revision}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/config/revisions/{id}/rollback:
+    post:
+      operationId: rollbackRevision
+      parameters:
+        - {$ref: "#/components/parameters/RevisionId"}
+        - {$ref: "#/components/parameters/IfMatch"}
+      responses:
+        "200": {description: New forward revision activated}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/routes:
+    get:
+      operationId: listRoutes
+      responses:
+        "200": {description: Effective redacted routes}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/upstreams:
+    get:
+      operationId: listUpstreams
+      responses:
+        "200": {description: Redacted upstream summaries}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/certificates:
+    get:
+      operationId: listCertificates
+      responses:
+        "200": {description: Certificate policy metadata}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/certificates/{id}/renew:
+    post:
+      operationId: renewCertificate
+      parameters:
+        - {$ref: "#/components/parameters/ObjectId"}
+        - {$ref: "#/components/parameters/IfMatch"}
+      responses:
+        "200": {description: Renewal request persisted}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/audit:
+    get:
+      operationId: listAudit
+      parameters:
+        - {$ref: "#/components/parameters/AfterSequence"}
+        - {$ref: "#/components/parameters/Limit"}
+      responses:
+        "200": {description: Authenticated audit page}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/tokens:
+    get:
+      operationId: listTokens
+      responses:
+        "200": {description: Hash-free token metadata}
+        default: {$ref: "#/components/responses/Error"}
+    post:
+      operationId: createToken
+      parameters: [{$ref: "#/components/parameters/IfMatch"}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [role, expires_unix_secs]
+              properties:
+                role: {type: string, enum: [viewer, auditor, operator, admin]}
+                expires_unix_secs: {type: integer, minimum: 1}
+      responses:
+        "201": {description: Plaintext token returned once}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/tokens/{id}/revoke:
+    post:
+      operationId: revokeToken
+      parameters:
+        - {$ref: "#/components/parameters/ObjectId"}
+        - {$ref: "#/components/parameters/IfMatch"}
+      responses:
+        "200": {description: Token revoked}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/backups:
+    post:
+      operationId: createBackup
+      parameters: [{$ref: "#/components/parameters/IfMatch"}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [output]
+              properties:
+                output: {type: string, maxLength: 4096}
+      responses:
+        "200": {description: Encrypted backup created}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/restore/validate:
+    post:
+      operationId: validateRestore
+      parameters: [{$ref: "#/components/parameters/IfMatch"}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [input, identity]
+              properties:
+                input: {type: string, maxLength: 4096}
+                identity: {type: string, description: env:// or absolute file:// secret reference}
+      responses:
+        "200": {description: Archive authenticated and validated without extraction}
+        default: {$ref: "#/components/responses/Error"}
+security:
+  - bearerToken: []
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      description: Optional on the private socket; local peer credentials remain mandatory.
+  parameters:
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      schema: {type: string, pattern: '^"[0-9]{20}-[0-9a-f]{64}"$'}
+    RevisionId:
+      name: id
+      in: path
+      required: true
+      schema: {type: string, pattern: '^[0-9]{20}-[0-9a-f]{64}$'}
+    ObjectId:
+      name: id
+      in: path
+      required: true
+      schema: {type: string, maxLength: 128}
+    AfterSequence:
+      name: after_sequence
+      in: query
+      schema: {type: integer, minimum: 0}
+    Limit:
+      name: limit
+      in: query
+      schema: {type: integer, minimum: 1, maximum: 100, default: 100}
+  requestBodies:
+    TomlConfig:
+      required: true
+      content:
+        application/toml:
+          schema: {type: string, format: binary, maxLength: 2097152}
+  responses:
+    Error:
+      description: Stable redacted error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+  schemas:
+    ErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message, details, request_id]
+          properties:
+            code: {type: string}
+            message: {type: string}
+            details: {type: array, items: {type: object}}
+            request_id: {type: string}
