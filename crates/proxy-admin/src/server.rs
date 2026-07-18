@@ -362,6 +362,10 @@ struct CertificateSummary {
     hosts: Vec<String>,
     source: &'static str,
     issuer: Option<String>,
+    generation: Option<String>,
+    not_before_unix_secs: Option<i64>,
+    not_after_unix_secs: Option<i64>,
+    state: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -1058,30 +1062,66 @@ async fn certificates(
 ) -> Result<axum::Json<Vec<CertificateSummary>>, ApiError> {
     authorize(&principal, Action::ReadCertificates)?;
     let config = state.control.runtime().config();
-    let mut certificates: Vec<_> = config
-        .certificates
-        .iter()
-        .map(|certificate| CertificateSummary {
-            id: certificate.id.clone(),
-            hosts: certificate.hosts.clone(),
-            source: "imported",
-            issuer: None,
-        })
-        .chain(
-            config
-                .acme
-                .certificates
-                .iter()
-                .map(|certificate| CertificateSummary {
-                    id: certificate.id.clone(),
-                    hosts: certificate.hosts.clone(),
-                    source: "acme",
-                    issuer: Some(certificate.issuer.clone()),
-                }),
-        )
+    let stored = state
+        .control
+        .certificate_statuses()
+        .await
+        .map_err(|_| ApiError::Unavailable)?;
+    let mut stored: HashMap<_, _> = stored
+        .into_iter()
+        .map(|certificate| (certificate.id.clone(), certificate))
         .collect();
+    let mut certificates = Vec::with_capacity(
+        config
+            .certificates
+            .len()
+            .saturating_add(config.acme.certificates.len()),
+    );
+    for certificate in &config.certificates {
+        certificates.push(certificate_summary(
+            certificate.id.clone(),
+            certificate.hosts.clone(),
+            "imported",
+            None,
+            stored.remove(&certificate.id),
+        ));
+    }
+    for certificate in &config.acme.certificates {
+        certificates.push(certificate_summary(
+            certificate.id.clone(),
+            certificate.hosts.clone(),
+            "acme",
+            Some(certificate.issuer.clone()),
+            stored.remove(&certificate.id),
+        ));
+    }
     certificates.sort_unstable_by(|left, right| left.id.cmp(&right.id));
     Ok(axum::Json(certificates))
+}
+
+fn certificate_summary(
+    id: String,
+    hosts: Vec<String>,
+    source: &'static str,
+    fallback_issuer: Option<String>,
+    stored: Option<aegisproxy_core::CertificateStatus>,
+) -> CertificateSummary {
+    CertificateSummary {
+        id,
+        hosts,
+        source,
+        issuer: stored
+            .as_ref()
+            .map_or(fallback_issuer, |stored| Some(stored.issuer.clone())),
+        generation: stored.as_ref().map(|stored| stored.generation.clone()),
+        not_before_unix_secs: stored.as_ref().map(|stored| stored.not_before_unix_secs),
+        not_after_unix_secs: stored.as_ref().map(|stored| stored.not_after_unix_secs),
+        state: if stored.is_some() {
+            "active"
+        } else {
+            "missing"
+        },
+    }
 }
 
 async fn audit_records(

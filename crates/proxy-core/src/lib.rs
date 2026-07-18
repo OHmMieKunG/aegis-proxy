@@ -114,6 +114,25 @@ pub struct ManagedControl {
     runtime: RuntimeHandle,
 }
 
+/// Redacted public certificate-generation status.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CertificateStatus {
+    /// Stable configured certificate ID.
+    pub id: String,
+    /// Validated covered host names.
+    pub hosts: Vec<String>,
+    /// Immutable stored generation ID.
+    pub generation: String,
+    /// Public issuer display name.
+    pub issuer: String,
+    /// Certificate validity start as Unix seconds.
+    pub not_before_unix_secs: i64,
+    /// Certificate validity end as Unix seconds.
+    pub not_after_unix_secs: i64,
+    /// Whether ACME automation owns this generation.
+    pub managed: bool,
+}
+
 impl ManagedControl {
     /// Return the durable revision store.
     #[must_use]
@@ -151,6 +170,31 @@ impl ManagedControl {
         tokio::task::spawn_blocking(move || {
             aegisproxy_tls::acme::request_certificate_renewal(&state_dir, &id)
                 .map_err(|_| ProxyError::Preparation("renewal request failed".into()))
+        })
+        .await
+        .map_err(|error| ProxyError::Preparation(error.to_string()))?
+    }
+
+    /// Load bounded public certificate-generation metadata off runtime workers.
+    pub async fn certificate_statuses(&self) -> Result<Vec<CertificateStatus>, ProxyError> {
+        let state_dir = PathBuf::from(&self.runtime.config().runtime.state_dir);
+        tokio::task::spawn_blocking(move || {
+            aegisproxy_tls::list_certificates(&state_dir)
+                .map(|certificates| {
+                    certificates
+                        .into_iter()
+                        .map(|certificate| CertificateStatus {
+                            id: certificate.id,
+                            hosts: certificate.hosts,
+                            generation: certificate.generation,
+                            issuer: certificate.issuer,
+                            not_before_unix_secs: certificate.not_before_unix_secs,
+                            not_after_unix_secs: certificate.not_after_unix_secs,
+                            managed: certificate.managed.is_some(),
+                        })
+                        .collect()
+                })
+                .map_err(ProxyError::Tls)
         })
         .await
         .map_err(|error| ProxyError::Preparation(error.to_string()))?
