@@ -41,7 +41,14 @@ mod unix {
         ))
     }
 
-    fn write_config(path: &Path, state: &Path, audit_key: &Path, port: u16, priority: i32) {
+    fn write_config(
+        path: &Path,
+        state: &Path,
+        audit_key: &Path,
+        port: u16,
+        telemetry_port: u16,
+        priority: i32,
+    ) {
         let config = format!(
             r#"schema_version = 1
 
@@ -55,7 +62,7 @@ requests_per_second = 100
 burst = 200
 
 [observability.otlp_traces]
-endpoint = "http://127.0.0.1:1/v1/traces"
+endpoint = "http://127.0.0.1:{telemetry_port}/v1/traces"
 sample_per_million = 1000000
 max_queue_size = 4
 max_export_batch_size = 2
@@ -127,12 +134,22 @@ upstream_group = "app"
             .local_addr()
             .expect("ephemeral address")
             .port();
+        let slow_telemetry = TcpListener::bind("127.0.0.1:0").expect("slow telemetry bind");
+        let telemetry_port = slow_telemetry
+            .local_addr()
+            .expect("slow telemetry address")
+            .port();
+        thread::spawn(move || {
+            if slow_telemetry.accept().is_ok() {
+                thread::sleep(Duration::from_secs(5));
+            }
+        });
         let configured = root.join("proxy.toml");
         let first = root.join("first.toml");
         let second = root.join("second.toml");
-        write_config(&configured, &state, &audit_key, port, 0);
-        write_config(&first, &state, &audit_key, port, 1);
-        write_config(&second, &state, &audit_key, port, 2);
+        write_config(&configured, &state, &audit_key, port, telemetry_port, 0);
+        write_config(&first, &state, &audit_key, port, telemetry_port, 1);
+        write_config(&second, &state, &audit_key, port, telemetry_port, 2);
 
         let log_path = root.join("daemon.jsonl");
         let log = fs::File::create(&log_path).expect("log file");
@@ -177,6 +194,18 @@ upstream_group = "app"
         client
             .write_all(b"GET /private?token=QUERY_CANARY HTTP/1.1\r\nHost: example.test\r\nAuthorization: Bearer AUTH_CANARY\r\nCookie: session=COOKIE_CANARY\r\nUser-Agent: AGENT_CANARY\r\nX-Secret: HEADER_CANARY\r\nConnection: close\r\n\r\n")
             .expect("request");
+        let mut response = String::new();
+        client.read_to_string(&mut response).expect("response");
+        assert!(response.starts_with("HTTP/1.1 502"));
+        assert!(request_started.elapsed() < Duration::from_secs(2));
+        thread::sleep(Duration::from_millis(1_500));
+        let request_started = std::time::Instant::now();
+        let mut client = std::net::TcpStream::connect(("127.0.0.1", port)).expect("proxy");
+        client
+            .write_all(
+                b"GET /while-exporter-is-slow HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n",
+            )
+            .expect("request during slow export");
         let mut response = String::new();
         client.read_to_string(&mut response).expect("response");
         assert!(response.starts_with("HTTP/1.1 502"));
