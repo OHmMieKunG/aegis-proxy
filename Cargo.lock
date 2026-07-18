@@ -23,7 +23,13 @@ name = "aegisproxy-admin"
 version = "0.1.0"
 dependencies = [
  "aegisproxy-config",
+ "argon2",
+ "base64 0.22.1",
+ "getrandom 0.3.4",
  "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "zeroize",
 ]
 
 [[package]]
