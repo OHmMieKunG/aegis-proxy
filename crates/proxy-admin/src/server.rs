@@ -306,6 +306,24 @@ struct StatusResponse {
     actor_id: String,
 }
 
+#[derive(Debug, Serialize)]
+struct HealthDetailsResponse {
+    request_id: String,
+    status: &'static str,
+    active_revision: String,
+    administration_ready: bool,
+    audit_ready: bool,
+    certificates: Vec<CertificateWindow>,
+}
+
+#[derive(Debug, Serialize)]
+struct CertificateWindow {
+    id: String,
+    not_before_unix_secs: Option<i64>,
+    not_after_unix_secs: Option<i64>,
+    state: &'static str,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Page {
@@ -520,7 +538,7 @@ pub async fn serve(
     let app = Router::new()
         .route("/live", get(live))
         .route("/ready", get(ready))
-        .route("/health/details", get(status))
+        .route("/health/details", get(health_details))
         .route("/v1/live", get(live))
         .route("/v1/ready", get(ready))
         .route("/metrics", get(metrics))
@@ -703,6 +721,65 @@ async fn status(
         audit_ready: state.audit.is_some(),
         actor_type: principal.actor_type,
         actor_id: principal.actor_id,
+    }))
+}
+
+async fn health_details(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    principal: Principal,
+) -> Result<axum::Json<HealthDetailsResponse>, ApiError> {
+    authorize(&principal, Action::ReadStatus)?;
+    let config = state.control.runtime().config();
+    let mut stored: HashMap<_, _> = state
+        .control
+        .certificate_statuses()
+        .await
+        .map_err(|_| ApiError::Unavailable)?
+        .into_iter()
+        .map(|certificate| (certificate.id.clone(), certificate))
+        .collect();
+    let now = unix_time()
+        .and_then(|value| i64::try_from(value).ok())
+        .ok_or(ApiError::Internal)?;
+    let mut certificates = config
+        .certificates
+        .iter()
+        .map(|certificate| certificate.id.clone())
+        .chain(
+            config
+                .acme
+                .certificates
+                .iter()
+                .map(|certificate| certificate.id.clone()),
+        )
+        .map(|id| {
+            let status = stored.remove(&id);
+            CertificateWindow {
+                id,
+                not_before_unix_secs: status.as_ref().map(|status| status.not_before_unix_secs),
+                not_after_unix_secs: status.as_ref().map(|status| status.not_after_unix_secs),
+                state: status.as_ref().map_or("missing", |status| {
+                    if status.not_after_unix_secs <= now {
+                        "expired"
+                    } else if status.not_before_unix_secs > now {
+                        "not_yet_valid"
+                    } else {
+                        "valid"
+                    }
+                }),
+            }
+        })
+        .collect::<Vec<_>>();
+    certificates.sort_unstable_by(|left, right| left.id.cmp(&right.id));
+    let ready = state.control.coordinator().administration_ready();
+    Ok(axum::Json(HealthDetailsResponse {
+        request_id: request_id.0,
+        status: if ready { "ready" } else { "recovery_required" },
+        active_revision: state.control.runtime().revision().to_string(),
+        administration_ready: ready,
+        audit_ready: state.audit.is_some(),
+        certificates,
     }))
 }
 
