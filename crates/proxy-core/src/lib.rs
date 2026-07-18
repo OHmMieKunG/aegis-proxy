@@ -132,6 +132,29 @@ impl ManagedControl {
     pub fn runtime(&self) -> RuntimeHandle {
         self.runtime.clone()
     }
+
+    /// Durably request renewal for one configured ACME certificate.
+    pub async fn request_certificate_renewal(&self, id: &str) -> Result<(), ProxyError> {
+        let config = self.runtime.config();
+        if !config
+            .acme
+            .certificates
+            .iter()
+            .any(|certificate| certificate.id == id)
+        {
+            return Err(ProxyError::Preparation(
+                "certificate is not managed by active configuration".into(),
+            ));
+        }
+        let state_dir = PathBuf::from(&config.runtime.state_dir);
+        let id = id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            aegisproxy_tls::acme::request_certificate_renewal(&state_dir, &id)
+                .map_err(|_| ProxyError::Preparation("renewal request failed".into()))
+        })
+        .await
+        .map_err(|error| ProxyError::Preparation(error.to_string()))?
+    }
 }
 
 /// Run configured public listeners until cancellation.

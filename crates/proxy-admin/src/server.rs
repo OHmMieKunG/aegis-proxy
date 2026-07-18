@@ -380,6 +380,24 @@ struct RevocationResponse {
     revoked: bool,
 }
 
+#[derive(Debug, Serialize)]
+struct RenewalResponse {
+    requested: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BackupCreateRequest {
+    output: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RestoreValidateRequest {
+    input: String,
+    identity: String,
+}
+
 #[derive(Debug)]
 struct MutationAudit {
     log: Arc<AuditLog>,
@@ -474,9 +492,12 @@ pub async fn serve(
         .route("/v1/routes", get(routes))
         .route("/v1/upstreams", get(upstreams))
         .route("/v1/certificates", get(certificates))
+        .route("/v1/certificates/{id}/renew", post(renew_certificate))
         .route("/v1/audit", get(audit_records))
         .route("/v1/tokens", get(list_tokens).post(create_token))
         .route("/v1/tokens/{id}/revoke", post(revoke_token))
+        .route("/v1/backups", post(create_backup_archive))
+        .route("/v1/restore/validate", post(validate_restore_archive))
         .layer(axum::extract::DefaultBodyLimit::max(
             config.admin.max_body_bytes,
         ))
@@ -1111,6 +1132,176 @@ async fn revoke_token(
     Ok(axum::Json(RevocationResponse { revoked }))
 }
 
+async fn renew_certificate(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+    principal: Principal,
+) -> Result<axum::Json<RenewalResponse>, ApiError> {
+    let current = state.control.runtime().revision().to_string();
+    let audit = begin_mutation(
+        &state,
+        &principal,
+        &request_id,
+        Some(current.clone()),
+        MutationSpec {
+            permission: Action::RenewCertificate,
+            action: "certificate_renew",
+            resource_id: &id,
+            new_revision: None,
+        },
+    )
+    .await?;
+    let expected = match expected_revision(&headers) {
+        Ok(expected) => expected,
+        Err(error) => return Err(audited_failure(&audit, "invalid_if_match", error).await),
+    };
+    if current != expected || state.control.runtime().revision().as_ref() != expected {
+        return Err(audited_failure(&audit, "revision_conflict", ApiError::Conflict).await);
+    }
+    if !state
+        .control
+        .runtime()
+        .config()
+        .acme
+        .certificates
+        .iter()
+        .any(|certificate| certificate.id == id)
+    {
+        return Err(audited_failure(&audit, "certificate_not_found", ApiError::NotFound).await);
+    }
+    if state
+        .control
+        .request_certificate_renewal(&id)
+        .await
+        .is_err()
+    {
+        return Err(audited_failure(&audit, "renewal_failed", ApiError::Unavailable).await);
+    }
+    audit.record(AuditOutcome::Success, None, None).await?;
+    Ok(axum::Json(RenewalResponse { requested: true }))
+}
+
+async fn create_backup_archive(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    principal: Principal,
+    payload: Result<Json<BackupCreateRequest>, JsonRejection>,
+) -> Result<axum::Json<crate::BackupSummary>, ApiError> {
+    let config = state.control.runtime().config();
+    let current = state.control.runtime().revision().to_string();
+    let audit = begin_mutation(
+        &state,
+        &principal,
+        &request_id,
+        Some(current.clone()),
+        MutationSpec {
+            permission: Action::CreateBackup,
+            action: "backup_create",
+            resource_id: "backup",
+            new_revision: None,
+        },
+    )
+    .await?;
+    let expected = match expected_revision(&headers) {
+        Ok(expected) => expected,
+        Err(error) => return Err(audited_failure(&audit, "invalid_if_match", error).await),
+    };
+    if current != expected || state.control.runtime().revision().as_ref() != expected {
+        return Err(audited_failure(&audit, "revision_conflict", ApiError::Conflict).await);
+    }
+    let request = match payload {
+        Ok(Json(request)) => request,
+        Err(_) => {
+            return Err(audited_failure(&audit, "invalid_json", ApiError::InvalidRequest).await);
+        }
+    };
+    let output = PathBuf::from(request.output);
+    if !valid_api_path(&output) || config.tls.state_encryption_recipients.is_empty() {
+        return Err(
+            audited_failure(&audit, "invalid_backup_request", ApiError::InvalidRequest).await,
+        );
+    }
+    let state_dir = PathBuf::from(&config.runtime.state_dir);
+    let recipients = config.tls.state_encryption_recipients.clone();
+    let summary = match tokio::task::spawn_blocking(move || {
+        crate::create_backup(state_dir, output, &recipients)
+    })
+    .await
+    {
+        Ok(Ok(summary)) => summary,
+        Ok(Err(_)) | Err(_) => {
+            return Err(audited_failure(&audit, "backup_failed", ApiError::Unavailable).await);
+        }
+    };
+    audit.record(AuditOutcome::Success, None, None).await?;
+    Ok(axum::Json(summary))
+}
+
+async fn validate_restore_archive(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    principal: Principal,
+    payload: Result<Json<RestoreValidateRequest>, JsonRejection>,
+) -> Result<axum::Json<crate::BackupSummary>, ApiError> {
+    let current = state.control.runtime().revision().to_string();
+    let audit = begin_mutation(
+        &state,
+        &principal,
+        &request_id,
+        Some(current.clone()),
+        MutationSpec {
+            permission: Action::ValidateRestore,
+            action: "restore_validate",
+            resource_id: "backup",
+            new_revision: None,
+        },
+    )
+    .await?;
+    let expected = match expected_revision(&headers) {
+        Ok(expected) => expected,
+        Err(error) => return Err(audited_failure(&audit, "invalid_if_match", error).await),
+    };
+    if current != expected || state.control.runtime().revision().as_ref() != expected {
+        return Err(audited_failure(&audit, "revision_conflict", ApiError::Conflict).await);
+    }
+    let request = match payload {
+        Ok(Json(request)) => request,
+        Err(_) => {
+            return Err(audited_failure(&audit, "invalid_json", ApiError::InvalidRequest).await);
+        }
+    };
+    let input = PathBuf::from(request.input);
+    if !valid_api_path(&input) {
+        return Err(
+            audited_failure(&audit, "invalid_restore_request", ApiError::InvalidRequest).await,
+        );
+    }
+    let summary = match tokio::task::spawn_blocking(move || {
+        let identity = SecretRef::parse(&request.identity)
+            .and_then(|reference| reference.resolve(4 * 1024))
+            .map_err(|_| crate::BackupError::Encryption)?;
+        crate::validate_backup(input, identity.as_ref())
+    })
+    .await
+    {
+        Ok(Ok(summary)) => summary,
+        Ok(Err(_)) | Err(_) => {
+            return Err(audited_failure(
+                &audit,
+                "restore_validation_failed",
+                ApiError::InvalidRequest,
+            )
+            .await);
+        }
+    };
+    audit.record(AuditOutcome::Success, None, None).await?;
+    Ok(axum::Json(summary))
+}
+
 fn page_limit(page: &Page) -> Result<usize, ApiError> {
     let limit = page.limit.unwrap_or(100);
     (1..=100)
@@ -1129,6 +1320,19 @@ fn require_toml(headers: &HeaderMap) -> Result<(), ApiError> {
         [value] if value.as_bytes() == b"application/toml" => Ok(()),
         _ => Err(ApiError::InvalidRequest),
     }
+}
+
+fn valid_api_path(path: &Path) -> bool {
+    let Some(value) = path.to_str() else {
+        return false;
+    };
+    path.is_absolute()
+        && path.file_name().is_some()
+        && value.len() <= 4_096
+        && !value.bytes().any(|byte| byte.is_ascii_control())
+        && !path
+            .components()
+            .any(|component| component == std::path::Component::ParentDir)
 }
 
 fn expected_revision(headers: &HeaderMap) -> Result<String, ApiError> {
@@ -1497,6 +1701,9 @@ mod tests {
             HeaderValue::from_str(&format!("W/\"{revision}\"")).expect("weak ETag"),
         );
         assert!(expected_revision(&weak).is_err());
+        assert!(valid_api_path(Path::new("/var/backups/aegis.age")));
+        assert!(!valid_api_path(Path::new("relative.age")));
+        assert!(!valid_api_path(Path::new("/var/backups/../escape.age")));
     }
 
     #[test]
