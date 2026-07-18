@@ -7,7 +7,7 @@ mod auth;
 mod rbac;
 
 pub use audit::{AuditError, AuditEvent, AuditLog, AuditOutcome, AuditRecord};
-pub use auth::{IssuedToken, TokenError, TokenRecord};
+pub use auth::{IssuedToken, TokenError, TokenMetadata, TokenRecord, TokenStore, TokenStoreError};
 pub use rbac::{Action, Role};
 
 /// Administrative API marker for the initial workspace.
