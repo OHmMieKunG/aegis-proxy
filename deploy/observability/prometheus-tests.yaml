@@ -1,0 +1,83 @@
+rule_files:
+  - prometheus-rules.yaml
+evaluation_interval: 1m
+tests:
+  - name: data plane down
+    interval: 1m
+    input_series:
+      - series: 'up{job="aegisproxy"}'
+        values: '0x5'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: AegisProxyDataPlaneDown
+        exp_alerts:
+          - exp_labels: {job: aegisproxy, severity: critical}
+            exp_annotations: {summary: AegisProxy private metrics scrape is unavailable}
+  - name: request and upstream failures
+    interval: 1m
+    input_series:
+      - series: 'aegisproxy_http_requests_total{status_class="5xx"}'
+        values: '0+10x20'
+      - series: 'aegisproxy_http_requests_total{status_class="2xx"}'
+        values: '0+1x20'
+      - series: 'aegisproxy_upstream_attempts_total{upstream="app",outcome="success"}'
+        values: '0x20'
+      - series: 'aegisproxy_upstream_attempts_total{upstream="app",outcome="connect_error"}'
+        values: '0+10x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: AegisProxyHighErrorRatio
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations: {summary: AegisProxy HTTP 5xx ratio exceeds 5 percent}
+      - eval_time: 10m
+        alertname: AegisProxyNoSuccessfulUpstream
+        exp_alerts:
+          - exp_labels: {upstream: app, severity: critical}
+            exp_annotations: {summary: A configured upstream group has attempts but no successes}
+  - name: capacity certificate reload audit and drops
+    interval: 1m
+    input_series:
+      - series: 'aegisproxy_tls_handshakes_total{outcome="capacity"}'
+        values: '0+1x20'
+      - series: 'aegisproxy_certificate_expiry_timestamp_seconds{certificate="edge",issuer="issuer"}'
+        values: '1x20'
+      - series: 'aegisproxy_certificate_renewals_total{outcome="failed"}'
+        values: '0+1x20'
+      - series: 'aegisproxy_config_reloads_total{outcome="rejected"}'
+        values: '0+1x20'
+      - series: 'aegisproxy_admin_audit_ready'
+        values: '0x20'
+      - series: 'aegisproxy_telemetry_drops_total{outcome="export_failed"}'
+        values: '0+1x20'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: AegisProxyTlsCapacityPressure
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations: {summary: TLS handshake capacity is rejecting work}
+      - eval_time: 16m
+        alertname: AegisProxyCertificateExpiresSoon
+        exp_alerts:
+          - exp_labels: {certificate: edge, issuer: issuer, severity: warning}
+            exp_annotations: {summary: A configured certificate expires within 14 days}
+      - eval_time: 5m
+        alertname: AegisProxyCertificateRenewalFailed
+        exp_alerts:
+          - exp_labels: {outcome: failed, severity: critical}
+            exp_annotations: {summary: A certificate renewal request failed}
+      - eval_time: 5m
+        alertname: AegisProxyReloadFailed
+        exp_alerts:
+          - exp_labels: {outcome: rejected, severity: warning}
+            exp_annotations: {summary: A configuration activation failed or rolled back}
+      - eval_time: 2m
+        alertname: AegisProxyAuditUnavailable
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations: {summary: 'Durable administrative audit is unavailable; mutations fail closed'}
+      - eval_time: 5m
+        alertname: AegisProxyTelemetryDropping
+        exp_alerts:
+          - exp_labels: {outcome: export_failed, severity: warning}
+            exp_annotations: {summary: Best-effort telemetry was dropped}

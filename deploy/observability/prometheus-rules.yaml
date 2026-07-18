@@ -1,0 +1,55 @@
+groups:
+  - name: aegisproxy
+    interval: 30s
+    rules:
+      - alert: AegisProxyDataPlaneDown
+        expr: up{job="aegisproxy"} == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: AegisProxy private metrics scrape is unavailable
+      - alert: AegisProxyHighErrorRatio
+        expr: sum(rate(aegisproxy_http_requests_total{status_class="5xx"}[5m])) / clamp_min(sum(rate(aegisproxy_http_requests_total[5m])), 0.001) > 0.05
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: AegisProxy HTTP 5xx ratio exceeds 5 percent
+      - alert: AegisProxyNoSuccessfulUpstream
+        expr: sum by (upstream) (rate(aegisproxy_upstream_attempts_total{outcome="success"}[5m])) == 0 and sum by (upstream) (rate(aegisproxy_upstream_attempts_total[5m])) > 0
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: A configured upstream group has attempts but no successes
+      - alert: AegisProxyTlsCapacityPressure
+        expr: sum(rate(aegisproxy_tls_handshakes_total{outcome="capacity"}[5m])) > 0
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: TLS handshake capacity is rejecting work
+      - alert: AegisProxyCertificateExpiresSoon
+        expr: aegisproxy_certificate_expiry_timestamp_seconds - time() < 14 * 24 * 60 * 60
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: A configured certificate expires within 14 days
+      - alert: AegisProxyCertificateRenewalFailed
+        expr: increase(aegisproxy_certificate_renewals_total{outcome="failed"}[30m]) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: A certificate renewal request failed
+      - alert: AegisProxyReloadFailed
+        expr: increase(aegisproxy_config_reloads_total{outcome!="success"}[15m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: A configuration activation failed or rolled back
+      - alert: AegisProxyAuditUnavailable
+        expr: aegisproxy_admin_audit_ready == 0
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: Durable administrative audit is unavailable; mutations fail closed
+      - alert: AegisProxyTelemetryDropping
+        expr: increase(aegisproxy_telemetry_drops_total[15m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: Best-effort telemetry was dropped

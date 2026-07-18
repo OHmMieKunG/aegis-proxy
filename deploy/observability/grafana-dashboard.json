@@ -1,0 +1,63 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "panels": [
+    {
+      "id": 1,
+      "title": "Request rate by route",
+      "type": "timeseries",
+      "targets": [{"expr": "sum by (listener, route) (rate(aegisproxy_http_requests_total[5m]))", "refId": "A"}]
+    },
+    {
+      "id": 2,
+      "title": "HTTP 5xx ratio",
+      "type": "timeseries",
+      "targets": [{"expr": "sum(rate(aegisproxy_http_requests_total{status_class=\"5xx\"}[5m])) / clamp_min(sum(rate(aegisproxy_http_requests_total[5m])), 0.001)", "refId": "A"}]
+    },
+    {
+      "id": 3,
+      "title": "Request latency p95",
+      "type": "timeseries",
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le, route) (rate(aegisproxy_http_request_duration_seconds_bucket[5m])))", "refId": "A"}]
+    },
+    {
+      "id": 4,
+      "title": "Upstream outcomes",
+      "type": "timeseries",
+      "targets": [{"expr": "sum by (upstream, endpoint, outcome) (rate(aegisproxy_upstream_attempts_total[5m]))", "refId": "A"}]
+    },
+    {
+      "id": 5,
+      "title": "Active connections",
+      "type": "timeseries",
+      "targets": [{"expr": "sum by (listener, protocol) (aegisproxy_connections_active)", "refId": "A"}]
+    },
+    {
+      "id": 6,
+      "title": "Certificate days remaining",
+      "type": "timeseries",
+      "targets": [{"expr": "(aegisproxy_certificate_expiry_timestamp_seconds - time()) / 86400", "refId": "A"}]
+    },
+    {
+      "id": 7,
+      "title": "Reload outcomes",
+      "type": "timeseries",
+      "targets": [{"expr": "sum by (outcome) (increase(aegisproxy_config_reloads_total[1h]))", "refId": "A"}]
+    },
+    {
+      "id": 8,
+      "title": "Audit readiness",
+      "type": "stat",
+      "targets": [{"expr": "aegisproxy_admin_audit_ready", "refId": "A"}]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 41,
+  "tags": ["aegisproxy"],
+  "templating": {"list": []},
+  "time": {"from": "now-6h", "to": "now"},
+  "timezone": "browser",
+  "title": "AegisProxy operations",
+  "uid": "aegisproxy-operations",
+  "version": 1
+}
