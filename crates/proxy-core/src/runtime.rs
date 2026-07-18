@@ -281,6 +281,12 @@ impl RuntimeHandle {
         Arc::clone(&self.current.load().config)
     }
 
+    /// Return whether a candidate can replace the active snapshot without rebinding listeners.
+    #[must_use]
+    pub fn can_hot_reload(&self, candidate: &Config) -> bool {
+        hot_reload_compatible(&self.current.load().config, candidate)
+    }
+
     /// Return the process-wide HTTP-01 registry retained across configuration reloads.
     #[must_use]
     pub fn http_challenges(&self) -> HttpChallengeRegistry {

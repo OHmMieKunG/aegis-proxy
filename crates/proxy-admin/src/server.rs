@@ -9,8 +9,11 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use aegisproxy_config::{BalancingAlgorithm, Config, revision::RevisionMetadata};
-use aegisproxy_core::ManagedControl;
+use aegisproxy_config::{
+    BalancingAlgorithm, Config,
+    revision::{RevisionError, RevisionMetadata},
+};
+use aegisproxy_core::{ActivationError, ManagedControl, RouteIndex};
 use aegisproxy_secrets::SecretRef;
 use axum::{
     Router,
@@ -20,12 +23,12 @@ use axum::{
     },
     http::{
         HeaderMap, HeaderValue, StatusCode,
-        header::{AUTHORIZATION, ETAG},
+        header::{AUTHORIZATION, CONTENT_TYPE, ETAG, IF_MATCH},
         request::Parts,
     },
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     serve::IncomingStream,
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -34,7 +37,7 @@ use thiserror::Error;
 use tokio::{net::UnixListener, sync::Semaphore};
 use tokio_util::sync::CancellationToken;
 
-use crate::{Action, AuditLog, Role, TokenStore};
+use crate::{Action, AuditEvent, AuditLog, AuditOutcome, Role, TokenStore};
 
 const AUDIT_KEY_BYTES: usize = 64;
 const REQUEST_ID_BYTES: usize = 16;
@@ -220,6 +223,7 @@ enum ApiError {
     Timeout,
     InvalidRequest,
     NotFound,
+    Conflict,
     Unavailable,
     Internal,
 }
@@ -234,6 +238,7 @@ impl IntoResponse for ApiError {
             Self::Timeout => (StatusCode::GATEWAY_TIMEOUT, "request_timeout"),
             Self::InvalidRequest => (StatusCode::BAD_REQUEST, "invalid_request"),
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
+            Self::Conflict => (StatusCode::CONFLICT, "revision_conflict"),
             Self::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
             Self::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
         };
@@ -327,6 +332,54 @@ struct AuditPage {
     next_sequence: Option<u64>,
 }
 
+#[derive(Debug, Serialize)]
+struct ValidationResponse {
+    valid: bool,
+    route_fingerprint: String,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PreviewResponse {
+    active_revision: String,
+    active_route_fingerprint: String,
+    candidate_route_fingerprint: String,
+    activation_class: &'static str,
+    config: Config,
+}
+
+#[derive(Debug, Serialize)]
+struct CandidateResponse {
+    id: String,
+    hash: String,
+    sequence: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct ActivationResponse {
+    active: String,
+    previous: Option<String>,
+}
+
+#[derive(Debug)]
+struct MutationAudit {
+    log: Arc<AuditLog>,
+    actor_type: String,
+    actor_id: String,
+    action: String,
+    resource_id: String,
+    request_id: String,
+    old_revision: Option<String>,
+}
+
+#[derive(Debug)]
+struct MutationSpec<'a> {
+    permission: Action,
+    action: &'a str,
+    resource_id: &'a str,
+    new_revision: Option<String>,
+}
+
 /// Serve private administrative requests until process cancellation.
 pub async fn serve(
     control: ManagedControl,
@@ -386,8 +439,19 @@ pub async fn serve(
         .route("/v1/ready", get(ready))
         .route("/v1/status", get(status))
         .route("/v1/config/active", get(active_config))
+        .route("/v1/config/validate", post(validate_config))
+        .route("/v1/config/preview", post(preview_config))
+        .route("/v1/config/candidates", post(create_candidate))
+        .route(
+            "/v1/config/candidates/{id}/activate",
+            post(activate_candidate),
+        )
         .route("/v1/config/revisions", get(revisions))
         .route("/v1/config/revisions/{id}", get(revision))
+        .route(
+            "/v1/config/revisions/{id}/rollback",
+            post(rollback_revision),
+        )
         .route("/v1/routes", get(routes))
         .route("/v1/upstreams", get(upstreams))
         .route("/v1/certificates", get(certificates))
@@ -479,6 +543,238 @@ async fn active_config(
     response
         .headers_mut()
         .insert(ETAG, etag(&revision).ok_or(ApiError::Internal)?);
+    Ok(response)
+}
+
+async fn validate_config(
+    headers: HeaderMap,
+    principal: Principal,
+    body: axum::body::Bytes,
+) -> Result<axum::Json<ValidationResponse>, ApiError> {
+    authorize(&principal, Action::ValidateConfig)?;
+    require_toml(&headers)?;
+    let config = load_candidate(body).await?;
+    Ok(axum::Json(ValidationResponse {
+        valid: true,
+        route_fingerprint: format!("{:016x}", RouteIndex::compile(&config).fingerprint()),
+        warnings: Vec::new(),
+    }))
+}
+
+async fn preview_config(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    principal: Principal,
+    body: axum::body::Bytes,
+) -> Result<axum::Json<PreviewResponse>, ApiError> {
+    authorize(&principal, Action::PreviewConfig)?;
+    require_toml(&headers)?;
+    let candidate = load_candidate(body).await?;
+    let runtime = state.control.runtime();
+    let active = runtime.config();
+    let activation_class = if runtime.can_hot_reload(&candidate) {
+        "hot_reload"
+    } else {
+        "restart_required"
+    };
+    Ok(axum::Json(PreviewResponse {
+        active_revision: runtime.revision().to_string(),
+        active_route_fingerprint: format!("{:016x}", RouteIndex::compile(&active).fingerprint()),
+        candidate_route_fingerprint: format!(
+            "{:016x}",
+            RouteIndex::compile(&candidate).fingerprint()
+        ),
+        activation_class,
+        config: aegisproxy_config::redacted(&candidate),
+    }))
+}
+
+async fn create_candidate(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    principal: Principal,
+    body: axum::body::Bytes,
+) -> Result<(StatusCode, axum::Json<CandidateResponse>), ApiError> {
+    let current = state.control.runtime().revision().to_string();
+    let audit = begin_mutation(
+        &state,
+        &principal,
+        &request_id,
+        Some(current.clone()),
+        MutationSpec {
+            permission: Action::CreateCandidate,
+            action: "config_candidate_create",
+            resource_id: "config",
+            new_revision: None,
+        },
+    )
+    .await?;
+    let expected = match expected_revision(&headers) {
+        Ok(expected) => expected,
+        Err(error) => return Err(audited_failure(&audit, "invalid_if_match", error).await),
+    };
+    if current != expected || state.control.runtime().revision().as_ref() != expected {
+        return Err(audited_failure(&audit, "revision_conflict", ApiError::Conflict).await);
+    }
+    if require_toml(&headers).is_err() {
+        return Err(
+            audited_failure(&audit, "invalid_content_type", ApiError::InvalidRequest).await,
+        );
+    }
+    let config = match load_candidate(body).await {
+        Ok(config) => config,
+        Err(error) => return Err(audited_failure(&audit, "invalid_config", error).await),
+    };
+    let store = state.control.revisions();
+    let source = format!("admin:{}:{}", principal.actor_type, principal.actor_id);
+    let metadata =
+        match tokio::task::spawn_blocking(move || store.create_candidate(&config, &source)).await {
+            Ok(Ok(metadata)) => metadata,
+            Ok(Err(RevisionError::InvalidConfig(_))) => {
+                return Err(
+                    audited_failure(&audit, "invalid_config", ApiError::InvalidRequest).await,
+                );
+            }
+            Ok(Err(_)) | Err(_) => {
+                return Err(
+                    audited_failure(&audit, "storage_unavailable", ApiError::Unavailable).await,
+                );
+            }
+        };
+    audit
+        .record(AuditOutcome::Success, Some(metadata.id.clone()), None)
+        .await?;
+    Ok((
+        StatusCode::CREATED,
+        axum::Json(CandidateResponse {
+            id: metadata.id,
+            hash: metadata.hash,
+            sequence: metadata.sequence,
+        }),
+    ))
+}
+
+async fn activate_candidate(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+    principal: Principal,
+) -> Result<Response, ApiError> {
+    let current = state.control.runtime().revision().to_string();
+    let audit = begin_mutation(
+        &state,
+        &principal,
+        &request_id,
+        Some(current),
+        MutationSpec {
+            permission: Action::ActivateConfig,
+            action: "config_activate",
+            resource_id: &id,
+            new_revision: Some(id.clone()),
+        },
+    )
+    .await?;
+    let expected = match expected_revision(&headers) {
+        Ok(expected) => expected,
+        Err(error) => return Err(audited_failure(&audit, "invalid_if_match", error).await),
+    };
+    let result = match state
+        .control
+        .coordinator()
+        .activate(&id, Some(&expected))
+        .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            let (code, error) = activation_error(error);
+            return Err(audited_failure(&audit, code, error).await);
+        }
+    };
+    audit
+        .record(AuditOutcome::Success, Some(result.active.clone()), None)
+        .await?;
+    let mut response = axum::Json(ActivationResponse {
+        active: result.active.clone(),
+        previous: result.previous,
+    })
+    .into_response();
+    response
+        .headers_mut()
+        .insert(ETAG, etag(&result.active).ok_or(ApiError::Internal)?);
+    Ok(response)
+}
+
+async fn rollback_revision(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+    principal: Principal,
+) -> Result<Response, ApiError> {
+    let current = state.control.runtime().revision().to_string();
+    let audit = begin_mutation(
+        &state,
+        &principal,
+        &request_id,
+        Some(current.clone()),
+        MutationSpec {
+            permission: Action::RollbackConfig,
+            action: "config_rollback",
+            resource_id: &id,
+            new_revision: None,
+        },
+    )
+    .await?;
+    let expected = match expected_revision(&headers) {
+        Ok(expected) => expected,
+        Err(error) => return Err(audited_failure(&audit, "invalid_if_match", error).await),
+    };
+    if current != expected || state.control.runtime().revision().as_ref() != expected {
+        return Err(audited_failure(&audit, "revision_conflict", ApiError::Conflict).await);
+    }
+    let store = state.control.revisions();
+    let rollback_id = id.clone();
+    let forward = match tokio::task::spawn_blocking(move || {
+        let config = store.load(&rollback_id)?;
+        store.create_forward_revision(&config, &format!("rollback:{rollback_id}"))
+    })
+    .await
+    {
+        Ok(Ok(metadata)) => metadata,
+        Ok(Err(RevisionError::InvalidStored(_))) => {
+            return Err(audited_failure(&audit, "revision_not_found", ApiError::NotFound).await);
+        }
+        Ok(Err(_)) | Err(_) => {
+            return Err(
+                audited_failure(&audit, "storage_unavailable", ApiError::Unavailable).await,
+            );
+        }
+    };
+    let result = match state
+        .control
+        .coordinator()
+        .activate(&forward.id, Some(&expected))
+        .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            let (code, error) = activation_error(error);
+            return Err(audited_failure(&audit, code, error).await);
+        }
+    };
+    audit
+        .record(AuditOutcome::Success, Some(result.active.clone()), None)
+        .await?;
+    let mut response = axum::Json(ActivationResponse {
+        active: result.active.clone(),
+        previous: result.previous,
+    })
+    .into_response();
+    response
+        .headers_mut()
+        .insert(ETAG, etag(&result.active).ok_or(ApiError::Internal)?);
     Ok(response)
 }
 
@@ -683,6 +979,132 @@ fn page_limit(page: &Page) -> Result<usize, ApiError> {
 
 fn etag(revision: &str) -> Option<HeaderValue> {
     HeaderValue::from_str(&format!("\"{revision}\"")).ok()
+}
+
+fn require_toml(headers: &HeaderMap) -> Result<(), ApiError> {
+    let values: Vec<_> = headers.get_all(CONTENT_TYPE).iter().collect();
+    match values.as_slice() {
+        [value] if value.as_bytes() == b"application/toml" => Ok(()),
+        _ => Err(ApiError::InvalidRequest),
+    }
+}
+
+fn expected_revision(headers: &HeaderMap) -> Result<String, ApiError> {
+    let values = headers
+        .get_all(IF_MATCH)
+        .iter()
+        .map(HeaderValue::to_str)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| ApiError::InvalidRequest)?;
+    let [value] = values.as_slice() else {
+        return Err(ApiError::InvalidRequest);
+    };
+    let revision = value
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .filter(|value| {
+            (66..=96).contains(&value.len())
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f' | b'-'))
+        })
+        .ok_or(ApiError::InvalidRequest)?;
+    Ok(revision.to_owned())
+}
+
+async fn load_candidate(body: axum::body::Bytes) -> Result<Config, ApiError> {
+    tokio::task::spawn_blocking(move || aegisproxy_config::load_bytes(&body))
+        .await
+        .map_err(|_| ApiError::Internal)?
+        .map_err(|_| ApiError::InvalidRequest)
+}
+
+async fn begin_mutation(
+    state: &AppState,
+    principal: &Principal,
+    request_id: &RequestId,
+    old_revision: Option<String>,
+    spec: MutationSpec<'_>,
+) -> Result<MutationAudit, ApiError> {
+    let audit = MutationAudit {
+        log: state.audit.clone().ok_or(ApiError::Unavailable)?,
+        actor_type: principal.actor_type.to_owned(),
+        actor_id: principal.actor_id.clone(),
+        action: spec.action.to_owned(),
+        resource_id: spec.resource_id.to_owned(),
+        request_id: request_id.0.clone(),
+        old_revision,
+    };
+    if !principal.role.allows(spec.permission) {
+        audit
+            .record(
+                AuditOutcome::Denied,
+                spec.new_revision,
+                Some("authorization_denied"),
+            )
+            .await?;
+        return Err(ApiError::Forbidden);
+    }
+    audit
+        .record(AuditOutcome::Intent, spec.new_revision, None)
+        .await?;
+    Ok(audit)
+}
+
+impl MutationAudit {
+    async fn record(
+        &self,
+        outcome: AuditOutcome,
+        new_revision: Option<String>,
+        error_code: Option<&str>,
+    ) -> Result<(), ApiError> {
+        let log = Arc::clone(&self.log);
+        let event = AuditEvent {
+            actor_type: self.actor_type.clone(),
+            actor_id: self.actor_id.clone(),
+            action: self.action.clone(),
+            resource_id: self.resource_id.clone(),
+            request_id: self.request_id.clone(),
+            old_revision: self.old_revision.clone(),
+            new_revision,
+            authorized: outcome != AuditOutcome::Denied,
+            outcome,
+            error_code: error_code.map(str::to_owned),
+        };
+        tokio::task::spawn_blocking(move || log.append(event))
+            .await
+            .map_err(|_| ApiError::Internal)?
+            .map(|_| ())
+            .map_err(|_| ApiError::Unavailable)
+    }
+}
+
+async fn audited_failure(audit: &MutationAudit, code: &'static str, error: ApiError) -> ApiError {
+    if audit
+        .record(AuditOutcome::Failed, None, Some(code))
+        .await
+        .is_err()
+    {
+        ApiError::Unavailable
+    } else {
+        error
+    }
+}
+
+fn activation_error(error: ActivationError) -> (&'static str, ApiError) {
+    match error {
+        ActivationError::Revision(RevisionError::Conflict) => {
+            ("revision_conflict", ApiError::Conflict)
+        }
+        ActivationError::RestartRequired => ("restart_required", ApiError::Conflict),
+        ActivationError::RecoveryRequired => ("recovery_required", ApiError::Unavailable),
+        ActivationError::Revision(RevisionError::InvalidStored(_)) => {
+            ("revision_not_found", ApiError::NotFound)
+        }
+        ActivationError::Revision(_)
+        | ActivationError::Preparation(_)
+        | ActivationError::Probation => ("activation_failed", ApiError::Unavailable),
+    }
 }
 
 fn authorize(principal: &Principal, action: Action) -> Result<(), ApiError> {
@@ -908,6 +1330,31 @@ mod tests {
         );
         assert_eq!(etag("0001-deadbeef").expect("ETag"), "\"0001-deadbeef\"");
         assert!(etag("bad\nrevision").is_none());
+    }
+
+    #[test]
+    fn mutation_preconditions_are_exact_and_single_valued() {
+        let revision = format!("{:020}-{}", 1, "a".repeat(64));
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/toml"));
+        headers.insert(
+            IF_MATCH,
+            HeaderValue::from_str(&format!("\"{revision}\"")).expect("If-Match"),
+        );
+        assert!(require_toml(&headers).is_ok());
+        assert_eq!(expected_revision(&headers).expect("revision"), revision);
+
+        headers.append(CONTENT_TYPE, HeaderValue::from_static("application/toml"));
+        assert!(require_toml(&headers).is_err());
+        headers.append(IF_MATCH, HeaderValue::from_static("\"duplicate\""));
+        assert!(expected_revision(&headers).is_err());
+
+        let mut weak = HeaderMap::new();
+        weak.insert(
+            IF_MATCH,
+            HeaderValue::from_str(&format!("W/\"{revision}\"")).expect("weak ETag"),
+        );
+        assert!(expected_revision(&weak).is_err());
     }
 
     #[test]
