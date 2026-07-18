@@ -343,7 +343,9 @@ fn write_atomic_private(path: &Path, bytes: &[u8]) -> Result<(), BackupError> {
     getrandom::fill(&mut suffix).map_err(|_| BackupError::Encryption)?;
     let temporary = parent.join(format!(".backup-{}.tmp", URL_SAFE_NO_PAD.encode(suffix)));
     let result = write_private(&temporary, bytes).and_then(|()| {
-        fs::rename(&temporary, path)?;
+        fs::hard_link(&temporary, path)?;
+        File::open(parent)?.sync_all()?;
+        fs::remove_file(&temporary)?;
         File::open(parent)?.sync_all()
     });
     if result.is_err() {
@@ -442,6 +444,8 @@ mod tests {
                 .windows(b"backup-private-canary".len())
                 .any(|window| window == b"backup-private-canary")
         );
+        assert!(create_backup(&state, &output, &[identity.to_public().to_string()]).is_err());
+        assert_eq!(fs::read(&output).expect("unchanged backup"), ciphertext);
         let identity = identity.to_string();
         assert_eq!(
             validate_backup(&output, identity.expose_secret().as_bytes())
