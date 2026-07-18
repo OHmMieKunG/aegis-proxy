@@ -83,6 +83,11 @@ enum Command {
         #[command(flatten)]
         admin: AdminConnection,
     },
+    /// Print private OpenMetrics exposition.
+    Metrics {
+        #[command(flatten)]
+        admin: AdminConnection,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -339,6 +344,12 @@ async fn run(cli: Cli) -> Result<(), BoxError> {
                 admin_request(&admin, Method::GET, "/v1/ready", None, None, Vec::new()).await?;
             require_admin_success(&ready)?;
             writeln!(io::stdout().lock(), "live\nready")?;
+        }
+        Command::Metrics { admin } => {
+            let response =
+                admin_request(&admin, Method::GET, "/metrics", None, None, Vec::new()).await?;
+            require_admin_success(&response)?;
+            io::stdout().lock().write_all(&response.body)?;
         }
     }
     Ok(())

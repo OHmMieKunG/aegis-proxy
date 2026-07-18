@@ -1,5 +1,9 @@
 use std::{
     pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
     task::{Context, Poll},
     time::Instant,
 };
@@ -7,29 +11,69 @@ use std::{
 use http_body_util::BodyExt;
 use hyper::{Method, Response, StatusCode, body::Body};
 
-use crate::ResponseBody;
+use crate::{
+    ResponseBody,
+    telemetry::{RequestGuard, RequestMetric, Telemetry},
+};
+
+static ACCESS_SAMPLE_SEQUENCE: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Debug)]
 pub(crate) struct AccessEvent {
     started: Instant,
     method: Method,
     listener_id: String,
+    protocol: &'static str,
     route_id: Option<String>,
     request_id: Option<String>,
     status: Option<StatusCode>,
     response_bytes: u64,
+    telemetry: Option<Arc<Telemetry>>,
+    request_guard: Option<RequestGuard>,
+    access_log: bool,
+    sample_per_million: u32,
 }
 
 impl AccessEvent {
-    pub(crate) fn new(method: Method, listener_id: String) -> Self {
+    pub(crate) fn new(
+        method: Method,
+        listener_id: String,
+        protocol: &'static str,
+        telemetry: Arc<Telemetry>,
+        access_log: bool,
+        sample_per_million: u32,
+    ) -> Self {
         Self {
             started: Instant::now(),
             method,
             listener_id,
+            protocol,
             route_id: None,
             request_id: None,
             status: None,
             response_bytes: 0,
+            telemetry: Some(telemetry),
+            request_guard: None,
+            access_log,
+            sample_per_million,
+        }
+    }
+
+    #[cfg(test)]
+    fn test_event(method: Method, listener_id: String) -> Self {
+        Self {
+            started: Instant::now(),
+            method,
+            listener_id,
+            protocol: "http1",
+            route_id: None,
+            request_id: None,
+            status: None,
+            response_bytes: 0,
+            telemetry: None,
+            request_guard: None,
+            access_log: false,
+            sample_per_million: 0,
         }
     }
 
@@ -39,6 +83,9 @@ impl AccessEvent {
 
     pub(crate) fn set_route(&mut self, route_id: &str) {
         self.route_id = Some(route_id.to_owned());
+        self.request_guard = self.telemetry.as_ref().and_then(|telemetry| {
+            telemetry.request_started(&self.listener_id, route_id, self.protocol)
+        });
     }
 
     pub(crate) fn hold(mut self, response: Response<ResponseBody>) -> Response<ResponseBody> {
@@ -53,13 +100,38 @@ impl AccessEvent {
     }
 
     fn emit(self, completed: bool, body_error: bool) {
-        let elapsed_ms = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let elapsed = self.started.elapsed();
+        let route_id = self.route_id.as_deref().unwrap_or("unmatched");
+        if let Some(telemetry) = &self.telemetry {
+            telemetry.request_finished(RequestMetric {
+                listener: &self.listener_id,
+                route: route_id,
+                protocol: self.protocol,
+                status: self.status.map_or(500, |status| status.as_u16()),
+                response_bytes: self.response_bytes,
+                duration: elapsed,
+            });
+        }
+        if !self.access_log {
+            return;
+        }
+        if self.sample_per_million < 1_000_000
+            && ACCESS_SAMPLE_SEQUENCE.fetch_add(1, Ordering::Relaxed) % 1_000_000
+                >= self.sample_per_million
+        {
+            if let Some(telemetry) = &self.telemetry {
+                telemetry.drop_signal("access_sampled");
+            }
+            return;
+        }
+        let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
         tracing::info!(
             target: "aegisproxy_access",
             listener_id = %self.listener_id,
-            route_id = self.route_id.as_deref().unwrap_or("unmatched"),
+            route_id,
             request_id = self.request_id.as_deref().unwrap_or("unavailable"),
             method = %self.method,
+            protocol = self.protocol,
             status = self.status.map(|status| status.as_u16()).unwrap_or(500),
             response_bytes = self.response_bytes,
             duration_ms = elapsed_ms,
@@ -136,7 +208,7 @@ mod tests {
 
     #[tokio::test]
     async fn wrapper_preserves_body_and_counts_bounded_frames() {
-        let event = AccessEvent::new(Method::GET, "public".into());
+        let event = AccessEvent::test_event(Method::GET, "public".into());
         let response = Response::new(
             Full::new(Bytes::from_static(b"hello"))
                 .map_err(|never| match never {})

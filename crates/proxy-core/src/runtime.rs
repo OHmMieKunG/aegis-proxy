@@ -20,6 +20,7 @@ use arc_swap::ArcSwap;
 use thiserror::Error;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
+use crate::telemetry::Telemetry;
 use crate::upstream::DrainingEndpoint;
 
 use super::{
@@ -219,6 +220,7 @@ impl RuntimeSnapshot {
 #[derive(Clone)]
 pub struct RuntimeHandle {
     current: Arc<ArcSwap<RuntimeSnapshot>>,
+    telemetry: Arc<Telemetry>,
     http_challenges: HttpChallengeRegistry,
     tls_challenges: TlsAlpnChallengeRegistry,
     mutation: Arc<tokio::sync::Mutex<()>>,
@@ -254,8 +256,10 @@ impl fmt::Debug for RuntimeHandle {
 impl RuntimeHandle {
     pub(crate) fn new(initial: Arc<RuntimeSnapshot>) -> Self {
         let tls_challenges = initial.tls_challenges.clone();
+        let telemetry = Telemetry::new(&initial.config);
         Self {
             current: Arc::new(ArcSwap::from(initial)),
+            telemetry,
             http_challenges: HttpChallengeRegistry::default(),
             tls_challenges,
             mutation: Arc::new(tokio::sync::Mutex::new(())),
@@ -266,7 +270,12 @@ impl RuntimeHandle {
         self.current.load_full()
     }
 
+    pub(crate) fn telemetry(&self) -> Arc<Telemetry> {
+        Arc::clone(&self.telemetry)
+    }
+
     fn publish(&self, candidate: Arc<RuntimeSnapshot>) -> Arc<RuntimeSnapshot> {
+        self.telemetry.reconcile(&candidate.config);
         self.current.swap(candidate)
     }
 
@@ -285,6 +294,11 @@ impl RuntimeHandle {
     #[must_use]
     pub fn can_hot_reload(&self, candidate: &Config) -> bool {
         hot_reload_compatible(&self.current.load().config, candidate)
+    }
+
+    /// Encode process metrics using OpenMetrics text exposition.
+    pub fn render_openmetrics(&self) -> Result<String, fmt::Error> {
+        self.telemetry.render()
     }
 
     /// Return the process-wide HTTP-01 registry retained across configuration reloads.
@@ -433,8 +447,15 @@ impl ActivationCoordinator {
         candidate_id: &str,
         expected_active: Option<&str>,
     ) -> Result<ActivationResult, ActivationError> {
-        self.activate_with_probe(candidate_id, expected_active, async { true })
-            .await
+        let result = self
+            .activate_with_probe(candidate_id, expected_active, async { true })
+            .await;
+        self.runtime.telemetry().reload(if result.is_ok() {
+            "success"
+        } else {
+            "rejected"
+        });
+        result
     }
 
     /// Whether durable mutation remains safe after the latest activation.

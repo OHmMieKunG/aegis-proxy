@@ -55,8 +55,18 @@ pub(crate) async fn accept_loop(listener: TcpListener, context: TcpListenerConte
             None
         };
         let connection = context.clone();
+        let protocol = if connection.tls_passthrough {
+            "tls_passthrough"
+        } else {
+            "tcp"
+        };
+        let connection_metric = connection
+            .runtime
+            .telemetry()
+            .connection_started(&connection.listener_id, protocol);
         connections.spawn(async move {
             let _permit = permit;
+            let _connection_metric = connection_metric;
             let result = proxy_connection(stream, &connection, handshake_permit).await;
             if let Err(error) = result {
                 tracing::debug!(%peer, %error, "TCP connection ended");

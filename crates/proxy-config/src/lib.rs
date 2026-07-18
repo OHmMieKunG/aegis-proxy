@@ -22,6 +22,8 @@ use url::Url;
 
 /// Maximum configuration bytes accepted by the offline parser.
 pub const MAX_CONFIG_BYTES: usize = 2 * 1024 * 1024;
+/// Maximum estimated OpenMetrics series for one active configuration.
+pub const MAX_METRIC_SERIES: usize = 100_000;
 
 const MAX_LISTENERS: usize = 128;
 const MAX_ROUTES: usize = 4_096;
@@ -1065,7 +1067,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         ));
     }
     validate_admin(&config.admin)?;
-    validate_observability(&config.observability)?;
+    validate_observability(config)?;
     if config.upstream_groups.len() > MAX_UPSTREAM_GROUPS {
         return Err(ConfigError::Invalid(format!(
             "upstream_groups exceeds {MAX_UPSTREAM_GROUPS} entries"
@@ -1862,11 +1864,18 @@ fn validate_admin(admin: &AdminConfig) -> Result<(), ConfigError> {
     Ok(())
 }
 
-fn validate_observability(observability: &ObservabilityConfig) -> Result<(), ConfigError> {
+fn validate_observability(config: &Config) -> Result<(), ConfigError> {
+    let observability = &config.observability;
     if observability.access_log_sample_per_million > 1_000_000 {
         return Err(ConfigError::Invalid(
             "observability.access_log_sample_per_million exceeds 1000000".into(),
         ));
+    }
+    let estimated_series = estimated_metric_series(config);
+    if estimated_series > MAX_METRIC_SERIES {
+        return Err(ConfigError::Invalid(format!(
+            "observability metrics could create {estimated_series} series, exceeding {MAX_METRIC_SERIES}; reduce route/listener combinations or disable metrics"
+        )));
     }
     let Some(otlp) = &observability.otlp_traces else {
         return Ok(());
@@ -1910,6 +1919,24 @@ fn validate_observability(observability: &ObservabilityConfig) -> Result<(), Con
         ));
     }
     Ok(())
+}
+
+/// Calculate the worst-case OpenMetrics series count for the current families.
+#[must_use]
+pub fn estimated_metric_series(config: &Config) -> usize {
+    if !config.observability.metrics {
+        return 0;
+    }
+    let route_listener_pairs = config
+        .routes
+        .iter()
+        .fold(config.listeners.len(), |total, route| {
+            total.saturating_add(route.listeners.len())
+        });
+    route_listener_pairs
+        .saturating_mul(170)
+        .saturating_add(config.listeners.len().saturating_mul(2))
+        .saturating_add(8)
 }
 
 fn validate_middleware(id: &str, middleware: &MiddlewareConfig) -> Result<(), ConfigError> {
@@ -4370,6 +4397,27 @@ mod tests {
             .expect("OTLP")
             .max_export_batch_size = 2_049;
         assert!(validate(&config).is_err());
+
+        let mut excessive = base_config();
+        excessive.routes = (0..600)
+            .map(|index| RouteConfig {
+                id: format!("route-{index}"),
+                listeners: vec!["public".into()],
+                hosts: vec![format!("host-{index}.example")],
+                paths: vec![],
+                path_prefixes: vec![],
+                methods: vec![],
+                headers: vec![],
+                default: false,
+                priority: 0,
+                middlewares: vec![],
+                upstream_group: None,
+            })
+            .collect();
+        assert!(estimated_metric_series(&excessive) > MAX_METRIC_SERIES);
+        assert!(validate(&excessive).is_err());
+        excessive.observability.metrics = false;
+        assert_eq!(estimated_metric_series(&excessive), 0);
     }
 
     #[test]

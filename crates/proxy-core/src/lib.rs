@@ -7,6 +7,7 @@ mod middleware;
 mod route;
 mod runtime;
 mod tcp;
+mod telemetry;
 mod upstream;
 
 use std::{
@@ -991,6 +992,15 @@ async fn accept_loop(listener: TcpListener, context: ListenerContext) {
         let snapshot = runtime.load();
         let tls_acceptor = snapshot.tls_acceptors.get(&listener_id).cloned();
         let handshake_timeout_secs = snapshot.config.tls.handshake_timeout_secs;
+        let listener_protocol = snapshot
+            .config
+            .listeners
+            .iter()
+            .find(|listener| listener.id == listener_id)
+            .map_or("unknown", |listener| listener.protocol.as_str());
+        let connection_metric = runtime
+            .telemetry()
+            .connection_started(&listener_id, listener_protocol);
         drop(snapshot);
         let handshake_permit = if tls_acceptor.is_some() {
             let Ok(permit) = handshake_permits.clone().try_acquire_owned() else {
@@ -1009,6 +1019,7 @@ async fn accept_loop(listener: TcpListener, context: ListenerContext) {
         let upgrade_tasks = upgrade_tasks.clone();
         connections.spawn(async move {
             let _permit = permit;
+            let _connection_metric = connection_metric;
             let connection = ConnectionContext {
                 peer,
                 listener_id,
@@ -1186,6 +1197,7 @@ struct PinnedProxyService {
     upgrade_tasks: TaskTracker,
     tls_server_name: Option<String>,
     http_challenges: HttpChallengeRegistry,
+    telemetry: Arc<telemetry::Telemetry>,
 }
 
 impl Service<Request<Incoming>> for ProxyService {
@@ -1212,6 +1224,7 @@ impl Service<Request<Incoming>> for ProxyService {
             upgrade_tasks: service.upgrade_tasks,
             tls_server_name: service.tls_server_name,
             http_challenges: service.runtime.http_challenges(),
+            telemetry: service.runtime.telemetry(),
         };
         Box::pin(async move { Ok(pinned.forward(request).await) })
     }
@@ -1219,9 +1232,17 @@ impl Service<Request<Incoming>> for ProxyService {
 
 impl PinnedProxyService {
     async fn forward(&self, request: Request<Incoming>) -> Response<ResponseBody> {
+        let protocol = match request.version() {
+            hyper::Version::HTTP_2 => "http2",
+            _ => "http1",
+        };
         let mut access = middleware::access::AccessEvent::new(
             request.method().clone(),
             self.listener_id.clone(),
+            protocol,
+            Arc::clone(&self.telemetry),
+            self.config.observability.access_log,
+            self.config.observability.access_log_sample_per_million,
         );
         let mut permit = None;
         let response = self.forward_inner(request, &mut permit, &mut access).await;

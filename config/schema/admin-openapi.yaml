@@ -20,6 +20,16 @@ paths:
       responses:
         "200": {description: Administration is ready}
         "503": {description: Durable recovery is required}
+  /metrics:
+    get:
+      operationId: openMetrics
+      responses:
+        "200":
+          description: Bounded OpenMetrics text exposition
+          content:
+            application/openmetrics-text:
+              schema: {type: string}
+        default: {$ref: "#/components/responses/Error"}
   /v1/status:
     get:
       operationId: status

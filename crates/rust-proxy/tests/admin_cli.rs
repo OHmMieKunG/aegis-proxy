@@ -4,6 +4,7 @@
 mod unix {
     use std::{
         fs,
+        io::{Read, Write},
         net::TcpListener,
         os::unix::fs::PermissionsExt,
         path::{Path, PathBuf},
@@ -161,6 +162,20 @@ upstream_group = "app"
         let mut codes = [first_output.status.code(), second_output.status.code()];
         codes.sort_unstable();
         assert_eq!(codes, [Some(0), Some(4)]);
+        let mut client = std::net::TcpStream::connect(("127.0.0.1", port)).expect("proxy");
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n")
+            .expect("request");
+        let mut response = String::new();
+        client.read_to_string(&mut response).expect("response");
+        assert!(response.starts_with("HTTP/1.1 502"));
+        let metrics = run(&["metrics", "--socket", socket]);
+        assert!(metrics.status.success());
+        let metrics = String::from_utf8(metrics.stdout).expect("OpenMetrics UTF-8");
+        assert!(metrics.contains("aegisproxy_config_reloads_total{outcome=\"success\"} 1"));
+        assert!(metrics.contains("aegisproxy_http_requests_total"));
+        assert!(metrics.contains("route=\"app\""));
+        assert!(!metrics.contains("example.test"));
 
         let current = active_revision(&state);
         let token = run(&[

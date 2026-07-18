@@ -515,6 +515,7 @@ pub async fn serve(
     let app = Router::new()
         .route("/v1/live", get(live))
         .route("/v1/ready", get(ready))
+        .route("/metrics", get(metrics))
         .route("/v1/status", get(status))
         .route("/v1/config/active", get(active_config))
         .route("/v1/config/validate", post(validate_config))
@@ -656,6 +657,27 @@ async fn ready(State(state): State<AppState>) -> (StatusCode, axum::Json<HealthR
             }),
         )
     }
+}
+
+async fn metrics(
+    State(state): State<AppState>,
+    principal: Principal,
+) -> Result<Response, ApiError> {
+    authorize(&principal, Action::ReadStatus)?;
+    if !state.control.runtime().config().observability.metrics {
+        return Err(ApiError::NotFound);
+    }
+    let body = state
+        .control
+        .runtime()
+        .render_openmetrics()
+        .map_err(|_| ApiError::Unavailable)?;
+    let mut response = Response::new(axum::body::Body::from(body));
+    response.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("application/openmetrics-text; version=1.0.0; charset=utf-8"),
+    );
+    Ok(response)
 }
 
 async fn status(
@@ -1762,6 +1784,7 @@ mod tests {
     fn checked_openapi_contains_every_private_route() {
         let openapi = include_str!("../../../config/schema/admin-openapi.yaml");
         for path in [
+            "/metrics:",
             "/v1/live:",
             "/v1/ready:",
             "/v1/status:",
