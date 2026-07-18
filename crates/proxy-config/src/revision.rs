@@ -188,6 +188,24 @@ impl RevisionStore {
         config: &Config,
         source: &str,
     ) -> Result<RevisionMetadata, RevisionError> {
+        self.persist_candidate(config, source, true)
+    }
+
+    /// Persist a new forward revision even when content matches a retained revision.
+    pub fn create_forward_revision(
+        &self,
+        config: &Config,
+        source: &str,
+    ) -> Result<RevisionMetadata, RevisionError> {
+        self.persist_candidate(config, source, false)
+    }
+
+    fn persist_candidate(
+        &self,
+        config: &Config,
+        source: &str,
+        deduplicate: bool,
+    ) -> Result<RevisionMetadata, RevisionError> {
         let _guard = self
             .mutation
             .lock()
@@ -204,7 +222,10 @@ impl RevisionStore {
         }
         let hash = hex_sha256(&canonical);
         let revisions = self.list()?;
-        if let Some(existing) = revisions.iter().find(|revision| revision.hash == hash) {
+        if let (true, Some(existing)) = (
+            deduplicate,
+            revisions.iter().find(|revision| revision.hash == hash),
+        ) {
             return Ok(existing.clone());
         }
         self.prune_revisions(&revisions)?;
@@ -1005,6 +1026,28 @@ mod tests {
             .collect();
         assert!(ids.iter().all(|id| id == &ids[0]));
         assert_eq!(store.list().expect("list").len(), 1);
+        drop(store);
+        fs::remove_dir_all(state).expect("cleanup");
+    }
+
+    #[test]
+    fn rollback_content_creates_a_new_forward_revision() {
+        let state = temporary_state();
+        let store = RevisionStore::open(&state).expect("store");
+        let original = store
+            .create_candidate(&config(), "original")
+            .expect("original");
+        let forward = store
+            .create_forward_revision(&config(), "rollback")
+            .expect("forward revision");
+        assert_ne!(forward.id, original.id);
+        assert!(forward.sequence > original.sequence);
+        assert_eq!(forward.hash, original.hash);
+        assert_eq!(
+            toml::to_string(&store.load(&forward.id).expect("forward config"))
+                .expect("stored TOML"),
+            toml::to_string(&config()).expect("expected TOML")
+        );
         drop(store);
         fs::remove_dir_all(state).expect("cleanup");
     }
