@@ -1,11 +1,12 @@
 //! Private Unix-socket administrative HTTP service.
 
 use std::{
+    collections::HashMap,
     fs, io,
     os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
-    sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    sync::{Arc, Mutex},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use aegisproxy_core::ManagedControl;
@@ -29,6 +30,7 @@ use crate::{Action, AuditLog, Role, TokenStore};
 
 const AUDIT_KEY_BYTES: usize = 64;
 const REQUEST_ID_BYTES: usize = 16;
+const MAX_RATE_LIMIT_KEYS: usize = 2_048;
 
 /// Administrative service startup or listener failure.
 #[derive(Debug, Error)]
@@ -55,6 +57,7 @@ struct AppState {
     allowed_uids: Arc<[u32]>,
     auth_permits: Arc<Semaphore>,
     request_permits: Arc<Semaphore>,
+    rate_limiter: Arc<RateLimiter>,
     timeout: Duration,
 }
 
@@ -104,11 +107,13 @@ impl FromRequestParts<AppState> for Principal {
                 return Err(ApiError::Unauthorized);
             }
             let Some(authorization) = authorization else {
-                return Ok(Self {
+                let principal = Self {
                     actor_type: "unix_peer",
                     actor_id: uid.to_string(),
                     role: Role::Admin,
-                });
+                };
+                state.rate_limiter.check(&principal)?;
+                return Ok(principal);
             };
             let token = authorization
                 .strip_prefix("Bearer ")
@@ -128,12 +133,72 @@ impl FromRequestParts<AppState> for Principal {
             .await
             .map_err(|_| ApiError::Internal)?
             .ok_or(ApiError::Unauthorized)?;
-            Ok(Self {
+            let principal = Self {
                 actor_type: "api_token",
                 actor_id: metadata.id,
                 role: metadata.role,
-            })
+            };
+            state.rate_limiter.check(&principal)?;
+            Ok(principal)
         }
+    }
+}
+
+#[derive(Debug)]
+struct RateLimiter {
+    requests_per_second: f64,
+    burst: f64,
+    max_keys: usize,
+    buckets: Mutex<HashMap<String, Bucket>>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Bucket {
+    tokens: f64,
+    updated: Instant,
+}
+
+impl RateLimiter {
+    fn new(requests_per_second: u32, burst: u32) -> Self {
+        Self {
+            requests_per_second: f64::from(requests_per_second),
+            burst: f64::from(burst),
+            max_keys: MAX_RATE_LIMIT_KEYS,
+            buckets: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn check(&self, principal: &Principal) -> Result<(), ApiError> {
+        self.check_at(principal, Instant::now())
+    }
+
+    fn check_at(&self, principal: &Principal, now: Instant) -> Result<(), ApiError> {
+        let key = format!("{}:{}", principal.actor_type, principal.actor_id);
+        let mut buckets = self
+            .buckets
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(bucket) = buckets.get_mut(&key) {
+            let elapsed = now.saturating_duration_since(bucket.updated).as_secs_f64();
+            bucket.tokens = (bucket.tokens + elapsed * self.requests_per_second).min(self.burst);
+            bucket.updated = now;
+            if bucket.tokens < 1.0 {
+                return Err(ApiError::RateLimited);
+            }
+            bucket.tokens -= 1.0;
+            return Ok(());
+        }
+        if buckets.len() >= self.max_keys {
+            return Err(ApiError::RateLimited);
+        }
+        buckets.insert(
+            key,
+            Bucket {
+                tokens: self.burst - 1.0,
+                updated: now,
+            },
+        );
+        Ok(())
     }
 }
 
@@ -142,6 +207,7 @@ enum ApiError {
     Unauthorized,
     Forbidden,
     Busy,
+    RateLimited,
     Timeout,
     Internal,
 }
@@ -151,7 +217,8 @@ impl IntoResponse for ApiError {
         let (status, code) = match self {
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),
             Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden"),
-            Self::Busy => (StatusCode::TOO_MANY_REQUESTS, "capacity_exhausted"),
+            Self::Busy => (StatusCode::SERVICE_UNAVAILABLE, "capacity_exhausted"),
+            Self::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
             Self::Timeout => (StatusCode::GATEWAY_TIMEOUT, "request_timeout"),
             Self::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
         };
@@ -226,6 +293,10 @@ pub async fn serve(
         allowed_uids: Arc::from(config.admin.allowed_uids.clone()),
         auth_permits: Arc::new(Semaphore::new(config.admin.max_auth_in_flight)),
         request_permits: Arc::new(Semaphore::new(config.admin.max_in_flight)),
+        rate_limiter: Arc::new(RateLimiter::new(
+            config.admin.requests_per_second,
+            config.admin.burst,
+        )),
         timeout: Duration::from_secs(config.admin.request_timeout_secs),
     };
     let app = Router::new()
@@ -468,6 +539,37 @@ mod tests {
             HeaderValue::from_bytes(&[0xff]).expect("opaque header value"),
         );
         assert!(authorization_header(&headers).is_err());
+    }
+
+    #[test]
+    fn principal_rate_limit_enforces_burst_refill_and_key_bound() {
+        let start = Instant::now();
+        let limiter = RateLimiter {
+            requests_per_second: 2.0,
+            burst: 2.0,
+            max_keys: 1,
+            buckets: Mutex::new(HashMap::new()),
+        };
+        let first = Principal {
+            actor_type: "unix_peer",
+            actor_id: "1000".into(),
+            role: Role::Admin,
+        };
+        assert!(limiter.check_at(&first, start).is_ok());
+        assert!(limiter.check_at(&first, start).is_ok());
+        assert!(limiter.check_at(&first, start).is_err());
+        assert!(
+            limiter
+                .check_at(&first, start + Duration::from_millis(500))
+                .is_ok()
+        );
+
+        let second = Principal {
+            actor_type: "api_token",
+            actor_id: "second".into(),
+            role: Role::Viewer,
+        };
+        assert!(limiter.check_at(&second, start).is_err());
     }
 
     #[test]
