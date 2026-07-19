@@ -506,7 +506,16 @@ mod tests {
             recovered.config.upstream_groups[0].endpoints[0].id,
             "node-b"
         );
-        fs::remove_file(path).expect("remove provider");
+        fs::remove_file(&path).expect("remove provider");
+        tokio::time::sleep(Duration::from_millis(1_010)).await;
+        let deleted = coordinator
+            .reconcile(base(path.display().to_string()), [1; 32])
+            .await;
+        assert_eq!(deleted.config.upstream_groups[0].endpoints[0].id, "node-b");
+        assert_eq!(
+            coordinator.registry().statuses()[0].error,
+            Some("invalid_source")
+        );
     }
 
     #[test]
