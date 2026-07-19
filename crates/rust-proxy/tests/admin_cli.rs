@@ -276,6 +276,35 @@ upstream_group = "app"
         assert!(!token_store.contains(plaintext));
         assert!(!token_store.contains("operator.token"));
 
+        let status = run(&["fleet", "status", "--socket", socket]);
+        assert!(status.status.success(), "{:?}", status.stderr);
+        let status_json: serde_json::Value =
+            serde_json::from_slice(&status.stdout).expect("node status JSON");
+        assert_eq!(status_json["node_id"], "node-a");
+        assert_eq!(status_json["fleet_generation"], 7);
+        let active_hash = status_json["active_hash"]
+            .as_str()
+            .expect("active hash")
+            .to_owned();
+        let status_path = daemon.root.join("node-a.json");
+        fs::write(&status_path, &status.stdout).expect("status export");
+        let fleet = Command::new(binary())
+            .args([
+                "fleet",
+                "check",
+                "--expected-hash",
+                &active_hash,
+                "--generation",
+                "7",
+                "--node",
+                "node-a",
+                "--status",
+            ])
+            .arg(&status_path)
+            .output()
+            .expect("fleet check");
+        assert!(fleet.status.success(), "{:?}", fleet.stderr);
+
         let drain = run(&["drain", "--socket", socket, "--expect", &current]);
         assert!(drain.status.success(), "{:?}", drain.stderr);
         assert!(String::from_utf8_lossy(&drain.stdout).contains("\"draining\":true"));

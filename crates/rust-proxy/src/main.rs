@@ -3,6 +3,7 @@
 //! Command-line entry point for the AegisProxy daemon.
 
 mod admin_client;
+mod fleet;
 mod telemetry;
 
 use std::{
@@ -101,6 +102,31 @@ enum Command {
     Metrics {
         #[command(flatten)]
         admin: AdminConnection,
+    },
+    /// Export private node status or verify a complete offline fleet snapshot.
+    Fleet {
+        #[command(subcommand)]
+        command: FleetCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum FleetCommand {
+    /// Print authenticated node status JSON from the private Unix API.
+    Status {
+        #[command(flatten)]
+        admin: AdminConnection,
+    },
+    /// Reject missing, divergent, unready, or duplicate-owner node exports.
+    Check {
+        #[arg(long)]
+        expected_hash: String,
+        #[arg(long)]
+        generation: u64,
+        #[arg(long = "node", required = true)]
+        nodes: Vec<String>,
+        #[arg(long = "status", required = true)]
+        statuses: Vec<PathBuf>,
     },
 }
 
@@ -403,6 +429,32 @@ async fn run(cli: Cli) -> Result<(), BoxError> {
             require_admin_success(&response)?;
             io::stdout().lock().write_all(&response.body)?;
         }
+        Command::Fleet { command } => match command {
+            FleetCommand::Status { admin } => {
+                let response =
+                    admin_request(&admin, Method::GET, "/v1/status", None, None, Vec::new())
+                        .await?;
+                require_admin_success(&response)?;
+                io::stdout().lock().write_all(&response.body)?;
+                writeln!(io::stdout().lock())?;
+            }
+            FleetCommand::Check {
+                expected_hash,
+                generation,
+                nodes,
+                statuses,
+            } => {
+                let summary = fleet::check(&expected_hash, generation, &nodes, &statuses)?;
+                let owner = summary.certificate_owner.as_deref().unwrap_or("none");
+                writeln!(
+                    io::stdout().lock(),
+                    "fleet verified: nodes={} generation={} hash={} certificate_owner={owner}",
+                    summary.nodes,
+                    generation,
+                    expected_hash
+                )?;
+            }
+        },
     }
     Ok(())
 }
