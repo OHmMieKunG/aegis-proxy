@@ -1,0 +1,74 @@
+[package]
+name = "aegisproxy-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+rust-version = "1.85"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+aegisproxy-config = { path = "../crates/proxy-config" }
+aegisproxy-core = { path = "../crates/proxy-core", features = ["fuzzing"] }
+aegisproxy-tls = { path = "../crates/proxy-tls", features = ["fuzzing"] }
+libfuzzer-sys = "0.4.13"
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+
+[workspace]
+
+[[bin]]
+name = "config_parser"
+path = "fuzz_targets/config_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "route_conflict"
+path = "fuzz_targets/route_conflict.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "host_canonicalization"
+path = "fuzz_targets/host_canonicalization.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "path_normalization"
+path = "fuzz_targets/path_normalization.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "header_processing"
+path = "fuzz_targets/header_processing.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "forwarded_headers"
+path = "fuzz_targets/forwarded_headers.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_hello"
+path = "fuzz_targets/client_hello.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "certificate_metadata"
+path = "fuzz_targets/certificate_metadata.rs"
+test = false
+doc = false
+bench = false

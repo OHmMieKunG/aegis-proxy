@@ -11,6 +11,10 @@ mod tcp;
 mod telemetry;
 mod upstream;
 
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub mod fuzzing;
+
 use std::{
     collections::HashMap,
     convert::Infallible,

@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+fuzzing = []
+
 [dependencies]
 aegisproxy-config = { path = "../proxy-config" }
 aegisproxy-secrets = { path = "../proxy-secrets" }

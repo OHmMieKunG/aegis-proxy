@@ -1,0 +1,6 @@
+schema_version = 1
+
+[[listeners]]
+id = "public"
+address = "127.0.0.1:8080"
+protocol = "http"

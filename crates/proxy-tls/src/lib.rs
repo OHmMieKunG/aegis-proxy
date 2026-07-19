@@ -21,6 +21,10 @@ pub use selector::{CertificateResolver, PreparedCertificateMaps};
 pub use store::{Identity, load_identity};
 pub use tokio_rustls::{TlsAcceptor, server::TlsStream};
 
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub mod fuzzing;
+
 use thiserror::Error;
 
 /// TLS preparation failure. Secret contents are never included.

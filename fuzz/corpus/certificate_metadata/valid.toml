@@ -1,0 +1,7 @@
+id = "example"
+hosts = ["example.test"]
+generation = "123456789"
+issuer = "local-test"
+not_before_unix_secs = 0
+not_after_unix_secs = 4102444800
+imported_unix_secs = 0

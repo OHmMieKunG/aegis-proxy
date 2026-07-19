@@ -1,0 +1,16 @@
+schema_version = 1
+
+[[listeners]]
+id = "public"
+address = "127.0.0.1:8080"
+protocol = "http"
+
+[[routes]]
+id = "one"
+listeners = ["public"]
+hosts = ["example.test"]
+
+[[routes]]
+id = "two"
+listeners = ["public"]
+hosts = ["example.test"]

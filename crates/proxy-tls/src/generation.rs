@@ -17,7 +17,7 @@ use crate::{
 const MAX_CERTIFICATE_BYTES: usize = 1024 * 1024;
 const MAX_PRIVATE_KEY_BYTES: usize = 256 * 1024;
 const MAX_ENCRYPTED_KEY_BYTES: usize = 512 * 1024;
-const MAX_METADATA_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_METADATA_BYTES: usize = 64 * 1024;
 const MAX_ISSUER_BYTES: usize = 1024;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -510,7 +510,9 @@ fn validate_managed_replacement(
     Ok(())
 }
 
-fn validate_managed_provenance(provenance: &ManagedCertificateProvenance) -> Result<(), TlsError> {
+pub(crate) fn validate_managed_provenance(
+    provenance: &ManagedCertificateProvenance,
+) -> Result<(), TlsError> {
     validate_id(&provenance.issuer_id)?;
     if let Some(profile) = provenance.profile.as_deref()
         && (profile.is_empty()
@@ -526,7 +528,7 @@ fn validate_managed_provenance(provenance: &ManagedCertificateProvenance) -> Res
     Ok(())
 }
 
-fn validate_hosts(hosts: &[String]) -> Result<(), TlsError> {
+pub(crate) fn validate_hosts(hosts: &[String]) -> Result<(), TlsError> {
     if hosts.is_empty() || hosts.len() > 128 {
         return Err(TlsError::StoreFormat(
             "certificate hosts must contain 1 to 128 names".into(),
@@ -598,7 +600,7 @@ fn write_certificate_pointer(path: &Path, pointer: &CertificatePointer) -> Resul
     )
 }
 
-fn validate_generation(generation: &str) -> Result<(), TlsError> {
+pub(crate) fn validate_generation(generation: &str) -> Result<(), TlsError> {
     if generation.is_empty()
         || generation.len() > 32
         || !generation.bytes().all(|byte| byte.is_ascii_digit())
