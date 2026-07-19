@@ -21,7 +21,7 @@ const MAX_AUDIT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_AUDIT_RECORDS: u64 = 100_000;
 const MAX_LINE_BYTES: usize = 8 * 1024;
 const MAX_FIELD_BYTES: usize = 256;
-const AUDIT_SCHEMA_VERSION: u32 = 1;
+const AUDIT_SCHEMA_VERSION: u32 = 2;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -65,6 +65,8 @@ pub enum AuditOutcome {
 /// Validated fields supplied by one administrative operation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuditEvent {
+    /// Stable fleet node identifier.
+    pub node_id: String,
     /// Stable actor type, such as `unix_peer` or `api_token`.
     pub actor_type: String,
     /// Stable non-secret actor identifier.
@@ -97,6 +99,9 @@ pub struct AuditRecord {
     pub sequence: u64,
     /// UTC time represented as Unix seconds.
     pub timestamp_unix_secs: u64,
+    /// Stable fleet node identifier. Missing only on legacy schema-v1 records.
+    #[serde(default = "legacy_node_id")]
+    pub node_id: String,
     /// Stable actor type.
     pub actor_type: String,
     /// Stable non-secret actor identifier.
@@ -125,6 +130,25 @@ pub struct AuditRecord {
 
 #[derive(Serialize)]
 struct UnsignedRecord<'a> {
+    schema_version: u32,
+    sequence: u64,
+    timestamp_unix_secs: u64,
+    node_id: &'a str,
+    actor_type: &'a str,
+    actor_id: &'a str,
+    action: &'a str,
+    resource_id: &'a str,
+    request_id: &'a str,
+    old_revision: &'a Option<String>,
+    new_revision: &'a Option<String>,
+    authorized: bool,
+    outcome: AuditOutcome,
+    error_code: &'a Option<String>,
+    previous_mac: &'a str,
+}
+
+#[derive(Serialize)]
+struct UnsignedRecordV1<'a> {
     schema_version: u32,
     sequence: u64,
     timestamp_unix_secs: u64,
@@ -227,6 +251,7 @@ impl AuditLog {
             schema_version: AUDIT_SCHEMA_VERSION,
             sequence,
             timestamp_unix_secs,
+            node_id: event.node_id,
             actor_type: event.actor_type,
             actor_id: event.actor_id,
             action: event.action,
@@ -283,6 +308,7 @@ fn unsigned<'a>(
         schema_version: AUDIT_SCHEMA_VERSION,
         sequence,
         timestamp_unix_secs,
+        node_id: &event.node_id,
         actor_type: &event.actor_type,
         actor_id: &event.actor_id,
         action: &event.action,
@@ -297,14 +323,33 @@ fn unsigned<'a>(
     }
 }
 
-fn sign(key: &[u8], unsigned: &UnsignedRecord<'_>) -> Result<String, AuditError> {
+fn unsigned_v1<'a>(record: &'a AuditRecord, event: &'a AuditEvent) -> UnsignedRecordV1<'a> {
+    UnsignedRecordV1 {
+        schema_version: 1,
+        sequence: record.sequence,
+        timestamp_unix_secs: record.timestamp_unix_secs,
+        actor_type: &event.actor_type,
+        actor_id: &event.actor_id,
+        action: &event.action,
+        resource_id: &event.resource_id,
+        request_id: &event.request_id,
+        old_revision: &event.old_revision,
+        new_revision: &event.new_revision,
+        authorized: event.authorized,
+        outcome: event.outcome,
+        error_code: &event.error_code,
+        previous_mac: &record.previous_mac,
+    }
+}
+
+fn sign(key: &[u8], unsigned: &impl Serialize) -> Result<String, AuditError> {
     let bytes = serde_json::to_vec(unsigned).map_err(|_| AuditError::InvalidRecord)?;
     let mut mac = HmacSha256::new_from_slice(key).map_err(|_| AuditError::InvalidKey)?;
     mac.update(&bytes);
     Ok(hex(&mac.finalize().into_bytes()))
 }
 
-fn verify(key: &[u8], unsigned: &UnsignedRecord<'_>, expected: &str) -> bool {
+fn verify(key: &[u8], unsigned: &impl Serialize, expected: &str) -> bool {
     let Ok(bytes) = serde_json::to_vec(unsigned) else {
         return false;
     };
@@ -341,10 +386,14 @@ fn read_records(file: &mut File, bytes: u64, key: &[u8]) -> Result<Vec<AuditReco
             &event,
             &record.previous_mac,
         );
-        if record.schema_version != AUDIT_SCHEMA_VERSION
+        let valid_schema_mac = match record.schema_version {
+            1 => verify(key, &unsigned_v1(&record, &event), &record.mac),
+            AUDIT_SCHEMA_VERSION => verify(key, &unsigned, &record.mac),
+            _ => false,
+        };
+        if !valid_schema_mac
             || record.sequence != expected_sequence
             || record.previous_mac != previous_mac
-            || !verify(key, &unsigned, &record.mac)
         {
             return Err(AuditError::InvalidChain);
         }
@@ -357,6 +406,7 @@ fn read_records(file: &mut File, bytes: u64, key: &[u8]) -> Result<Vec<AuditReco
 
 fn event_from(record: &AuditRecord) -> AuditEvent {
     AuditEvent {
+        node_id: record.node_id.clone(),
         actor_type: record.actor_type.clone(),
         actor_id: record.actor_id.clone(),
         action: record.action.clone(),
@@ -372,6 +422,7 @@ fn event_from(record: &AuditRecord) -> AuditEvent {
 
 fn validate_event(event: &AuditEvent) -> Result<(), AuditError> {
     for value in [
+        Some(event.node_id.as_str()),
         Some(event.actor_type.as_str()),
         Some(event.actor_id.as_str()),
         Some(event.action.as_str()),
@@ -394,6 +445,10 @@ fn validate_event(event: &AuditEvent) -> Result<(), AuditError> {
         }
     }
     Ok(())
+}
+
+fn legacy_node_id() -> String {
+    "standalone".into()
 }
 
 fn zero_mac() -> String {
@@ -521,10 +576,13 @@ fn reject_insecure_permissions(_metadata: &fs::Metadata) -> Result<(), AuditErro
 mod tests {
     use std::fs;
 
-    use super::{AuditError, AuditEvent, AuditLog, AuditOutcome};
+    use super::{
+        AuditError, AuditEvent, AuditLog, AuditOutcome, AuditRecord, sign, unsigned_v1, zero_mac,
+    };
 
     fn event(outcome: AuditOutcome) -> AuditEvent {
         AuditEvent {
+            node_id: "node-a".into(),
             actor_type: "api_token".into(),
             actor_id: "token-1".into(),
             action: "config.activate".into(),
@@ -567,6 +625,55 @@ mod tests {
             AuditLog::open(&path, key),
             Err(AuditError::InvalidChain)
         ));
+        fs::remove_dir_all(directory).expect("remove");
+    }
+
+    #[test]
+    fn reopens_schema_v1_then_appends_node_attributed_v2() {
+        let directory = directory("schema-v1");
+        let path = directory.join("audit.jsonl");
+        let _ = fs::remove_dir_all(&directory);
+        let key = b"audit-test-key-is-at-least-32-bytes".to_vec();
+        drop(AuditLog::open(&path, key.clone()).expect("create private segment"));
+
+        let legacy_event = event(AuditOutcome::Success);
+        let mut legacy = AuditRecord {
+            schema_version: 1,
+            sequence: 1,
+            timestamp_unix_secs: 1_700_000_000,
+            node_id: "standalone".into(),
+            actor_type: legacy_event.actor_type.clone(),
+            actor_id: legacy_event.actor_id.clone(),
+            action: legacy_event.action.clone(),
+            resource_id: legacy_event.resource_id.clone(),
+            request_id: legacy_event.request_id.clone(),
+            old_revision: legacy_event.old_revision.clone(),
+            new_revision: legacy_event.new_revision.clone(),
+            authorized: legacy_event.authorized,
+            outcome: legacy_event.outcome,
+            error_code: legacy_event.error_code.clone(),
+            previous_mac: zero_mac(),
+            mac: String::new(),
+        };
+        legacy.mac = sign(&key, &unsigned_v1(&legacy, &legacy_event)).expect("legacy MAC");
+        let mut value = serde_json::to_value(&legacy).expect("legacy JSON");
+        value
+            .as_object_mut()
+            .expect("legacy object")
+            .remove("node_id");
+        fs::write(
+            &path,
+            format!("{}\n", serde_json::to_string(&value).expect("legacy line")),
+        )
+        .expect("write legacy segment");
+
+        let log = AuditLog::open(&path, key).expect("reopen legacy segment");
+        log.append(event(AuditOutcome::Intent)).expect("append v2");
+        let records = log.records().expect("mixed records");
+        assert_eq!(records[0].schema_version, 1);
+        assert_eq!(records[0].node_id, "standalone");
+        assert_eq!(records[1].schema_version, 2);
+        assert_eq!(records[1].node_id, "node-a");
         fs::remove_dir_all(directory).expect("remove");
     }
 

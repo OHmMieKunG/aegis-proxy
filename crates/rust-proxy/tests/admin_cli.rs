@@ -287,6 +287,11 @@ upstream_group = "app"
         assert!(audit.contains("\"outcome\":\"failed\""));
         assert!(audit.contains("\"outcome\":\"denied\""));
         assert!(audit.contains("\"action\":\"node_drain\""));
+        assert!(
+            audit
+                .lines()
+                .all(|line| line.contains("\"node_id\":\"node-a\""))
+        );
         assert!(!audit.contains(plaintext));
         let logs = fs::read_to_string(log_path).expect("structured logs");
         assert!(

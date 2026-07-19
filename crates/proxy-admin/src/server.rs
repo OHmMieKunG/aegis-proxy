@@ -484,6 +484,7 @@ struct RestoreValidateRequest {
 struct MutationAudit {
     log: Arc<AuditLog>,
     runtime: RuntimeHandle,
+    node_id: String,
     actor_type: String,
     actor_id: String,
     action: String,
@@ -1728,6 +1729,7 @@ async fn begin_mutation(
     let audit = MutationAudit {
         log: state.audit.clone().ok_or(ApiError::Unavailable)?,
         runtime: state.control.runtime(),
+        node_id: state.control.runtime().node_id().to_string(),
         actor_type: principal.actor_type.to_owned(),
         actor_id: principal.actor_id.clone(),
         action: spec.action.to_owned(),
@@ -1760,6 +1762,7 @@ impl MutationAudit {
     ) -> Result<(), ApiError> {
         let log = Arc::clone(&self.log);
         let event = AuditEvent {
+            node_id: self.node_id.clone(),
             actor_type: self.actor_type.clone(),
             actor_id: self.actor_id.clone(),
             action: self.action.clone(),
