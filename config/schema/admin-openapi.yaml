@@ -129,6 +129,12 @@ paths:
       responses:
         "200": {description: Redacted upstream summaries}
         default: {$ref: "#/components/responses/Error"}
+  /v1/providers:
+    get:
+      operationId: listProviders
+      responses:
+        "200": {description: Redacted provider hash and freshness summaries}
+        default: {$ref: "#/components/responses/Error"}
   /v1/certificates:
     get:
       operationId: listCertificates

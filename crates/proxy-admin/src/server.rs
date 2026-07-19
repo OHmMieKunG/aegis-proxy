@@ -375,6 +375,18 @@ struct EndpointSummary {
 }
 
 #[derive(Debug, Serialize)]
+struct ProviderSummary {
+    id: String,
+    kind: &'static str,
+    state: &'static str,
+    source_hash: Option<String>,
+    last_success_unix_secs: Option<u64>,
+    stale_at_unix_secs: Option<u64>,
+    endpoint_count: usize,
+    error: Option<&'static str>,
+}
+
+#[derive(Debug, Serialize)]
 struct CertificateSummary {
     id: String,
     hosts: Vec<String>,
@@ -559,6 +571,7 @@ pub async fn serve(
         )
         .route("/v1/routes", get(routes))
         .route("/v1/upstreams", get(upstreams))
+        .route("/v1/providers", get(providers))
         .route("/v1/certificates", get(certificates))
         .route("/v1/certificates/{id}/renew", post(renew_certificate))
         .route("/v1/audit", get(audit_records))
@@ -1161,6 +1174,30 @@ async fn upstreams(
         .collect();
     groups.sort_unstable_by(|left, right| left.id.cmp(&right.id));
     Ok(axum::Json(groups))
+}
+
+async fn providers(
+    State(state): State<AppState>,
+    principal: Principal,
+) -> Result<axum::Json<Vec<ProviderSummary>>, ApiError> {
+    authorize(&principal, Action::ReadUpstreams)?;
+    Ok(axum::Json(
+        state
+            .control
+            .provider_statuses()
+            .into_iter()
+            .map(|status| ProviderSummary {
+                id: status.id,
+                kind: status.kind,
+                state: status.state,
+                source_hash: status.source_hash,
+                last_success_unix_secs: status.last_success_unix_secs,
+                stale_at_unix_secs: status.stale_at_unix_secs,
+                endpoint_count: status.endpoint_count,
+                error: status.error,
+            })
+            .collect(),
+    ))
 }
 
 async fn certificates(
@@ -1901,6 +1938,7 @@ mod tests {
             "/v1/config/revisions/{id}/rollback:",
             "/v1/routes:",
             "/v1/upstreams:",
+            "/v1/providers:",
             "/v1/certificates:",
             "/v1/certificates/{id}/renew:",
             "/v1/audit:",

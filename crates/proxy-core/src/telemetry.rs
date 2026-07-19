@@ -81,6 +81,11 @@ struct CertificateOutcomeLabels {
     outcome: String,
 }
 
+#[derive(Clone, Debug, EncodeLabelSet, Eq, Hash, PartialEq)]
+struct ProviderLabels {
+    provider: String,
+}
+
 type DurationFamily = Family<RequestLabels, Histogram, fn() -> Histogram>;
 type UpstreamDurationFamily = Family<UpstreamLabels, Histogram, fn() -> Histogram>;
 
@@ -96,6 +101,7 @@ pub struct Telemetry {
     rate_labels: Mutex<HashSet<MiddlewareDecisionLabels>>,
     certificate_labels: Mutex<HashSet<CertificateLabels>>,
     certificate_outcome_labels: Mutex<HashSet<CertificateOutcomeLabels>>,
+    provider_labels: Mutex<HashSet<ProviderLabels>>,
     requests: Family<RequestLabels, Counter>,
     response_bytes: Family<RequestLabels, Counter>,
     request_duration: DurationFamily,
@@ -116,6 +122,10 @@ pub struct Telemetry {
     certificate_renewals: Family<CertificateOutcomeLabels, Counter>,
     audit_operations: Family<OutcomeLabels, Counter>,
     audit_ready: Gauge,
+    provider_fresh: Family<ProviderLabels, Gauge>,
+    provider_stale: Family<ProviderLabels, Gauge>,
+    provider_endpoints: Family<ProviderLabels, Gauge>,
+    provider_last_success: Family<ProviderLabels, Gauge>,
 }
 
 #[derive(Debug)]
@@ -125,6 +135,7 @@ struct AllowedLabels {
     endpoints: HashSet<(String, String)>,
     middlewares: HashSet<String>,
     certificates: HashMap<String, String>,
+    providers: HashSet<String>,
 }
 
 impl fmt::Debug for Telemetry {
@@ -158,6 +169,10 @@ impl Telemetry {
         let certificate_renewals = Family::default();
         let audit_operations = Family::default();
         let audit_ready = Gauge::default();
+        let provider_fresh = Family::default();
+        let provider_stale = Family::default();
+        let provider_endpoints = Family::default();
+        let provider_last_success = Family::default();
         let mut registry = Registry::with_prefix("aegisproxy");
         registry.register(
             "http_requests",
@@ -259,6 +274,26 @@ impl Telemetry {
             "Whether durable administrative audit is available",
             audit_ready.clone(),
         );
+        registry.register(
+            "provider_fresh",
+            "Whether the last provider source refresh is current",
+            provider_fresh.clone(),
+        );
+        registry.register(
+            "provider_stale",
+            "Whether provider output exceeded its hard stale deadline",
+            provider_stale.clone(),
+        );
+        registry.register(
+            "provider_endpoints",
+            "Endpoints in the last accepted provider result",
+            provider_endpoints.clone(),
+        );
+        registry.register(
+            "provider_last_success_timestamp_seconds",
+            "Unix timestamp of the last successful provider refresh",
+            provider_last_success.clone(),
+        );
         Arc::new(Self {
             registry,
             enabled: config.observability.metrics,
@@ -270,6 +305,7 @@ impl Telemetry {
             rate_labels: Mutex::new(HashSet::new()),
             certificate_labels: Mutex::new(HashSet::new()),
             certificate_outcome_labels: Mutex::new(HashSet::new()),
+            provider_labels: Mutex::new(HashSet::new()),
             requests,
             response_bytes,
             request_duration,
@@ -290,6 +326,10 @@ impl Telemetry {
             certificate_renewals,
             audit_operations,
             audit_ready,
+            provider_fresh,
+            provider_stale,
+            provider_endpoints,
+            provider_last_success,
         })
     }
 
@@ -536,6 +576,41 @@ impl Telemetry {
         }
     }
 
+    pub(crate) fn update_provider(&self, status: &crate::ProviderStatus) {
+        if !self.enabled
+            || !self
+                .allowed
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .providers
+                .contains(&status.id)
+        {
+            return;
+        }
+        let labels = ProviderLabels {
+            provider: status.id.clone(),
+        };
+        self.provider_labels
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(labels.clone());
+        self.provider_fresh
+            .get_or_create(&labels)
+            .set(i64::from(status.state == "fresh"));
+        self.provider_stale
+            .get_or_create(&labels)
+            .set(i64::from(status.state == "stale"));
+        self.provider_endpoints
+            .get_or_create(&labels)
+            .set(i64::try_from(status.endpoint_count).unwrap_or(i64::MAX));
+        self.provider_last_success.get_or_create(&labels).set(
+            status
+                .last_success_unix_secs
+                .and_then(|value| i64::try_from(value).ok())
+                .unwrap_or(0),
+        );
+    }
+
     pub(crate) fn reconcile(&self, config: &Config) {
         *self
             .allowed
@@ -613,6 +688,26 @@ impl Telemetry {
                     true
                 } else {
                     self.certificate_renewals.remove(labels);
+                    false
+                }
+            });
+        self.provider_labels
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|labels| {
+                let allowed = self
+                    .allowed
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .providers
+                    .contains(&labels.provider);
+                if allowed {
+                    true
+                } else {
+                    self.provider_fresh.remove(labels);
+                    self.provider_stale.remove(labels);
+                    self.provider_endpoints.remove(labels);
+                    self.provider_last_success.remove(labels);
                     false
                 }
             });
@@ -720,6 +815,11 @@ fn allowed(config: &Config) -> AllowedLabels {
                     .iter()
                     .map(|certificate| (certificate.id.clone(), certificate.issuer.clone())),
             )
+            .collect(),
+        providers: config
+            .providers
+            .iter()
+            .map(|provider| provider.id().to_owned())
             .collect(),
     }
 }
@@ -910,6 +1010,12 @@ mod tests {
             [[upstream_groups.endpoints]]
             id = "app-1"
             url = "http://127.0.0.1:9000"
+            [[providers]]
+            kind = "file"
+            id = "nodes"
+            upstream_group = "app"
+            path = "/run/aegisproxy/nodes.toml"
+            scheme = "http"
             [[certificates]]
             id = "edge-cert"
             hosts = ["example.test"]
@@ -940,6 +1046,26 @@ mod tests {
         telemetry.certificate_renewal("edge-cert", "requested");
         telemetry.audit_ready(true);
         telemetry.audit_operation("success");
+        telemetry.update_provider(&crate::ProviderStatus {
+            id: "nodes".into(),
+            kind: "file",
+            state: "fresh",
+            source_hash: Some("0".repeat(64)),
+            last_success_unix_secs: Some(1_700_000_000),
+            stale_at_unix_secs: Some(1_700_000_300),
+            endpoint_count: 2,
+            error: None,
+        });
+        telemetry.update_provider(&crate::ProviderStatus {
+            id: "attacker".into(),
+            kind: "file",
+            state: "fresh",
+            source_hash: None,
+            last_success_unix_secs: None,
+            stale_at_unix_secs: None,
+            endpoint_count: 1,
+            error: None,
+        });
         telemetry.update_upstream_state("app", "app-1", 2, true);
         telemetry.upstream_retry("app", "app-1");
         telemetry.reload("success", Duration::from_millis(10));
@@ -956,6 +1082,9 @@ mod tests {
         assert!(output.contains("endpoint=\"app-1\""));
         assert!(output.contains("aegisproxy_upstream_retries_total"));
         assert!(!output.contains("attacker-cert"));
+        assert!(output.contains("aegisproxy_provider_fresh{provider=\"nodes\"} 1"));
+        assert!(output.contains("aegisproxy_provider_endpoints{provider=\"nodes\"} 2"));
+        assert!(!output.contains("provider=\"attacker\""));
 
         let guard = telemetry
             .request_started("public", "app", "http1")

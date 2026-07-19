@@ -4,6 +4,7 @@
 
 mod acme_manager;
 mod middleware;
+mod provider;
 mod route;
 mod runtime;
 mod tcp;
@@ -73,6 +74,7 @@ use middleware::limit::{InFlightLimiters, Outcome as InFlightOutcome};
 use middleware::normalize::{normalize_forwarding_headers, rebuild_proxy_headers};
 use middleware::rate::{Outcome as RateOutcome, RateLimiters};
 
+pub use provider::{ProviderRegistry, ProviderStatus};
 pub use route::RouteIndex;
 use route::{PathError, canonical_host, canonicalize_request_path, request_host};
 use runtime::RuntimeSnapshot;
@@ -149,6 +151,7 @@ pub struct ManagedControl {
     revisions: Arc<RevisionStore>,
     coordinator: Arc<ActivationCoordinator>,
     runtime: RuntimeHandle,
+    providers: ProviderRegistry,
 }
 
 /// Redacted public certificate-generation status.
@@ -187,6 +190,12 @@ impl ManagedControl {
     #[must_use]
     pub fn runtime(&self) -> RuntimeHandle {
         self.runtime.clone()
+    }
+
+    /// Return bounded redacted discovery-provider status.
+    #[must_use]
+    pub fn provider_statuses(&self) -> Vec<ProviderStatus> {
+        self.providers.statuses()
     }
 
     /// Durably request renewal for one configured ACME certificate.
@@ -454,10 +463,12 @@ where
         runtime.clone(),
         shutdown.clone(),
     ));
+    let providers = Arc::new(provider::ProviderCoordinator::default());
     let watcher = tokio::spawn(watch_config_file(
         config_path,
         Arc::clone(&revisions),
         Arc::clone(&coordinator),
+        Arc::clone(&providers),
         runtime.clone(),
         shutdown.clone(),
     ));
@@ -466,6 +477,7 @@ where
             revisions,
             coordinator,
             runtime: runtime.clone(),
+            providers: providers.registry(),
         },
         shutdown.clone(),
     ));
@@ -571,12 +583,13 @@ async fn watch_config_file(
     config_path: PathBuf,
     revisions: Arc<RevisionStore>,
     coordinator: Arc<ActivationCoordinator>,
+    providers: Arc<provider::ProviderCoordinator>,
     runtime: RuntimeHandle,
     shutdown: CancellationToken,
 ) {
     #[cfg(unix)]
     let mut sighup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()).ok();
-    let mut last_hash = None;
+    let mut last_fingerprint = None;
     let mut last_error: Option<String> = None;
     loop {
         let interval = Duration::from_secs(runtime.load().config.runtime.config_poll_secs);
@@ -615,21 +628,25 @@ async fn watch_config_file(
                 continue;
             }
         };
-        last_error = None;
-        if last_hash == Some(hash) {
-            continue;
-        }
-        last_hash = Some(hash);
-        let config = match parsed {
+        let base = match parsed {
             Ok(config) => config,
             Err(error) => {
                 tracing::error!(%error, "changed configuration rejected");
                 continue;
             }
         };
+        last_error = None;
+        let reconciled = providers.reconcile(base, hash).await;
+        for status in providers.registry().statuses() {
+            runtime.update_provider_status(&status);
+        }
+        if last_fingerprint == Some(reconciled.fingerprint) {
+            continue;
+        }
+        let config = reconciled.config;
         let candidate = tokio::task::spawn_blocking({
             let revisions = Arc::clone(&revisions);
-            move || revisions.create_candidate(&config, "file")
+            move || revisions.create_candidate(&config, "file+providers")
         })
         .await;
         let candidate = match candidate {
@@ -643,6 +660,7 @@ async fn watch_config_file(
                 continue;
             }
         };
+        last_fingerprint = Some(reconciled.fingerprint);
         let active = runtime.revision();
         if candidate.id.as_str() == active.as_ref() {
             continue;

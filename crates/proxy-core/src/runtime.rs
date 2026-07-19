@@ -328,6 +328,11 @@ impl RuntimeHandle {
         self.telemetry.certificate_renewal(certificate, outcome);
     }
 
+    /// Update bounded discovery-provider gauges.
+    pub fn update_provider_status(&self, status: &crate::ProviderStatus) {
+        self.telemetry.update_provider(status);
+    }
+
     /// Return the process-wide HTTP-01 registry retained across configuration reloads.
     #[must_use]
     pub fn http_challenges(&self) -> HttpChallengeRegistry {
