@@ -157,6 +157,7 @@ upstream_group = "app"
         let child = Command::new(binary())
             .args(["run", "--config"])
             .arg(&configured)
+            .args(["--node-id", "node-a", "--fleet-generation", "7"])
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(error_log))
             .spawn()
@@ -275,11 +276,17 @@ upstream_group = "app"
         assert!(!token_store.contains(plaintext));
         assert!(!token_store.contains("operator.token"));
 
+        let drain = run(&["drain", "--socket", socket, "--expect", &current]);
+        assert!(drain.status.success(), "{:?}", drain.stderr);
+        assert!(String::from_utf8_lossy(&drain.stdout).contains("\"draining\":true"));
+        assert!(!run(&["health", "--socket", socket]).status.success());
+
         let audit = fs::read_to_string(state.join("audit/admin.jsonl")).expect("audit log");
         assert!(audit.contains("\"outcome\":\"intent\""));
         assert!(audit.contains("\"outcome\":\"success\""));
         assert!(audit.contains("\"outcome\":\"failed\""));
         assert!(audit.contains("\"outcome\":\"denied\""));
+        assert!(audit.contains("\"action\":\"node_drain\""));
         assert!(!audit.contains(plaintext));
         let logs = fs::read_to_string(log_path).expect("structured logs");
         assert!(

@@ -90,6 +90,13 @@ enum Command {
         #[command(flatten)]
         admin: AdminConnection,
     },
+    /// Mark this node unready before external load-balancer drain and restart.
+    Drain {
+        #[command(flatten)]
+        admin: AdminConnection,
+        #[arg(long)]
+        expect: String,
+    },
     /// Print private OpenMetrics exposition.
     Metrics {
         #[command(flatten)]
@@ -375,6 +382,20 @@ async fn run(cli: Cli) -> Result<(), BoxError> {
                 admin_request(&admin, Method::GET, "/v1/ready", None, None, Vec::new()).await?;
             require_admin_success(&ready)?;
             writeln!(io::stdout().lock(), "live\nready")?;
+        }
+        Command::Drain { admin, expect } => {
+            let response = admin_request(
+                &admin,
+                Method::POST,
+                "/v1/node/drain",
+                Some(expect),
+                None,
+                Vec::new(),
+            )
+            .await?;
+            require_admin_success(&response)?;
+            io::stdout().lock().write_all(&response.body)?;
+            writeln!(io::stdout().lock())?;
         }
         Command::Metrics { admin } => {
             let response =

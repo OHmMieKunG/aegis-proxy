@@ -55,6 +55,13 @@ paths:
       responses:
         "200": {description: Redacted process status}
         default: {$ref: "#/components/responses/Error"}
+  /v1/node/drain:
+    post:
+      operationId: drainNode
+      parameters: [{$ref: "#/components/parameters/IfMatch"}]
+      responses:
+        "200": {description: Node is unready for external load-balancer drain}
+        default: {$ref: "#/components/responses/Error"}
   /v1/config/active:
     get:
       operationId: activeConfig

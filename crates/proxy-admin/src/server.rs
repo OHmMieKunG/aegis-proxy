@@ -299,9 +299,15 @@ struct StatusResponse {
     request_id: String,
     version: &'static str,
     uptime_secs: u64,
+    node_id: String,
+    fleet_generation: u64,
     active_revision: String,
+    active_hash: String,
     administration_ready: bool,
     audit_ready: bool,
+    draining: bool,
+    certificate_owner: bool,
+    managed_certificates: usize,
     actor_type: &'static str,
     actor_id: String,
 }
@@ -456,6 +462,11 @@ struct RenewalResponse {
     requested: bool,
 }
 
+#[derive(Debug, Serialize)]
+struct DrainResponse {
+    draining: bool,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BackupCreateRequest {
@@ -555,6 +566,7 @@ pub async fn serve(
         .route("/v1/ready", get(ready))
         .route("/metrics", get(metrics))
         .route("/v1/status", get(status))
+        .route("/v1/node/drain", post(drain_node))
         .route("/v1/config/active", get(active_config))
         .route("/v1/config/validate", post(validate_config))
         .route("/v1/config/preview", post(preview_config))
@@ -683,17 +695,21 @@ async fn live() -> axum::Json<HealthResponse> {
 }
 
 async fn ready(State(state): State<AppState>) -> (StatusCode, axum::Json<HealthResponse>) {
-    if state.control.coordinator().administration_ready() {
+    if state.control.coordinator().administration_ready() && !state.control.runtime().is_draining()
+    {
         (
             StatusCode::OK,
             axum::Json(HealthResponse { status: "ready" }),
         )
     } else {
+        let status = if state.control.runtime().is_draining() {
+            "draining"
+        } else {
+            "recovery_required"
+        };
         (
             StatusCode::SERVICE_UNAVAILABLE,
-            axum::Json(HealthResponse {
-                status: "recovery_required",
-            }),
+            axum::Json(HealthResponse { status }),
         )
     }
 }
@@ -725,13 +741,21 @@ async fn status(
     principal: Principal,
 ) -> Result<axum::Json<StatusResponse>, ApiError> {
     authorize(&principal, Action::ReadStatus)?;
+    let runtime = state.control.runtime();
+    let config = runtime.config();
     Ok(axum::Json(StatusResponse {
         request_id: request_id.0,
         version: env!("CARGO_PKG_VERSION"),
         uptime_secs: state.started.elapsed().as_secs(),
-        active_revision: state.control.runtime().revision().to_string(),
+        node_id: runtime.node_id().to_string(),
+        fleet_generation: runtime.fleet_generation(),
+        active_revision: runtime.revision().to_string(),
+        active_hash: runtime.revision_hash().ok_or(ApiError::Internal)?,
         administration_ready: state.control.coordinator().administration_ready(),
         audit_ready: state.audit.is_some(),
+        draining: runtime.is_draining(),
+        certificate_owner: runtime.certificate_owner(),
+        managed_certificates: config.acme.certificates.len(),
         actor_type: principal.actor_type,
         actor_id: principal.actor_id,
     }))
@@ -785,15 +809,56 @@ async fn health_details(
         })
         .collect::<Vec<_>>();
     certificates.sort_unstable_by(|left, right| left.id.cmp(&right.id));
-    let ready = state.control.coordinator().administration_ready();
+    let draining = state.control.runtime().is_draining();
+    let ready = state.control.coordinator().administration_ready() && !draining;
     Ok(axum::Json(HealthDetailsResponse {
         request_id: request_id.0,
-        status: if ready { "ready" } else { "recovery_required" },
+        status: if ready {
+            "ready"
+        } else if draining {
+            "draining"
+        } else {
+            "recovery_required"
+        },
         active_revision: state.control.runtime().revision().to_string(),
         administration_ready: ready,
         audit_ready: state.audit.is_some(),
         certificates,
     }))
+}
+
+async fn drain_node(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    principal: Principal,
+) -> Result<axum::Json<DrainResponse>, ApiError> {
+    let runtime = state.control.runtime();
+    let current = runtime.revision().to_string();
+    let node_id = runtime.node_id().to_string();
+    let audit = begin_mutation(
+        &state,
+        &principal,
+        &request_id,
+        Some(current.clone()),
+        MutationSpec {
+            permission: Action::Drain,
+            action: "node_drain",
+            resource_id: &node_id,
+            new_revision: None,
+        },
+    )
+    .await?;
+    let expected = match expected_revision(&headers) {
+        Ok(expected) => expected,
+        Err(error) => return Err(audited_failure(&audit, "invalid_if_match", error).await),
+    };
+    if current != expected || runtime.revision().as_ref() != expected {
+        return Err(audited_failure(&audit, "revision_conflict", ApiError::Conflict).await);
+    }
+    runtime.begin_drain();
+    audit.record(AuditOutcome::Success, None, None).await?;
+    Ok(axum::Json(DrainResponse { draining: true }))
 }
 
 async fn active_config(
@@ -1932,6 +1997,7 @@ mod tests {
             "/v1/live:",
             "/v1/ready:",
             "/v1/status:",
+            "/v1/node/drain:",
             "/v1/config/active:",
             "/v1/config/validate:",
             "/v1/config/preview:",

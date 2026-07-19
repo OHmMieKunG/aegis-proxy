@@ -222,6 +222,7 @@ impl RuntimeSnapshot {
 pub struct RuntimeHandle {
     current: Arc<ArcSwap<RuntimeSnapshot>>,
     identity: NodeIdentity,
+    draining: Arc<AtomicBool>,
     telemetry: Arc<Telemetry>,
     http_challenges: HttpChallengeRegistry,
     tls_challenges: TlsAlpnChallengeRegistry,
@@ -313,6 +314,7 @@ impl RuntimeHandle {
         Self {
             current: Arc::new(ArcSwap::from(initial)),
             identity,
+            draining: Arc::new(AtomicBool::new(false)),
             telemetry,
             http_challenges: HttpChallengeRegistry::default(),
             tls_challenges,
@@ -345,6 +347,29 @@ impl RuntimeHandle {
                 .map_or(self.fleet_generation() == 0, |owner| {
                     owner == self.identity.id.as_ref()
                 })
+    }
+
+    /// Enter one-way load-balancer drain state; returns whether state changed.
+    pub fn begin_drain(&self) -> bool {
+        !self.draining.swap(true, Ordering::AcqRel)
+    }
+
+    /// Return whether load-balancer drain has begun.
+    #[must_use]
+    pub fn is_draining(&self) -> bool {
+        self.draining.load(Ordering::Acquire)
+    }
+
+    /// Extract the SHA-256 content hash from the active durable revision ID.
+    #[must_use]
+    pub fn revision_hash(&self) -> Option<String> {
+        let revision = self.revision();
+        let (_, hash) = revision.rsplit_once('-')?;
+        (hash.len() == 64
+            && hash
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')))
+        .then(|| hash.to_owned())
     }
 
     pub(crate) fn load(&self) -> Arc<RuntimeSnapshot> {
@@ -774,6 +799,22 @@ mod tests {
         assert_eq!(identity.fleet_generation(), 7);
         assert!(NodeIdentity::new("Node A".into(), 7).is_err());
         assert!(NodeIdentity::new("a".repeat(64), 7).is_err());
+    }
+
+    #[tokio::test]
+    async fn drain_is_one_way_and_revision_hash_is_exact() {
+        let shutdown = CancellationToken::new();
+        let hash = "a".repeat(64);
+        let snapshot =
+            RuntimeSnapshot::prepare(config(8080), format!("{:020}-{hash}", 1), &shutdown)
+                .await
+                .expect("snapshot");
+        let runtime = RuntimeHandle::new(snapshot);
+        assert_eq!(runtime.revision_hash().as_deref(), Some(hash.as_str()));
+        assert!(!runtime.is_draining());
+        assert!(runtime.begin_drain());
+        assert!(runtime.is_draining());
+        assert!(!runtime.begin_drain());
     }
 
     fn config(port: u16) -> Arc<Config> {
