@@ -232,6 +232,8 @@ pub struct CertificateConfig {
 pub struct AcmeConfig {
     /// Global bound across all issuers.
     pub max_concurrent_orders: usize,
+    /// Unique fleet node allowed to create accounts and renew certificates.
+    pub renewal_owner: Option<String>,
     /// Explicit CA directory/account policies.
     pub issuers: Vec<AcmeIssuerConfig>,
     /// Certificates owned by ACME automation.
@@ -244,6 +246,7 @@ impl Default for AcmeConfig {
     fn default() -> Self {
         Self {
             max_concurrent_orders: 4,
+            renewal_owner: None,
             issuers: Vec::new(),
             certificates: Vec::new(),
             dns_providers: Vec::new(),
@@ -2753,6 +2756,9 @@ fn validate_acme<'a>(
             "acme.max_concurrent_orders is outside 1..=32".into(),
         ));
     }
+    if let Some(owner) = acme.renewal_owner.as_deref() {
+        valid_id(owner)?;
+    }
     if acme.issuers.len() > MAX_ACME_ISSUERS
         || acme.certificates.len() > MAX_ACME_CERTIFICATES
         || acme.dns_providers.len() > MAX_ACME_DNS_PROVIDERS
@@ -3628,6 +3634,17 @@ mod tests {
         validate_acme(&config, &mut certificate_ids, &mut certificate_hosts)
             .expect("valid ACME policy");
         validate(&config).expect("wired scheduler accepts valid ACME policy");
+    }
+
+    #[test]
+    fn validates_acme_renewal_owner_identifier() {
+        let mut config = acme_config(AcmeChallenge::Http01, "example.test");
+        config.acme.renewal_owner = Some("node-a".into());
+        validate(&config).expect("valid renewal owner");
+
+        config.acme.renewal_owner = Some("Node A".into());
+        let error = validate(&config).expect_err("invalid renewal owner must fail");
+        assert!(error.to_string().contains("invalid identifier"));
     }
 
     #[test]

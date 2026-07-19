@@ -91,6 +91,7 @@ mod tests {
             }],
             acme: AcmeConfig {
                 max_concurrent_orders: 4,
+                renewal_owner: Some("node-a".into()),
                 issuers: vec![AcmeIssuerConfig {
                     id: "test-ca".into(),
                     directory_url: "https://acme.test/directory".parse().expect("URL"),
