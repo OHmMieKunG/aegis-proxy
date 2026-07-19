@@ -2,7 +2,7 @@
 
 Review date: 2026-07-19
 
-Scope: release workspace through `f48a91b`
+Scope: release workspace through Phase 13 candidate `a3a005d`
 
 Owner: dependency maintainer; security owner must approve release exceptions
 

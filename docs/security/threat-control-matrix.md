@@ -37,7 +37,7 @@ independent review is still required. A status is not a vulnerability-free claim
 | Container escape impact | non-root, read-only root, dropped caps, no-new-privileges, limits | compose/Dockerfile/systemd inspection; confinement examples | external-gate: image/host scanner and reviewer pending |
 | Admin API exposure | separate Unix socket only; restrictive parent/mode; auth/RBAC/limits | broad-parent rejection, private socket, admin integration tests | external-gate: deployed bind/port scan pending |
 | Insecure backups | age encryption, bounded archive, manifest hashes, symlink rejection | backup tamper, wrong identity, restore verification tests | external-gate: independent restore drill pending |
-| Rollback attacks | authorized forward revision; CAS; durable audit/hash chain | revision rollback/tamper/crash and admin authorization tests | external-gate: operator tabletop pending |
+| Rollback attacks | authorized forward revision; CAS; durable audit/hash chain | revision rollback/tamper/crash and admin authorization tests; local compromise tabletop | external-gate: independent live restore drill pending |
 | Configuration races | serialized coordinator; CAS; immutable snapshot and atomic pointer | concurrent candidate, activation, crash/probation/HA chaos tests | verified-local; formal concurrency review pending |
 | Certificate renewal races | per-certificate lock; staged validation; atomic generation; retained prior cert | scheduler single-flight, rotation/rejection, TLS challenge reload tests | external-gate: Pebble campaign unavailable without Docker |
 
