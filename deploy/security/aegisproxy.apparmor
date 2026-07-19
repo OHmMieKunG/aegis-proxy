@@ -1,0 +1,37 @@
+#include <tunables/global>
+
+profile aegisproxy flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+
+  /usr/local/bin/rust-proxy mr,
+  /usr/local/bin/rust-proxy ix,
+
+  /etc/aegisproxy/ r,
+  /etc/aegisproxy/** r,
+  /etc/ssl/certs/ r,
+  /etc/ssl/certs/** r,
+  /usr/share/ca-certificates/ r,
+  /usr/share/ca-certificates/** r,
+
+  /var/lib/aegisproxy/ rw,
+  /var/lib/aegisproxy/** rwk,
+  /run/aegisproxy/ rw,
+  /run/aegisproxy/** rwk,
+  /tmp/ rw,
+  /tmp/** rwk,
+
+  network inet stream,
+  network inet6 stream,
+  network inet dgram,
+  network inet6 dgram,
+
+  deny /bin/** x,
+  deny /sbin/** x,
+  deny /usr/bin/** x,
+  deny /usr/sbin/** x,
+  deny /proc/** wklx,
+  deny /sys/** rwklx,
+  deny /home/** rwklx,
+  deny /root/** rwklx,
+}
