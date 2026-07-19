@@ -2305,6 +2305,7 @@ mod tests {
                 }],
                 ..UpstreamGroupConfig::default()
             }],
+            providers: vec![],
             middlewares: BTreeMap::new(),
             routes: vec![route],
             admin: AdminConfig::default(),

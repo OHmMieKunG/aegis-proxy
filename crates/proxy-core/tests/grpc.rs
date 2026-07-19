@@ -228,6 +228,7 @@ async fn proxies_unary_and_streaming_grpc_with_trailers() {
             }],
             ..UpstreamGroupConfig::default()
         }],
+        providers: vec![],
         middlewares: std::collections::BTreeMap::new(),
         routes: vec![RouteConfig {
             id: "grpc".into(),

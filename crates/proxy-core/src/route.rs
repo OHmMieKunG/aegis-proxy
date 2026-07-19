@@ -509,6 +509,7 @@ mod tests {
             acme: aegisproxy_config::AcmeConfig::default(),
             trusted_proxies: TrustedProxyConfig::default(),
             upstream_groups: vec![],
+            providers: vec![],
             middlewares: BTreeMap::new(),
             routes,
             admin: AdminConfig::default(),

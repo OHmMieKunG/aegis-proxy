@@ -42,6 +42,15 @@ pub fn redacted(config: &Config) -> Config {
             endpoint.ca_bundle = Some(REDACTED.into());
         }
     }
+    for provider in &mut output.providers {
+        let ca_bundle = match provider {
+            crate::provider::ProviderConfig::File(provider) => &mut provider.ca_bundle,
+            crate::provider::ProviderConfig::Dns(provider) => &mut provider.ca_bundle,
+        };
+        if ca_bundle.is_some() {
+            *ca_bundle = Some(REDACTED.into());
+        }
+    }
     output
 }
 
@@ -115,6 +124,22 @@ mod tests {
                 }],
                 ..UpstreamGroupConfig::default()
             }],
+            providers: vec![crate::provider::ProviderConfig::Dns(
+                crate::provider::DnsProviderConfig {
+                    id: "nodes".into(),
+                    enabled: true,
+                    upstream_group: "app".into(),
+                    hostname: "nodes.example.test".into(),
+                    port: 443,
+                    scheme: crate::provider::ProviderScheme::Https,
+                    server_name: Some("nodes.example.test".into()),
+                    ca_bundle: Some("file:///CANARY_PROVIDER_CA".into()),
+                    weight: 1,
+                    refresh_secs: 30,
+                    stale_after_secs: 300,
+                    max_answers: 16,
+                },
+            )],
             middlewares: BTreeMap::new(),
             routes: vec![],
             admin: AdminConfig {
@@ -125,6 +150,6 @@ mod tests {
         };
         let serialized = toml::to_string(&redacted(&config)).expect("serialize redacted config");
         assert!(!serialized.contains("CANARY"));
-        assert_eq!(serialized.matches(REDACTED).count(), 8);
+        assert_eq!(serialized.matches(REDACTED).count(), 9);
     }
 }

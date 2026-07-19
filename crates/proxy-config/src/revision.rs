@@ -800,6 +800,7 @@ mod tests {
             acme: crate::AcmeConfig::default(),
             trusted_proxies: TrustedProxyConfig::default(),
             upstream_groups: vec![],
+            providers: vec![],
             middlewares: BTreeMap::new(),
             routes: vec![],
             admin: AdminConfig::default(),

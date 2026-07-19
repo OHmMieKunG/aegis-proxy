@@ -27,6 +27,11 @@
       "maxItems": 1024,
       "items": { "$ref": "#/$defs/upstreamGroup" }
     },
+    "providers": {
+      "type": "array",
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/provider" }
+    },
     "middlewares": {
       "type": "object",
       "maxProperties": 1024,
@@ -235,6 +240,49 @@
           "items": { "$ref": "#/$defs/endpoint" }
         }
       }
+    },
+    "provider": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "id", "upstream_group", "path", "scheme"],
+          "properties": {
+            "kind": { "const": "file" },
+            "id": { "$ref": "#/$defs/id" },
+            "enabled": { "type": "boolean", "default": false },
+            "upstream_group": { "$ref": "#/$defs/id" },
+            "path": { "type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^/" },
+            "scheme": { "enum": ["http", "https", "tcp"] },
+            "server_name": { "$ref": "#/$defs/dnsName" },
+            "ca_bundle": { "$ref": "#/$defs/secretRef" },
+            "refresh_secs": { "type": "integer", "minimum": 1, "maximum": 300, "default": 5 },
+            "debounce_millis": { "type": "integer", "minimum": 50, "maximum": 5000, "default": 250 },
+            "stale_after_secs": { "type": "integer", "minimum": 1, "maximum": 86400, "default": 300 },
+            "max_endpoints": { "type": "integer", "minimum": 1, "maximum": 256, "default": 64 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "id", "upstream_group", "hostname", "port", "scheme"],
+          "properties": {
+            "kind": { "const": "dns" },
+            "id": { "$ref": "#/$defs/id" },
+            "enabled": { "type": "boolean", "default": false },
+            "upstream_group": { "$ref": "#/$defs/id" },
+            "hostname": { "$ref": "#/$defs/dnsName" },
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+            "scheme": { "enum": ["http", "https", "tcp"] },
+            "server_name": { "$ref": "#/$defs/dnsName" },
+            "ca_bundle": { "$ref": "#/$defs/secretRef" },
+            "weight": { "type": "integer", "minimum": 1, "maximum": 10000, "default": 1 },
+            "refresh_secs": { "type": "integer", "minimum": 1, "maximum": 300, "default": 30 },
+            "stale_after_secs": { "type": "integer", "minimum": 1, "maximum": 86400, "default": 300 },
+            "max_answers": { "type": "integer", "minimum": 1, "maximum": 64, "default": 16 }
+          }
+        }
+      ]
     },
     "headerMatch": {
       "type": "object",

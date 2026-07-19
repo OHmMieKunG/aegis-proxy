@@ -3,6 +3,7 @@
 //! Strict, bounded configuration types and validation.
 
 mod conflict;
+pub mod provider;
 mod redact;
 pub mod revision;
 
@@ -77,6 +78,9 @@ pub struct Config {
     /// Upstream groups.
     #[serde(default)]
     pub upstream_groups: Vec<UpstreamGroupConfig>,
+    /// Explicit bounded service-discovery providers.
+    #[serde(default)]
+    pub providers: Vec<provider::ProviderConfig>,
     /// Middleware definitions.
     #[serde(default)]
     pub middlewares: BTreeMap<String, MiddlewareConfig>,
@@ -1488,6 +1492,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         }
         group_is_tcp.insert(group.id.as_str(), is_tcp);
     }
+    validate_providers(config)?;
     let listener_ids: HashSet<&str> = config.listeners.iter().map(|l| l.id.as_str()).collect();
     let listener_protocols: HashMap<&str, &str> = config
         .listeners
@@ -1864,6 +1869,162 @@ fn validate_admin(admin: &AdminConfig) -> Result<(), ConfigError> {
     Ok(())
 }
 
+fn validate_providers(config: &Config) -> Result<(), ConfigError> {
+    use provider::ProviderConfig;
+
+    if config.providers.len() > provider::MAX_PROVIDERS {
+        return Err(ConfigError::Invalid(format!(
+            "providers exceeds {} entries",
+            provider::MAX_PROVIDERS
+        )));
+    }
+    let groups: HashMap<_, _> = config
+        .upstream_groups
+        .iter()
+        .map(|group| (group.id.as_str(), group))
+        .collect();
+    let mut ids = HashSet::new();
+    let mut namespaces = HashSet::new();
+    for (index, provider) in config.providers.iter().enumerate() {
+        valid_id(provider.id())?;
+        if !ids.insert(provider.id()) {
+            return Err(ConfigError::Invalid(format!(
+                "duplicate provider id {}",
+                provider.id()
+            )));
+        }
+        if !namespaces.insert(provider.upstream_group()) {
+            return Err(ConfigError::Invalid(format!(
+                "providers assign upstream group {} more than once",
+                provider.upstream_group()
+            )));
+        }
+        let group = groups.get(provider.upstream_group()).ok_or_else(|| {
+            ConfigError::Invalid(format!(
+                "providers[{index}] references unknown upstream group {}",
+                provider.upstream_group()
+            ))
+        })?;
+        if !(1..=300).contains(&provider.refresh_secs())
+            || provider.stale_after_secs() < provider.refresh_secs()
+            || provider.stale_after_secs() > 86_400
+        {
+            return Err(ConfigError::Invalid(format!(
+                "provider {} refresh/stale durations are outside safe bounds",
+                provider.id()
+            )));
+        }
+        match provider {
+            ProviderConfig::File(provider) => {
+                let path = Path::new(&provider.path);
+                if provider.path.len() > 4_096
+                    || !path.is_absolute()
+                    || path.file_name().is_none()
+                    || provider.path.contains(['$', '~'])
+                    || provider.path.bytes().any(|byte| byte.is_ascii_control())
+                    || path
+                        .components()
+                        .any(|component| component == std::path::Component::ParentDir)
+                {
+                    return Err(ConfigError::Invalid(format!(
+                        "provider {} path must be absolute, bounded, and contain no expansion or traversal",
+                        provider.id
+                    )));
+                }
+                if !(50..=5_000).contains(&provider.debounce_millis)
+                    || !(1..=MAX_ENDPOINTS_PER_GROUP).contains(&provider.max_endpoints)
+                {
+                    return Err(ConfigError::Invalid(format!(
+                        "provider {} debounce or endpoint bound is invalid",
+                        provider.id
+                    )));
+                }
+                validate_provider_template(
+                    &provider.id,
+                    provider.scheme,
+                    provider.server_name.as_deref(),
+                    provider.ca_bundle.as_deref(),
+                    group,
+                )?;
+            }
+            ProviderConfig::Dns(provider) => {
+                valid_upstream_host(&provider.hostname).map_err(|reason| {
+                    ConfigError::Invalid(format!(
+                        "provider {} has invalid DNS hostname: {reason}",
+                        provider.id
+                    ))
+                })?;
+                if provider.hostname.parse::<IpAddr>().is_ok()
+                    || provider.port == 0
+                    || provider.weight == 0
+                    || provider.weight > 10_000
+                    || !(1..=64).contains(&provider.max_answers)
+                {
+                    return Err(ConfigError::Invalid(format!(
+                        "provider {} DNS port, weight, or answer bound is invalid",
+                        provider.id
+                    )));
+                }
+                validate_provider_template(
+                    &provider.id,
+                    provider.scheme,
+                    provider.server_name.as_deref(),
+                    provider.ca_bundle.as_deref(),
+                    group,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_provider_template(
+    id: &str,
+    scheme: provider::ProviderScheme,
+    server_name: Option<&str>,
+    ca_bundle: Option<&str>,
+    group: &UpstreamGroupConfig,
+) -> Result<(), ConfigError> {
+    let expected = scheme.as_str();
+    if group
+        .endpoints
+        .iter()
+        .any(|endpoint| endpoint.url.scheme() != expected)
+    {
+        return Err(ConfigError::Invalid(format!(
+            "provider {id} transport differs from upstream group {}",
+            group.id
+        )));
+    }
+    match scheme {
+        provider::ProviderScheme::Https => {
+            let server_name = server_name
+                .filter(|name| !name.starts_with("*."))
+                .ok_or_else(|| {
+                    ConfigError::Invalid(format!(
+                        "HTTPS provider {id} requires an exact server_name"
+                    ))
+                })?;
+            valid_certificate_host(server_name)?;
+            if let Some(reference) = ca_bundle {
+                SecretRef::parse(reference).map_err(|_| {
+                    ConfigError::Invalid(format!(
+                        "provider {id} has an invalid CA bundle reference"
+                    ))
+                })?;
+            }
+        }
+        provider::ProviderScheme::Http | provider::ProviderScheme::Tcp => {
+            if server_name.is_some() || ca_bundle.is_some() {
+                return Err(ConfigError::Invalid(format!(
+                    "non-HTTPS provider {id} cannot set TLS policy"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_observability(config: &Config) -> Result<(), ConfigError> {
     let observability = &config.observability;
     if observability.access_log_sample_per_million > 1_000_000 {
@@ -1951,6 +2112,7 @@ pub fn estimated_metric_series(config: &Config) -> usize {
         .saturating_add(rate_limiters.saturating_mul(3))
         .saturating_add(config.listeners.len().saturating_mul(6))
         .saturating_add(certificate_count.saturating_mul(4))
+        .saturating_add(config.providers.len().saturating_mul(4))
         .saturating_add(14)
 }
 
@@ -3334,6 +3496,7 @@ mod tests {
             acme: AcmeConfig::default(),
             trusted_proxies: TrustedProxyConfig::default(),
             upstream_groups: vec![],
+            providers: vec![],
             middlewares: BTreeMap::new(),
             routes: vec![],
             admin: AdminConfig::default(),
@@ -4449,5 +4612,115 @@ mod tests {
             secret_headers = ["authorization"]
         "#;
         assert!(toml::from_str::<Config>(source).is_err());
+    }
+
+    #[test]
+    fn parses_strict_disabled_file_provider() {
+        let source = r#"
+            schema_version = 1
+
+            [[listeners]]
+            id = "public"
+            bind = "127.0.0.1:8080"
+            protocol = "http"
+
+            [[upstream_groups]]
+            id = "app"
+            allowed_cidrs = ["127.0.0.1/32"]
+            [[upstream_groups.endpoints]]
+            id = "fallback"
+            url = "http://127.0.0.1:9000"
+
+            [[providers]]
+            kind = "file"
+            id = "nodes"
+            upstream_group = "app"
+            path = "/run/aegisproxy/nodes.toml"
+            scheme = "http"
+        "#;
+        let config = load_bytes(source.as_bytes()).expect("provider config");
+        assert!(!config.providers[0].enabled());
+
+        let unknown = source.replace("scheme = \"http\"", "scheme = \"http\"\nlabels = true");
+        assert!(load_bytes(unknown.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn rejects_provider_namespace_and_template_conflicts() {
+        use crate::provider::{FileProviderConfig, ProviderConfig, ProviderScheme};
+
+        let mut config = base_config();
+        add_http_upstream(&mut config);
+        let provider = ProviderConfig::File(FileProviderConfig {
+            id: "nodes".into(),
+            enabled: true,
+            upstream_group: "app".into(),
+            path: "/run/aegisproxy/nodes.toml".into(),
+            scheme: ProviderScheme::Http,
+            server_name: None,
+            ca_bundle: None,
+            refresh_secs: 1,
+            debounce_millis: 50,
+            stale_after_secs: 10,
+            max_endpoints: 8,
+        });
+        config.providers.push(provider.clone());
+        validate(&config).expect("one declared namespace");
+
+        config.providers.push(provider);
+        assert!(validate(&config).is_err());
+        config.providers.pop();
+        if let ProviderConfig::File(provider) = &mut config.providers[0] {
+            provider.upstream_group = "missing".into();
+        }
+        assert!(validate(&config).is_err());
+    }
+
+    #[test]
+    fn rejects_provider_policy_escape_and_unsafe_paths() {
+        use crate::provider::{DnsProviderConfig, ProviderConfig, ProviderScheme};
+
+        let mut config = base_config();
+        add_http_upstream(&mut config);
+        config
+            .providers
+            .push(ProviderConfig::Dns(DnsProviderConfig {
+                id: "nodes".into(),
+                enabled: true,
+                upstream_group: "app".into(),
+                hostname: "nodes.example.test".into(),
+                port: 443,
+                scheme: ProviderScheme::Https,
+                server_name: None,
+                ca_bundle: None,
+                weight: 1,
+                refresh_secs: 5,
+                stale_after_secs: 10,
+                max_answers: 4,
+            }));
+        assert!(validate(&config).is_err());
+
+        config.providers.clear();
+        let source = r#"
+            schema_version = 1
+            [[listeners]]
+            id = "public"
+            bind = "127.0.0.1:8080"
+            protocol = "http"
+            [[upstream_groups]]
+            id = "app"
+            allowed_cidrs = ["127.0.0.1/32"]
+            [[upstream_groups.endpoints]]
+            id = "fallback"
+            url = "http://127.0.0.1:9000"
+            [[providers]]
+            kind = "file"
+            id = "nodes"
+            enabled = true
+            upstream_group = "app"
+            path = "/run/../tmp/nodes.toml"
+            scheme = "http"
+        "#;
+        assert!(load_bytes(source.as_bytes()).is_err());
     }
 }
