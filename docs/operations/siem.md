@@ -5,6 +5,12 @@ bounded record has a sequence number, prior-record link, and HMAC-SHA256. The
 audit key is resolved from an environment or absolute file secret reference;
 it must not be shipped with the log.
 
+New records use audit schema v2 and include the configured bootstrap `node_id`.
+Readers remain compatible with existing schema-v1 records, which are attributed
+to `standalone`; new appends continue the same HMAC chain using schema v2. In a
+fleet, index original records by node ID plus sequence because sequences are
+node-local.
+
 Ship audit records off host with a least-privilege reader after each append.
 Use TLS with server verification and collector authentication, a finite local
 spool, explicit retention, and alerts for lag, sequence gaps, HMAC failures,

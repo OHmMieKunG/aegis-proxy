@@ -1,0 +1,40 @@
+[Unit]
+Description=AegisProxy fleet node %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=aegisproxy
+RuntimeDirectory=aegisproxy
+WorkingDirectory=/var/lib/aegisproxy
+EnvironmentFile=/etc/aegisproxy/fleet.env
+ExecStartPre=/usr/local/bin/rust-proxy validate --config /etc/aegisproxy/config.toml
+ExecStart=/usr/local/bin/rust-proxy run --config /etc/aegisproxy/config.toml --node-id %i --fleet-generation ${AEGISPROXY_FLEET_GENERATION}
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=45s
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

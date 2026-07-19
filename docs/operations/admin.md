@@ -28,6 +28,8 @@ audit storage fails mutations closed while the data plane continues.
 
 ```text
 rust-proxy health --socket /run/rust-proxy/admin.sock
+rust-proxy fleet status --socket SOCKET
+rust-proxy drain --socket SOCKET --expect REV
 rust-proxy config activate --socket SOCKET --file proxy.toml --expect REV
 rust-proxy config rollback --socket SOCKET REV --expect CURRENT
 rust-proxy token create --socket SOCKET --expect REV --role operator
@@ -53,3 +55,6 @@ off-host retention. The checked contract is
 Remote mTLS administration remains deferred. Use an OS-controlled local
 forwarder only after an independent threat review; do not expose the socket or
 wrap it with an unauthenticated TCP bridge.
+
+HA rollout and load-balancer drain procedures are documented in
+[high availability](high-availability.md).

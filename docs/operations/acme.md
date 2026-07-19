@@ -40,6 +40,7 @@ The snippets below show ACME fields only. They must be merged into a complete va
 ```toml
 [acme]
 max_concurrent_orders = 4
+renewal_owner = "edge-a" # required for managed certificates in HA mode
 
 [[acme.issuers]]
 id = "public-production"
@@ -140,6 +141,8 @@ rust-proxy cert renew --config /etc/aegisproxy/config.toml --id public-site
 `status` reports `missing`, `active`, `renewal_due`, or `expired`, the expiry and deterministic fallback renewal time, and whether an operator request exists. It reads state and does not contact a CA.
 
 `renew` writes an idempotent durable request marker. It does not start a second ACME client. The running proxy remains the single order owner, observes the marker during reconciliation, and clears it only after durable storage and runtime publication succeed. Repeating the command is safe.
+
+In an HA fleet, invoke renewal only through the named `acme.renewal_owner`. Replica requests fail closed. Do not share writable ACME or certificate state. Follow the stopped-owner transfer and encrypted-generation distribution procedure in [high availability](high-availability.md).
 
 The scheduler reconciles at most once per minute, applies stable jitter to the configured renewal window, uses capped retry backoff after failure, and logs expiry thresholds. Alert on:
 
