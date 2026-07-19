@@ -75,11 +75,8 @@ pub fn load(path: &Path) -> Result<(Vec<u8>, FileProviderDocument), ProviderErro
         return Err(ProviderError::Invalid);
     }
     let file = std::fs::File::open(path).map_err(|_| ProviderError::Invalid)?;
-    if !file
-        .metadata()
-        .map_err(|_| ProviderError::Invalid)?
-        .is_file()
-    {
+    let opened = file.metadata().map_err(|_| ProviderError::Invalid)?;
+    if !opened.is_file() || !same_file(&source, &opened) {
         return Err(ProviderError::Invalid);
     }
     let mut bytes = Vec::with_capacity(
@@ -91,6 +88,23 @@ pub fn load(path: &Path) -> Result<(Vec<u8>, FileProviderDocument), ProviderErro
         .read_to_end(&mut bytes)
         .map_err(|_| ProviderError::Invalid)?;
     parse(&bytes).map(|document| (bytes, document))
+}
+
+#[cfg(unix)]
+fn same_file(before: &std::fs::Metadata, opened: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+
+    before.dev() == opened.dev() && before.ino() == opened.ino()
+}
+
+#[cfg(not(unix))]
+fn same_file(before: &std::fs::Metadata, opened: &std::fs::Metadata) -> bool {
+    before.len() == opened.len()
+        && before
+            .modified()
+            .ok()
+            .zip(opened.modified().ok())
+            .is_some_and(|(before, opened)| before == opened)
 }
 
 /// Strictly parse bounded provider bytes.
@@ -151,6 +165,9 @@ const fn default_weight() -> u32 {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     use super::*;
 
     fn provider() -> FileProviderConfig {
@@ -192,5 +209,31 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn loader_rejects_symlink_sources() {
+        use std::os::unix::fs::symlink;
+
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "aegisproxy-provider-link-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&root).expect("test directory");
+        let target = root.join("target.toml");
+        let link = root.join("provider.toml");
+        std::fs::write(
+            &target,
+            "schema_version=1\nprovider_id=\"nodes\"\nendpoints=[]\n",
+        )
+        .expect("target");
+        symlink(&target, &link).expect("symlink");
+        assert!(load(&link).is_err());
+        std::fs::remove_file(link).expect("remove link");
+        std::fs::remove_file(target).expect("remove target");
+        std::fs::remove_dir(root).expect("remove directory");
     }
 }
