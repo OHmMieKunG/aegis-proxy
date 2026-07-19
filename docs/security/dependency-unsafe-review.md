@@ -1,7 +1,9 @@
 # Dependency and unsafe-code review
 
-Review date: 2026-07-19  
-Scope: release workspace at `7668f98`, plus Phase 13 dependency fixes in progress  
+Review date: 2026-07-19
+
+Scope: release workspace through `f48a91b`
+
 Owner: dependency maintainer; security owner must approve release exceptions
 
 ## Result
