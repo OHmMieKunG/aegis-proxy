@@ -1186,18 +1186,22 @@ async fn providers(
             .control
             .provider_statuses()
             .into_iter()
-            .map(|status| ProviderSummary {
-                id: status.id,
-                kind: status.kind,
-                state: status.state,
-                source_hash: status.source_hash,
-                last_success_unix_secs: status.last_success_unix_secs,
-                stale_at_unix_secs: status.stale_at_unix_secs,
-                endpoint_count: status.endpoint_count,
-                error: status.error,
-            })
+            .map(provider_summary)
             .collect(),
     ))
+}
+
+fn provider_summary(status: aegisproxy_core::ProviderStatus) -> ProviderSummary {
+    ProviderSummary {
+        id: status.id,
+        kind: status.kind,
+        state: status.state,
+        source_hash: status.source_hash,
+        last_success_unix_secs: status.last_success_unix_secs,
+        stale_at_unix_secs: status.stale_at_unix_secs,
+        endpoint_count: status.endpoint_count,
+        error: status.error,
+    }
 }
 
 async fn certificates(
@@ -1966,6 +1970,25 @@ mod tests {
             HeaderValue::from_bytes(&[0xff]).expect("opaque header value"),
         );
         assert!(authorization_header(&headers).is_err());
+    }
+
+    #[test]
+    fn provider_status_export_contains_only_redacted_bounded_fields() {
+        let summary = provider_summary(aegisproxy_core::ProviderStatus {
+            id: "nodes".into(),
+            kind: "file",
+            state: "degraded",
+            source_hash: Some("a".repeat(64)),
+            last_success_unix_secs: Some(1_700_000_000),
+            stale_at_unix_secs: Some(1_700_000_300),
+            endpoint_count: 2,
+            error: Some("invalid_source"),
+        });
+        let json = serde_json::to_string(&summary).expect("provider JSON");
+        assert!(json.contains("\"source_hash\":\"aaaaaaaa"));
+        assert!(!json.contains("/run/"));
+        assert!(!json.contains("example.test"));
+        assert!(!json.contains("secret"));
     }
 
     #[test]
