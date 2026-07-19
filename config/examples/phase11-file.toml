@@ -1,0 +1,39 @@
+schema_version = 1
+
+[runtime]
+state_dir = "./state"
+config_poll_secs = 1
+
+[[listeners]]
+id = "public"
+bind = "127.0.0.1:8080"
+protocol = "http"
+
+[[upstream_groups]]
+id = "app"
+algorithm = "round_robin"
+allowed_cidrs = ["127.0.0.1/32"]
+
+[[upstream_groups.endpoints]]
+id = "fallback"
+url = "http://127.0.0.1:9000"
+weight = 1
+
+[[providers]]
+kind = "file"
+id = "app-nodes"
+enabled = true
+upstream_group = "app"
+path = "/run/aegisproxy/providers/app-nodes.toml"
+scheme = "http"
+refresh_secs = 5
+debounce_millis = 250
+stale_after_secs = 300
+max_endpoints = 64
+
+[[routes]]
+id = "app"
+listeners = ["public"]
+hosts = ["example.test"]
+path_prefixes = ["/"]
+upstream_group = "app"

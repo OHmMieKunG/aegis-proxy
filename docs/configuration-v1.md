@@ -32,6 +32,8 @@ Phase 7 route middleware is active through a compiled fixed-stage pipeline. It i
 
 Phase 9 observability policy is restart-only. Structured access events can be disabled or sampled with `access_log_sample_per_million`; OpenMetrics is enabled by default only on the private administrative Unix socket. Optional OTLP traces use one explicit HTTP/protobuf endpoint, a 1..=1,000,000 sampling rate, a queue capped at 16,384 spans, a batch no larger than that queue, and a 1..=30 second export timeout. Plaintext OTLP is accepted only to an explicit loopback IP. Export authentication headers are not accepted in v1; place a mutually authenticated local collector or TLS-authenticated relay at the configured endpoint.
 
+Phase 11 file and DNS providers can replace endpoints only in one declared upstream group. Providers default disabled; static endpoints remain startup/stale fallback. File documents contain only IDs, literal socket addresses, and weights. DNS providers use one configured A/AAAA hostname and fixed port/template. Every result passes full configuration/egress validation and normal atomic revision activation. See [service discovery operations](operations/service-discovery.md).
+
 Configuration never silently accepts an inactive policy. TCP routing uses the explicit model in [ADR 0027](adr/0027-tcp-routing-schema.md); bounded TLS ClientHello capture follows [ADR 0016](adr/0016-clienthello-parser.md), with no handwritten parser.
 
 Configured egress denies override allows. Literal addresses are checked during validation. Configured DNS answers pass the same policy at refresh and immediately before connection. A refresh failure retains the last allowed set only through its configured stale deadline; startup fails if the initial lookup has no fully allowed answer set.
@@ -44,6 +46,8 @@ rust-proxy preview --config config/examples/tls.toml
 rust-proxy fmt --config config/examples/minimal.toml
 rust-proxy validate --config config/examples/tcp.toml
 rust-proxy validate --config config/examples/phase7.toml
+rust-proxy validate --config config/examples/phase11-file.toml
+rust-proxy validate --config config/examples/phase11-dns.toml
 ```
 
 The preview output is deliberately not re-applicable because secret references are replaced. Formatting does not resolve or print secret values, but it preserves configured environment names and file paths and should be handled as operational configuration.

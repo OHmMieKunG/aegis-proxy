@@ -1,0 +1,12 @@
+schema_version = 1
+provider_id = "app-nodes"
+
+[[endpoints]]
+id = "node-a"
+address = "127.0.0.1:9100"
+weight = 1
+
+[[endpoints]]
+id = "node-b"
+address = "127.0.0.1:9200"
+weight = 1
