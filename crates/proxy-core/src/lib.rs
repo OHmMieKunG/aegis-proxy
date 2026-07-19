@@ -4904,10 +4904,9 @@ mod tests {
                         .windows(4)
                         .position(|window| window == b"\r\n\r\n")
                         .is_some_and(|header_end| received.len() > header_end + 4)
+                    && let Some(sender) = first_body_tx.take()
                 {
-                    if let Some(sender) = first_body_tx.take() {
-                        sender.send(()).expect("signal first body bytes");
-                    }
+                    sender.send(()).expect("signal first body bytes");
                 }
                 if received.ends_with(b"0\r\n\r\n") {
                     break;

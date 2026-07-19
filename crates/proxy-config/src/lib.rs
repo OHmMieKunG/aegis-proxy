@@ -3190,8 +3190,8 @@ fn validate_upstream_policy(
             }
         }
     }
-    if let Some(circuit) = &group.circuit_breaker {
-        if circuit.sample_size == 0
+    if let Some(circuit) = &group.circuit_breaker
+        && (circuit.sample_size == 0
             || circuit.sample_size > 10_000
             || circuit.minimum_requests == 0
             || circuit.minimum_requests > circuit.sample_size
@@ -3200,13 +3200,12 @@ fn validate_upstream_policy(
             || circuit.open_secs == 0
             || circuit.open_secs > 3_600
             || circuit.half_open_requests == 0
-            || circuit.half_open_requests > 100
-        {
-            return Err(ConfigError::Invalid(format!(
-                "{} contains an unsafe sample, threshold, or half-open bound",
-                field("circuit_breaker")
-            )));
-        }
+            || circuit.half_open_requests > 100)
+    {
+        return Err(ConfigError::Invalid(format!(
+            "{} contains an unsafe sample, threshold, or half-open bound",
+            field("circuit_breaker")
+        )));
     }
     Ok(())
 }

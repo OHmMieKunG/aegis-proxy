@@ -312,11 +312,11 @@ type BoxError = Box<dyn Error + Send + Sync>;
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
-    if !matches!(&cli.command, Command::Run { .. }) {
-        if let Err(error) = telemetry::init(&Default::default()) {
-            eprintln!("telemetry initialization failed: {error}");
-            return ExitCode::from(6);
-        }
+    if !matches!(&cli.command, Command::Run { .. })
+        && let Err(error) = telemetry::init(&Default::default())
+    {
+        eprintln!("telemetry initialization failed: {error}");
+        return ExitCode::from(6);
     }
     match run(cli).await {
         Ok(()) => ExitCode::SUCCESS,

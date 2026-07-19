@@ -115,12 +115,12 @@ fn set<B>(
     value: Option<&str>,
     override_existing: bool,
 ) -> Result<(), ()> {
-    if let Some(value) = value {
-        if override_existing || !response.headers().contains_key(&name) {
-            response
-                .headers_mut()
-                .insert(name, value.parse().map_err(|_| ())?);
-        }
+    if let Some(value) = value
+        && (override_existing || !response.headers().contains_key(&name))
+    {
+        response
+            .headers_mut()
+            .insert(name, value.parse().map_err(|_| ())?);
     }
     Ok(())
 }

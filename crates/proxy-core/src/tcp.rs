@@ -142,14 +142,13 @@ async fn proxy_connection(
             return Err(error);
         }
     };
-    if !prefix.is_empty() {
-        if let Err(error) = tokio::time::timeout(connect_timeout, upstream.write_all(&prefix))
+    if !prefix.is_empty()
+        && let Err(error) = tokio::time::timeout(connect_timeout, upstream.write_all(&prefix))
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "TCP prefix write timed out"))?
-        {
-            selected.record_failure();
-            return Err(error);
-        }
+    {
+        selected.record_failure();
+        return Err(error);
     }
     selected.record_success();
     let drain = selected.drain_token();
