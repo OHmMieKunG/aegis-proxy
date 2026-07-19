@@ -221,10 +221,58 @@ impl RuntimeSnapshot {
 #[derive(Clone)]
 pub struct RuntimeHandle {
     current: Arc<ArcSwap<RuntimeSnapshot>>,
+    identity: NodeIdentity,
     telemetry: Arc<Telemetry>,
     http_challenges: HttpChallengeRegistry,
     tls_challenges: TlsAlpnChallengeRegistry,
     mutation: Arc<tokio::sync::Mutex<()>>,
+}
+
+/// Stable process identity kept outside declarative configuration hashes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NodeIdentity {
+    id: Arc<str>,
+    fleet_generation: u64,
+}
+
+impl NodeIdentity {
+    /// Validate a node ID and its externally monotonic fleet generation.
+    pub fn new(id: String, fleet_generation: u64) -> Result<Self, ProxyError> {
+        let bytes = id.as_bytes();
+        let valid = bytes.first().is_some_and(u8::is_ascii_lowercase)
+            && id.len() <= 63
+            && bytes.iter().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-')
+            });
+        if !valid {
+            return Err(ProxyError::Preparation("invalid node identifier".into()));
+        }
+        Ok(Self {
+            id: Arc::from(id),
+            fleet_generation,
+        })
+    }
+
+    /// Single-node bootstrap identity.
+    #[must_use]
+    pub fn standalone() -> Self {
+        Self {
+            id: Arc::from("standalone"),
+            fleet_generation: 0,
+        }
+    }
+
+    /// Stable node identifier.
+    #[must_use]
+    pub fn id(&self) -> Arc<str> {
+        Arc::clone(&self.id)
+    }
+
+    /// Externally assigned rollout generation.
+    #[must_use]
+    pub fn fleet_generation(&self) -> u64 {
+        self.fleet_generation
+    }
 }
 
 pub(crate) struct PreparedCertificatePublication {
@@ -256,15 +304,47 @@ impl fmt::Debug for RuntimeHandle {
 
 impl RuntimeHandle {
     pub(crate) fn new(initial: Arc<RuntimeSnapshot>) -> Self {
+        Self::new_with_identity(initial, NodeIdentity::standalone())
+    }
+
+    pub(crate) fn new_with_identity(initial: Arc<RuntimeSnapshot>, identity: NodeIdentity) -> Self {
         let tls_challenges = initial.tls_challenges.clone();
         let telemetry = Telemetry::new(&initial.config);
         Self {
             current: Arc::new(ArcSwap::from(initial)),
+            identity,
             telemetry,
             http_challenges: HttpChallengeRegistry::default(),
             tls_challenges,
             mutation: Arc::new(tokio::sync::Mutex::new(())),
         }
+    }
+
+    /// Stable node identifier supplied outside declarative configuration.
+    #[must_use]
+    pub fn node_id(&self) -> Arc<str> {
+        self.identity.id()
+    }
+
+    /// Externally monotonic fleet rollout generation.
+    #[must_use]
+    pub fn fleet_generation(&self) -> u64 {
+        self.identity.fleet_generation()
+    }
+
+    /// Whether this node exclusively owns managed certificate renewal.
+    #[must_use]
+    pub fn certificate_owner(&self) -> bool {
+        let snapshot = self.current.load();
+        !snapshot.config.acme.certificates.is_empty()
+            && snapshot
+                .config
+                .acme
+                .renewal_owner
+                .as_deref()
+                .map_or(self.fleet_generation() == 0, |owner| {
+                    owner == self.identity.id.as_ref()
+                })
     }
 
     pub(crate) fn load(&self) -> Arc<RuntimeSnapshot> {
@@ -687,6 +767,15 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn validates_bounded_node_identity() {
+        let identity = NodeIdentity::new("node-a".into(), 7).expect("valid identity");
+        assert_eq!(identity.id().as_ref(), "node-a");
+        assert_eq!(identity.fleet_generation(), 7);
+        assert!(NodeIdentity::new("Node A".into(), 7).is_err());
+        assert!(NodeIdentity::new("a".repeat(64), 7).is_err());
+    }
+
     fn config(port: u16) -> Arc<Config> {
         Arc::new(Config {
             schema_version: 1,
@@ -912,6 +1001,7 @@ mod tests {
             profile: None,
             renew_before_days: 30,
         });
+        managed.acme.renewal_owner = Some("node-a".into());
         let shutdown = CancellationToken::new();
         let snapshot = RuntimeSnapshot::prepare(Arc::new(managed), "managed", &shutdown)
             .await
@@ -924,7 +1014,16 @@ mod tests {
                 .resolve_name("example.test")
                 .is_none()
         );
-        let runtime = RuntimeHandle::new(snapshot);
+        let replica = RuntimeHandle::new_with_identity(
+            Arc::clone(&snapshot),
+            NodeIdentity::new("node-b".into(), 1).expect("replica identity"),
+        );
+        assert!(!replica.certificate_owner());
+        let runtime = RuntimeHandle::new_with_identity(
+            snapshot,
+            NodeIdentity::new("node-a".into(), 1).expect("owner identity"),
+        );
+        assert!(runtime.certificate_owner());
         let generated =
             rcgen::generate_simple_self_signed(vec!["example.test".into()]).expect("certificate");
         persist_managed_certificate(

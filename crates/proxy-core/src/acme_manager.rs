@@ -128,6 +128,12 @@ async fn reconcile(
     expiry_alerts: &mut HashMap<String, u16>,
     shutdown: &CancellationToken,
 ) -> Result<(), ManagerError> {
+    if !runtime.certificate_owner() {
+        attempts.clear();
+        retry_at.clear();
+        expiry_alerts.clear();
+        return Ok(());
+    }
     let snapshot = runtime.load();
     let config = Arc::clone(&snapshot.config);
     drop(snapshot);

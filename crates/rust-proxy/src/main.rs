@@ -53,6 +53,12 @@ enum Command {
         /// Durable state directory required for explicit recovery.
         #[arg(long, requires = "resume_last_known_good")]
         state_dir: Option<PathBuf>,
+        /// Stable lowercase node identifier; unique across an HA fleet.
+        #[arg(long, default_value = "standalone")]
+        node_id: String,
+        /// Externally monotonic rollout generation; zero is standalone mode.
+        #[arg(long, default_value_t = 0)]
+        fleet_generation: u64,
     },
     /// Inspect durable configuration state while the daemon is stopped.
     Config {
@@ -312,7 +318,10 @@ async fn run(cli: Cli) -> Result<(), BoxError> {
             config,
             resume_last_known_good,
             state_dir,
+            node_id,
+            fleet_generation,
         } => {
+            let identity = aegisproxy_core::NodeIdentity::new(node_id, fleet_generation)?;
             let startup_config = if resume_last_known_good {
                 let state_dir = state_dir.as_ref().ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidInput, "--state-dir is required")
@@ -332,14 +341,15 @@ async fn run(cli: Cli) -> Result<(), BoxError> {
                 let state_dir = state_dir.ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidInput, "--state-dir is required")
                 })?;
-                aegisproxy_core::run_last_known_good_with_control(
-                    config, state_dir, cancel, run_admin,
+                aegisproxy_core::run_last_known_good_with_control_on_node(
+                    config, state_dir, identity, cancel, run_admin,
                 )
                 .await
             } else {
-                aegisproxy_core::run_managed_config_with_control(
+                aegisproxy_core::run_managed_config_with_control_on_node(
                     config,
                     startup_config,
+                    identity,
                     cancel,
                     run_admin,
                 )

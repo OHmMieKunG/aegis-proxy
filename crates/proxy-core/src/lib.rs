@@ -78,7 +78,9 @@ pub use provider::{ProviderRegistry, ProviderStatus};
 pub use route::RouteIndex;
 use route::{PathError, canonical_host, canonicalize_request_path, request_host};
 use runtime::RuntimeSnapshot;
-pub use runtime::{ActivationCoordinator, ActivationError, ActivationResult, RuntimeHandle};
+pub use runtime::{
+    ActivationCoordinator, ActivationError, ActivationResult, NodeIdentity, RuntimeHandle,
+};
 use tcp::{TcpListenerContext, accept_loop as tcp_accept_loop};
 
 /// Boxed body error.
@@ -200,6 +202,11 @@ impl ManagedControl {
 
     /// Durably request renewal for one configured ACME certificate.
     pub async fn request_certificate_renewal(&self, id: &str) -> Result<(), ProxyError> {
+        if !self.runtime.certificate_owner() {
+            return Err(ProxyError::Preparation(
+                "node does not own certificate renewal".into(),
+            ));
+        }
         let config = self.runtime.config();
         if !config
             .acme
@@ -318,6 +325,28 @@ where
     F: FnOnce(ManagedControl, CancellationToken) -> Fut + Send + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {
+    run_managed_config_with_control_on_node(
+        config_path,
+        config,
+        NodeIdentity::standalone(),
+        shutdown,
+        start_control,
+    )
+    .await
+}
+
+/// Run validated configuration with explicit node identity and isolated management.
+pub async fn run_managed_config_with_control_on_node<F, Fut>(
+    config_path: PathBuf,
+    config: Config,
+    identity: NodeIdentity,
+    shutdown: CancellationToken,
+    start_control: F,
+) -> Result<(), ProxyError>
+where
+    F: FnOnce(ManagedControl, CancellationToken) -> Fut + Send + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
     let state_dir = PathBuf::from(&config.runtime.state_dir);
     let revisions = Arc::new(
         tokio::task::spawn_blocking(move || RevisionStore::open(state_dir))
@@ -355,6 +384,7 @@ where
         revisions,
         snapshot,
         listeners,
+        identity,
         shutdown,
         start_control,
     )
@@ -401,6 +431,28 @@ where
     F: FnOnce(ManagedControl, CancellationToken) -> Fut + Send + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {
+    run_last_known_good_with_control_on_node(
+        config_path,
+        state_dir,
+        NodeIdentity::standalone(),
+        shutdown,
+        start_control,
+    )
+    .await
+}
+
+/// Start from last-known-good with explicit node identity and isolated management.
+pub async fn run_last_known_good_with_control_on_node<F, Fut>(
+    config_path: PathBuf,
+    state_dir: PathBuf,
+    identity: NodeIdentity,
+    shutdown: CancellationToken,
+    start_control: F,
+) -> Result<(), ProxyError>
+where
+    F: FnOnce(ManagedControl, CancellationToken) -> Fut + Send + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
     let revisions = Arc::new(
         tokio::task::spawn_blocking(move || RevisionStore::open(state_dir))
             .await
@@ -429,6 +481,7 @@ where
         revisions,
         snapshot,
         listeners,
+        identity,
         shutdown,
         start_control,
     )
@@ -450,6 +503,7 @@ async fn serve_managed<F, Fut>(
     revisions: Arc<RevisionStore>,
     snapshot: Arc<RuntimeSnapshot>,
     listeners: Vec<(ListenerConfig, TcpListener)>,
+    identity: NodeIdentity,
     shutdown: CancellationToken,
     start_control: F,
 ) -> Result<(), ProxyError>
@@ -457,7 +511,15 @@ where
     F: FnOnce(ManagedControl, CancellationToken) -> Fut + Send + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {
-    let runtime = RuntimeHandle::new(Arc::clone(&snapshot));
+    if identity.fleet_generation() > 0
+        && !snapshot.config.acme.certificates.is_empty()
+        && snapshot.config.acme.renewal_owner.is_none()
+    {
+        return Err(ProxyError::Preparation(
+            "fleet ACME configuration requires acme.renewal_owner".into(),
+        ));
+    }
+    let runtime = RuntimeHandle::new_with_identity(Arc::clone(&snapshot), identity);
     let coordinator = Arc::new(ActivationCoordinator::new(
         Arc::clone(&revisions),
         runtime.clone(),
