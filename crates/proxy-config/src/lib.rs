@@ -4643,6 +4643,13 @@ mod tests {
 
         let unknown = source.replace("scheme = \"http\"", "scheme = \"http\"\nlabels = true");
         assert!(load_bytes(unknown.as_bytes()).is_err());
+        let socket = source.replace(
+            "scheme = \"http\"",
+            "scheme = \"http\"\ndocker_socket = \"/var/run/docker.sock\"",
+        );
+        assert!(load_bytes(socket.as_bytes()).is_err());
+        let docker = source.replace("kind = \"file\"", "kind = \"docker\"");
+        assert!(load_bytes(docker.as_bytes()).is_err());
     }
 
     #[test]

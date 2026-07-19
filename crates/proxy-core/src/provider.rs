@@ -530,6 +530,23 @@ mod tests {
         assert!(!valid_overlay(&config, provider, &duplicate));
     }
 
+    #[tokio::test]
+    async fn disabled_provider_does_not_read_or_replace_static_endpoints() {
+        let mut config = base("/path/does/not/exist.toml".into());
+        if let ProviderConfig::File(provider) = &mut config.providers[0] {
+            provider.enabled = false;
+        }
+        let coordinator = ProviderCoordinator::default();
+        let reconciled = coordinator.reconcile(config, [4; 32]).await;
+        assert_eq!(
+            reconciled.config.upstream_groups[0].endpoints[0].id,
+            "fallback"
+        );
+        let status = coordinator.registry().statuses().remove(0);
+        assert_eq!(status.state, "disabled");
+        assert!(status.source_hash.is_none());
+    }
+
     #[test]
     fn rename_storm_requires_one_stable_debounce_window() {
         let config = base("/run/aegisproxy/nodes.toml".into());
