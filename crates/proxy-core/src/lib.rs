@@ -347,6 +347,7 @@ where
     F: FnOnce(ManagedControl, CancellationToken) -> Fut + Send + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {
+    validate_node_policy(&config, &identity)?;
     let state_dir = PathBuf::from(&config.runtime.state_dir);
     let revisions = Arc::new(
         tokio::task::spawn_blocking(move || RevisionStore::open(state_dir))
@@ -474,6 +475,7 @@ where
             .await
             .map_err(|error| ProxyError::Preparation(error.to_string()))??
     };
+    validate_node_policy(&config, &identity)?;
     tracing::warn!(revision = %active.active.id, "explicit last-known-good recovery selected");
     let (snapshot, listeners) = prepare_bound(config, active.active.id, &shutdown).await?;
     serve_managed(
@@ -511,14 +513,6 @@ where
     F: FnOnce(ManagedControl, CancellationToken) -> Fut + Send + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {
-    if identity.fleet_generation() > 0
-        && !snapshot.config.acme.certificates.is_empty()
-        && snapshot.config.acme.renewal_owner.is_none()
-    {
-        return Err(ProxyError::Preparation(
-            "fleet ACME configuration requires acme.renewal_owner".into(),
-        ));
-    }
     let runtime = RuntimeHandle::new_with_identity(Arc::clone(&snapshot), identity);
     let coordinator = Arc::new(ActivationCoordinator::new(
         Arc::clone(&revisions),
@@ -551,6 +545,18 @@ where
         tracing::error!(%error, "management service task failed");
     }
     result
+}
+
+fn validate_node_policy(config: &Config, identity: &NodeIdentity) -> Result<(), ProxyError> {
+    if identity.fleet_generation() > 0
+        && !config.acme.certificates.is_empty()
+        && config.acme.renewal_owner.is_none()
+    {
+        return Err(ProxyError::Preparation(
+            "fleet ACME configuration requires acme.renewal_owner".into(),
+        ));
+    }
+    Ok(())
 }
 
 async fn bind_listeners(config: &Config) -> Result<Vec<(ListenerConfig, TcpListener)>, ProxyError> {
@@ -2272,9 +2278,10 @@ fn full_body(bytes: &[u8]) -> ResponseBody {
 mod tests {
     use super::*;
     use aegisproxy_config::{
-        AdminConfig, BalancingAlgorithm, CertificateConfig, CompressionEncoding, Config,
-        EndpointConfig, LimitsConfig, ListenerConfig, MiddlewareConfig, RateLimitKey, RouteConfig,
-        RuntimeConfig, TrustedProxyConfig, UpstreamGroupConfig,
+        AcmeCertificateConfig, AcmeChallenge, AdminConfig, BalancingAlgorithm, CertificateConfig,
+        CompressionEncoding, Config, EndpointConfig, LimitsConfig, ListenerConfig,
+        MiddlewareConfig, RateLimitKey, RouteConfig, RuntimeConfig, TrustedProxyConfig,
+        UpstreamGroupConfig,
     };
     use http_body_util::Empty;
     use std::collections::BTreeMap;
@@ -2391,6 +2398,39 @@ mod tests {
             admin: AdminConfig::default(),
             observability: aegisproxy_config::ObservabilityConfig::default(),
         }
+    }
+
+    #[test]
+    fn fleet_acme_owner_fails_before_runtime_preparation() {
+        let mut config = config(RouteConfig {
+            id: "default".into(),
+            listeners: vec!["public".into()],
+            hosts: vec![],
+            paths: vec![],
+            path_prefixes: vec![],
+            methods: vec![],
+            headers: vec![],
+            default: true,
+            priority: 0,
+            middlewares: vec![],
+            upstream_group: Some("app".into()),
+        });
+        config.acme.certificates.push(AcmeCertificateConfig {
+            id: "site".into(),
+            hosts: vec!["example.test".into()],
+            issuer: "issuer".into(),
+            challenge: AcmeChallenge::Http01,
+            challenge_listener: Some("public".into()),
+            dns_provider: None,
+            profile: None,
+            renew_before_days: 30,
+        });
+        let fleet = NodeIdentity::new("node-a".into(), 1).expect("fleet identity");
+        assert!(validate_node_policy(&config, &fleet).is_err());
+        config.acme.renewal_owner = Some("node-a".into());
+        assert!(validate_node_policy(&config, &fleet).is_ok());
+        config.acme.renewal_owner = None;
+        assert!(validate_node_policy(&config, &NodeIdentity::standalone()).is_ok());
     }
 
     async fn start_test_proxy(
