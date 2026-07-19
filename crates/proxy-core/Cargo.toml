@@ -9,9 +9,9 @@ license.workspace = true
 fuzzing = []
 
 [dependencies]
-aegisproxy-config = { path = "../proxy-config" }
-aegisproxy-secrets = { path = "../proxy-secrets" }
-aegisproxy-tls = { path = "../proxy-tls" }
+aegisproxy-config = { version = "=0.1.0", path = "../proxy-config" }
+aegisproxy-secrets = { version = "=0.1.0", path = "../proxy-secrets" }
+aegisproxy-tls = { version = "=0.1.0", path = "../proxy-tls" }
 arc-swap = "1"
 argon2 = { version = "0.5.3", default-features = false, features = ["alloc", "password-hash"] }
 async-compression = { version = "0.4.42", default-features = false, features = ["brotli", "gzip", "tokio"] }

@@ -1,6 +1,7 @@
 # Direct dependency inventory
 
-Phase 0 inventory; versions are locked in `Cargo.lock` and must be re-reviewed on upgrade.
+Versions are locked in `Cargo.lock` and must be re-reviewed on upgrade. Every row was last
+reviewed on 2026-07-19 unless it carries a newer date.
 
 | Crate | Purpose | Features | License | Native/unsafe surface | Alternative | Upgrade policy |
 |---|---|---|---|---|---|---|
@@ -11,17 +12,17 @@ Phase 0 inventory; versions are locked in `Cargo.lock` and must be re-reviewed o
 | http-body/http-body-util | Bounded streaming body traits, combinators, collectors, and length limiter | default | MIT | No native code; transitive unsafe review | hand-written body polling | Review with Hyper releases; retain ACME oversized-body regression |
 | serde/toml | Typed strict config and preview | derive | MIT/Apache-2.0 | Proc macros; audited | JSON-only | Lockfile/advisory gate |
 | url/ipnet | URL and CIDR parsing | serde | MIT/Apache-2.0 | None expected | custom parsers | Keep standard parsers |
-| rustls/rustls-pemfile | TLS and certificate parsing | Phase 2 selected provider | Apache-2.0/MIT/ISC | Crypto provider/native build reviewed | OpenSSL | Security advisory gate |
+| rustls/rustls-pki-types | TLS and strict mixed-section PEM parsing | Phase 2 selected provider | Apache-2.0/MIT/ISC | Crypto provider/native build reviewed | OpenSSL | Security advisory gate |
 | tokio-rustls | Async Rustls accept/connect adapters | `aws_lc_rs`, `tls12` | MIT/Apache-2.0 | AWS-LC native build | manual Tokio adapter | Review with Rustls |
 | hyper-rustls | Verified pooled HTTPS/H2 upstream connections | `aws-lc-rs`, `http1`, `http2`, `tls12`, `webpki-tokio` | Apache-2.0/ISC/MIT | Rustls/AWS-LC native build | custom connector | Review with Hyper and Rustls |
 | hickory-resolver | Bounded async A/AAAA resolution and TTL metadata | `system-config`, `tokio`; defaults/TLS/DNSSEC disabled | MIT/Apache-2.0 | No native code in selected features; transitive safe/unsafe review required | system resolver, custom DNS client | Pin 0.26 lockfile; resolver/rebinding tests and advisory gate on upgrade |
 | getrandom | Cryptographically random request IDs and 256-bit administrative API tokens from the operating system | default | MIT/Apache-2.0 | Platform syscalls and small reviewed platform-specific unsafe surface; no native library | AWS-LC RNG, `rand` | Pin 0.3 lockfile; fail closed if the OS RNG fails; advisory gate on upgrade |
-| fs2 | Cross-platform exclusive state-directory and per-certificate order locks on MSRV 1.85 | default | MIT/Apache-2.0 | Platform locking through libc/Windows APIs; no project unsafe | stale create-new lockfile, newer std lock API above current MSRV | Pin 0.4 lockfile; multi-owner and crash-release tests |
+| fs2 | Cross-platform exclusive state-directory and per-certificate order locks on MSRV 1.88 | default | MIT/Apache-2.0 | Platform locking through libc/Windows APIs; no project unsafe | stale create-new lockfile, newer std lock API above current MSRV | Pin 0.4 lockfile; multi-owner and crash-release tests |
 | sha2 | SHA-256 revision identity and configuration change detection | default | MIT/Apache-2.0 | Pure Rust selected path; transitive review | AWS-LC digest, blake3 | Pin 0.10 lockfile; tamper and reload tests |
 | hmac | HMAC-SHA256 administrative audit-chain authentication | default | MIT/Apache-2.0 | Pure Rust; no native code | AWS-LC HMAC, keyed BLAKE3 | Pin 0.12 lockfile; tamper and key-rotation tests |
 | serde_json | Strict revision metadata and pointer serialization | default | MIT/Apache-2.0 | No native code; parser input remains bounded | TOML metadata | Track with Serde; bounded unknown-field tests |
 | tower-service | Custom Hyper DNS resolver service contract | default | MIT | No native code; no known direct unsafe surface | direct connector implementation | Track with Hyper utility stack |
-| webpki-roots | Mozilla-derived default upstream trust anchors | default | MPL-2.0 | Static data; no native code | OS trust store | Review root updates with Rustls releases |
+| webpki-roots | Mozilla-derived default upstream trust-anchor data | default | CDLA-Permissive-2.0 | Static data; no native code | OS trust store | Preserve license notices; review root and license updates with Rustls releases |
 | rustls-webpki | Certificate metadata, path, validity, and name validation | `aws-lc-rs`, `std` | ISC | AWS-LC native build | Rustls verifier internals | Review with Rustls |
 | x509-parser | Bounded certificate issuer/validity metadata | no optional features | MIT/Apache-2.0 | Crate forbids unsafe; untrusted ASN.1 parser | custom DER parser | Pin; retain parser/fuzz review on upgrade |
 | rcgen | ACME CSRs plus ephemeral TLS test certificates | `aws_lc_rs`, `crypto`, `pem` | MIT/Apache-2.0 | AWS-LC native build; private-key generation runs off Tokio workers | instant-acme `rcgen` feature, custom PKCS#10 | Review with Rustls; retain CSR/key-match and Pebble tests |

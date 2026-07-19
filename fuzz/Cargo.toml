@@ -3,15 +3,15 @@ name = "aegisproxy-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 
 [package.metadata]
 cargo-fuzz = true
 
 [dependencies]
-aegisproxy-config = { path = "../crates/proxy-config" }
-aegisproxy-core = { path = "../crates/proxy-core", features = ["fuzzing"] }
-aegisproxy-tls = { path = "../crates/proxy-tls", features = ["fuzzing"] }
+aegisproxy-config = { version = "=0.1.0", path = "../crates/proxy-config" }
+aegisproxy-core = { version = "=0.1.0", path = "../crates/proxy-core", features = ["fuzzing"] }
+aegisproxy-tls = { version = "=0.1.0", path = "../crates/proxy-tls", features = ["fuzzing"] }
 libfuzzer-sys = "0.4.13"
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
 

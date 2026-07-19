@@ -1,12 +1,15 @@
-use std::{io::Cursor, sync::Arc};
+use std::sync::Arc;
 
 use aegisproxy_secrets::{SecretRef, decrypt_age};
 use rustls::{
     crypto::{CryptoProvider, aws_lc_rs},
-    pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime},
+    pki_types::{
+        CertificateDer, PrivateKeyDer, PrivatePkcs1KeyDer, PrivatePkcs8KeyDer, PrivateSec1KeyDer,
+        ServerName, UnixTime,
+        pem::{PemObject, SectionKind},
+    },
     sign::CertifiedKey,
 };
-use rustls_pemfile::Item;
 use webpki::{EndEntityCert, KeyUsage, anchor_from_trusted_cert};
 
 use crate::TlsError;
@@ -89,9 +92,11 @@ pub(crate) fn identity_from_pem(
 
 pub(crate) fn parse_certificates(pem: &[u8]) -> Result<Vec<CertificateDer<'static>>, TlsError> {
     let mut certificates = Vec::new();
-    for item in rustls_pemfile::read_all(&mut Cursor::new(pem)) {
+    for item in <(SectionKind, Vec<u8>)>::pem_slice_iter(pem) {
         match item.map_err(|error| TlsError::Pem(error.to_string()))? {
-            Item::X509Certificate(certificate) => certificates.push(certificate),
+            (SectionKind::Certificate, certificate) => {
+                certificates.push(CertificateDer::from(certificate));
+            }
             _ => {
                 return Err(TlsError::Pem(
                     "certificate source contains a non-certificate item".into(),
@@ -112,11 +117,17 @@ pub(crate) fn parse_certificates(pem: &[u8]) -> Result<Vec<CertificateDer<'stati
 
 fn parse_private_key(pem: &[u8]) -> Result<PrivateKeyDer<'static>, TlsError> {
     let mut key = None;
-    for item in rustls_pemfile::read_all(&mut Cursor::new(pem)) {
+    for item in <(SectionKind, Vec<u8>)>::pem_slice_iter(pem) {
         let candidate = match item.map_err(|error| TlsError::Pem(error.to_string()))? {
-            Item::Pkcs1Key(value) => PrivateKeyDer::from(value),
-            Item::Pkcs8Key(value) => PrivateKeyDer::from(value),
-            Item::Sec1Key(value) => PrivateKeyDer::from(value),
+            (SectionKind::RsaPrivateKey, value) => {
+                PrivateKeyDer::from(PrivatePkcs1KeyDer::from(value))
+            }
+            (SectionKind::PrivateKey, value) => {
+                PrivateKeyDer::from(PrivatePkcs8KeyDer::from(value))
+            }
+            (SectionKind::EcPrivateKey, value) => {
+                PrivateKeyDer::from(PrivateSec1KeyDer::from(value))
+            }
             _ => {
                 return Err(TlsError::Pem(
                     "private-key source contains a non-key item".into(),
@@ -209,6 +220,25 @@ mod tests {
             other.signing_key.serialize_pem().as_bytes(),
         );
         assert!(matches!(result, Err(TlsError::PrivateKey)));
+    }
+
+    #[test]
+    fn rejects_mixed_recognized_pem_sections() {
+        let generated =
+            generate_simple_self_signed(vec!["example.test".into()]).expect("generate identity");
+        let certificate = generated.cert.pem();
+        let key = generated.signing_key.serialize_pem();
+        let mixed_certificate = format!("{certificate}{key}");
+        let mixed_key = format!("{key}{certificate}");
+
+        assert!(matches!(
+            parse_certificates(mixed_certificate.as_bytes()),
+            Err(TlsError::Pem(_))
+        ));
+        assert!(matches!(
+            parse_private_key(mixed_key.as_bytes()),
+            Err(TlsError::Pem(_))
+        ));
     }
 
     #[test]

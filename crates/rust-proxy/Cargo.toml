@@ -6,11 +6,11 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-aegisproxy-admin = { path = "../proxy-admin" }
-aegisproxy-config = { path = "../proxy-config" }
-aegisproxy-core = { path = "../proxy-core" }
-aegisproxy-secrets = { path = "../proxy-secrets" }
-aegisproxy-tls = { path = "../proxy-tls" }
+aegisproxy-admin = { version = "=0.1.0", path = "../proxy-admin" }
+aegisproxy-config = { version = "=0.1.0", path = "../proxy-config" }
+aegisproxy-core = { version = "=0.1.0", path = "../proxy-core" }
+aegisproxy-secrets = { version = "=0.1.0", path = "../proxy-secrets" }
+aegisproxy-tls = { version = "=0.1.0", path = "../proxy-tls" }
 bytes = "1"
 clap = { version = "4", features = ["derive"] }
 http-body-util = "0.1"

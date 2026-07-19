@@ -1,6 +1,8 @@
 [advisories]
 version = 2
-ignore = []
+ignore = [
+    { id = "RUSTSEC-2026-0173", reason = "Transitive build-time localization macro from age; no vulnerability or runtime path; review/expiry 2026-10-19 in docs/security/dependency-unsafe-review.md" },
+]
 
 [licenses]
 version = 2
@@ -11,6 +13,7 @@ allow = [
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
     "ISC",
     "MPL-2.0",
     "Unicode-3.0",

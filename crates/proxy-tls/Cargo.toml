@@ -9,7 +9,7 @@ license.workspace = true
 fuzzing = []
 
 [dependencies]
-aegisproxy-secrets = { path = "../proxy-secrets" }
+aegisproxy-secrets = { version = "=0.1.0", path = "../proxy-secrets" }
 arc-swap = "1"
 bytes = "1"
 fs2 = "0.4"
@@ -21,7 +21,6 @@ hyper-util = { version = "0.1", features = ["client-legacy", "http1", "http2", "
 instant-acme = { version = "0.8.5", default-features = false, features = ["aws-lc-rs", "hyper-rustls"] }
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "crypto", "pem"] }
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
-rustls-pemfile = "2"
 rustls-webpki = { version = "0.103", default-features = false, features = ["aws-lc-rs", "std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

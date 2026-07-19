@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-aegisproxy-secrets = { path = "../proxy-secrets" }
+aegisproxy-secrets = { version = "=0.1.0", path = "../proxy-secrets" }
 http = "1"
 fs2 = "0.4.3"
 ipnet = { version = "2", features = ["serde"] }
