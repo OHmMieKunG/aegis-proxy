@@ -5,20 +5,23 @@ Repository: `/home/pkumham/aegis-proxy`
 Environment: WSL2 Linux 7.1.3, x86_64
 Source of truth: `PLAN.md`
 
-## Phase 10 closure update
+## Phase 11 closure update
 
-Phases 0 through 10 are closed and have completion reports. Phase 9 added
+Phases 0 through 11 are closed and have completion reports. Phase 9 added
 strict bounded observability configuration, private authenticated OpenMetrics,
 structured/access JSON logs, optional bounded OTLP tracing, health probes,
 certificate/upstream/reload/audit metrics, alert simulations, dashboards, and
-operator/SIEM guidance. The final workspace gate passed 243 tests with two
+operator/SIEM guidance. The final workspace gate passed 258 tests with two
 explicitly ignored environment/manual tests.
 
-Phase 10 closed through ADR-0019's explicit no-UI decision. No browser code,
-JavaScript workspace, OIDC/session gateway, or frontend dependency was added.
-Per operator direction, work stops after this phase. Phases 11 onward remain
-unimplemented. Independent security and protocol review, a representative
-staging dashboard/failure drill, dependency/license/secret scans, Pebble
+Phase 10 closed through ADR-0019's explicit no-UI decision. Phase 11 added
+strict disabled-by-default file and DNS providers, single-group namespaces,
+bounded polling/debounce/stale fallback, full validated atomic activation,
+private redacted status, bounded metrics, fixtures, threat review, and failure
+tests. Docker/Kubernetes/Consul/SRV discovery remain absent; proxy has no Docker
+dependency or socket access. Per operator direction, work stops after Phase 11.
+Phase 12 onward remains unimplemented. Independent security/protocol review,
+long environment-specific soak, dependency/license/secret scans, Pebble
 execution, and release preparation remain external or later-phase gates. The
 original pre-Phase-8 readiness snapshot below is retained as historical
 evidence rather than rewritten.
