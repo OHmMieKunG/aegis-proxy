@@ -1438,7 +1438,7 @@ Work is sequential unless a phase explicitly identifies a parallel documentation
 
 - **Objectives:** Bootstrap a reviewable Rust workspace; validate the risky library/protocol assumptions; turn this plan into accepted ADRs and a traceability matrix.
 - **Exact deliverables/files:** Root `Cargo.toml`, lock/toolchain/lint/license policy, Section 37 crate skeletons, README/SECURITY; `docs/architecture.md`, `docs/adr/0001..0011`, dependency license/maintenance inventory; small throwaway-or-testbed Hyper streaming/cancellation, Rustls/ClientHello passthrough, and Axum-Unix-socket spikes under `tests/spikes/` only where documentation cannot answer compatibility.
-- **Dependencies:** Current official crate docs/source, stable Rust/MSRV decision, Linux CI runners; no production service dependency.
+- **Dependencies:** Current official crate docs/source, stable Rust with MSRV 1.88, Linux CI runners; no production service dependency. MSRV 1.88 supersedes the Phase 0 implementation's original 1.85 selection under ADR-0028 because locked Hickory DNS and certificate dependencies require it.
 - **Security controls:** `forbid(unsafe_code)`, approved licenses/sources, threat-model review, no copied upstream code, no secrets or public listeners in spikes.
 - **Tests:** Workspace build/lint/doc smoke; stream/backpressure/cancellation and Rustls handshake spike assertions; dependency-policy CI.
 - **Acceptance criteria:** All ADR fields are approved; chosen versions resolve under one MSRV; every direct dependency has owner/purpose/license/risk; spikes demonstrate streaming without whole-body buffering and admin Unix-socket feasibility.
