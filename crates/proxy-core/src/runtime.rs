@@ -223,6 +223,7 @@ pub struct RuntimeHandle {
     current: Arc<ArcSwap<RuntimeSnapshot>>,
     identity: NodeIdentity,
     draining: Arc<AtomicBool>,
+    audit_ready: Arc<AtomicBool>,
     telemetry: Arc<Telemetry>,
     http_challenges: HttpChallengeRegistry,
     tls_challenges: TlsAlpnChallengeRegistry,
@@ -315,6 +316,7 @@ impl RuntimeHandle {
             current: Arc::new(ArcSwap::from(initial)),
             identity,
             draining: Arc::new(AtomicBool::new(false)),
+            audit_ready: Arc::new(AtomicBool::new(false)),
             telemetry,
             http_challenges: HttpChallengeRegistry::default(),
             tls_challenges,
@@ -358,6 +360,12 @@ impl RuntimeHandle {
     #[must_use]
     pub fn is_draining(&self) -> bool {
         self.draining.load(Ordering::Acquire)
+    }
+
+    /// Return whether durable administrative audit is currently writable.
+    #[must_use]
+    pub fn audit_ready(&self) -> bool {
+        self.audit_ready.load(Ordering::Acquire)
     }
 
     /// Extract the SHA-256 content hash from the active durable revision ID.
@@ -420,6 +428,7 @@ impl RuntimeHandle {
 
     /// Update the bounded administrative-audit readiness gauge.
     pub fn set_audit_ready(&self, ready: bool) {
+        self.audit_ready.store(ready, Ordering::Release);
         self.telemetry.audit_ready(ready);
     }
 
@@ -812,6 +821,9 @@ mod tests {
         let runtime = RuntimeHandle::new(snapshot);
         assert_eq!(runtime.revision_hash().as_deref(), Some(hash.as_str()));
         assert!(!runtime.is_draining());
+        assert!(!runtime.audit_ready());
+        runtime.set_audit_ready(true);
+        assert!(runtime.audit_ready());
         assert!(runtime.begin_drain());
         assert!(runtime.is_draining());
         assert!(!runtime.begin_drain());

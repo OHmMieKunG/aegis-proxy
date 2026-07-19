@@ -753,7 +753,7 @@ async fn status(
         active_revision: runtime.revision().to_string(),
         active_hash: runtime.revision_hash().ok_or(ApiError::Internal)?,
         administration_ready: state.control.coordinator().administration_ready(),
-        audit_ready: state.audit.is_some(),
+        audit_ready: runtime.audit_ready(),
         draining: runtime.is_draining(),
         certificate_owner: runtime.certificate_owner(),
         managed_certificates: config.acme.certificates.len(),
@@ -823,7 +823,7 @@ async fn health_details(
         },
         active_revision: state.control.runtime().revision().to_string(),
         administration_ready: ready,
-        audit_ready: state.audit.is_some(),
+        audit_ready: state.control.runtime().audit_ready(),
         certificates,
     }))
 }
