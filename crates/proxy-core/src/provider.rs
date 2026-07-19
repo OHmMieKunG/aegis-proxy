@@ -558,6 +558,21 @@ mod tests {
     }
 
     #[test]
+    fn event_storm_keeps_only_one_bounded_pending_hash() {
+        let config = base("/run/aegisproxy/nodes.toml".into());
+        let policy = config.providers[0].clone();
+        let now = Instant::now();
+        let mut state = ProviderState::new(policy.clone());
+        for index in 0_u64..100_000 {
+            let mut hash = [0_u8; 32];
+            hash[..8].copy_from_slice(&index.to_be_bytes());
+            assert!(!accept_debounce(&mut state, &policy, hash, now));
+        }
+        assert!(state.pending_hash.is_some());
+        assert!(state.endpoints.is_empty());
+    }
+
+    #[test]
     fn hard_stale_deadline_disables_provider_output() {
         let config = base("/run/aegisproxy/nodes.toml".into());
         let policy = config.providers[0].clone();
