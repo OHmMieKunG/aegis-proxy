@@ -147,6 +147,11 @@ pub struct RevisionStore {
     mutation: Mutex<()>,
 }
 
+/// Validate configuration and return its canonical durable SHA-256 content hash.
+pub fn content_hash(config: &Config) -> Result<String, RevisionError> {
+    canonical_config(config).map(|bytes| hex_sha256(&bytes))
+}
+
 impl RevisionStore {
     /// Open and exclusively lock a state directory.
     pub fn open(state_dir: impl AsRef<Path>) -> Result<Self, RevisionError> {
@@ -210,16 +215,8 @@ impl RevisionStore {
             .mutation
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        validate(config).map_err(|error| RevisionError::InvalidConfig(error.to_string()))?;
         validate_source(source)?;
-        let canonical = toml::to_string_pretty(config)
-            .map_err(|error| RevisionError::Serialization(error.to_string()))?
-            .into_bytes();
-        if canonical.len() > MAX_CONFIG_BYTES {
-            return Err(RevisionError::InvalidConfig(
-                "canonical candidate exceeds configuration size limit".into(),
-            ));
-        }
+        let canonical = canonical_config(config)?;
         let hash = hex_sha256(&canonical);
         let revisions = self.list()?;
         if let (true, Some(existing)) = (
@@ -647,6 +644,19 @@ fn hex_sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+fn canonical_config(config: &Config) -> Result<Vec<u8>, RevisionError> {
+    validate(config).map_err(|error| RevisionError::InvalidConfig(error.to_string()))?;
+    let canonical = toml::to_string_pretty(config)
+        .map_err(|error| RevisionError::Serialization(error.to_string()))?
+        .into_bytes();
+    if canonical.len() > MAX_CONFIG_BYTES {
+        return Err(RevisionError::InvalidConfig(
+            "canonical candidate exceeds configuration size limit".into(),
+        ));
+    }
+    Ok(canonical)
+}
+
 fn write_new_synced(path: &Path, bytes: &[u8]) -> Result<(), RevisionError> {
     let mut file = OpenOptions::new().create_new(true).write(true).open(path)?;
     secure_file_permissions(&file)?;
@@ -828,6 +838,10 @@ mod tests {
         let metadata = store
             .create_candidate(&config(), "test")
             .expect("candidate");
+        assert_eq!(
+            metadata.hash,
+            content_hash(&config()).expect("content hash")
+        );
         assert_eq!(store.load(&metadata.id).expect("load").schema_version, 1);
         assert_eq!(
             store.create_candidate(&config(), "second").expect("dedupe"),

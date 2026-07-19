@@ -112,6 +112,11 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum FleetCommand {
+    /// Print exact canonical configuration content hash without persistence.
+    Hash {
+        #[arg(long)]
+        config: PathBuf,
+    },
     /// Print authenticated node status JSON from the private Unix API.
     Status {
         #[command(flatten)]
@@ -430,6 +435,11 @@ async fn run(cli: Cli) -> Result<(), BoxError> {
             io::stdout().lock().write_all(&response.body)?;
         }
         Command::Fleet { command } => match command {
+            FleetCommand::Hash { config } => {
+                let config = load_config(config).await?;
+                let hash = aegisproxy_config::revision::content_hash(&config)?;
+                writeln!(io::stdout().lock(), "{hash}")?;
+            }
             FleetCommand::Status { admin } => {
                 let response =
                     admin_request(&admin, Method::GET, "/v1/status", None, None, Vec::new())
