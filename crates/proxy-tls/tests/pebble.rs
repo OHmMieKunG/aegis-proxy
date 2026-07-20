@@ -2,11 +2,16 @@
 
 use std::{
     error::Error,
+    fs,
+    fs::OpenOptions,
     io::{Read, Write},
     net::TcpStream,
     path::PathBuf,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
+
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 
 use aegisproxy_tls::acme::{
     AcmeAccountCreateRequest, AcmeChallengeKind, AcmeChallengeMaterial, AcmeClient,
@@ -31,8 +36,8 @@ fn issues_with_all_supported_challenges() -> TestResult {
         .build()?;
     runtime.block_on(async {
         let directory = Url::parse(DIRECTORY)?;
-        let ca_reference = test_ca_reference()?;
-        aegisproxy_tls::client_config(Some(&ca_reference))?;
+        let test_ca = TestCa::new()?;
+        aegisproxy_tls::client_config(Some(test_ca.reference()))?;
         let (created, credentials) = AcmeClient::create(
             AcmeAccountCreateRequest {
                 directory_url: &directory,
@@ -40,11 +45,11 @@ fn issues_with_all_supported_challenges() -> TestResult {
                 terms_of_service_agreed: true,
                 external_account: None,
             },
-            Some(&ca_reference),
+            Some(test_ca.reference()),
         )
         .await?;
         assert!(!created.account_id().is_empty());
-        let client = AcmeClient::restore(credentials.as_slice(), Some(&ca_reference)).await?;
+        let client = AcmeClient::restore(credentials.as_slice(), Some(test_ca.reference())).await?;
 
         for _ in 0..RENEWAL_CYCLES {
             issue(&client, AcmeChallengeKind::Http01, "http.aegis.test").await?;
@@ -200,23 +205,57 @@ fn management_post(endpoint: &str, body: &Value) -> TestResult {
     Ok(())
 }
 
-fn test_ca_reference() -> TestResult<String> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("tests")
-        .join("pebble")
-        .join("pebble.minica.pem")
-        .canonicalize()?;
-    let path = root.to_string_lossy();
-    #[cfg(windows)]
-    {
-        let path = path
-            .strip_prefix(r"\\?\")
-            .unwrap_or(&path)
-            .replace('\\', "/");
-        Ok(format!("file:///{path}"))
+struct TestCa {
+    path: PathBuf,
+    reference: String,
+}
+
+impl TestCa {
+    fn new() -> TestResult<Self> {
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("tests")
+            .join("pebble")
+            .join("pebble.minica.pem")
+            .canonicalize()?;
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "aegisproxy-pebble-ca-{}-{nonce}.pem",
+            std::process::id()
+        ));
+        let mut options = OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut output = options.open(&path)?;
+        output.write_all(&fs::read(source)?)?;
+        output.sync_all()?;
+
+        let canonical = path.canonicalize()?;
+        let display = canonical.to_string_lossy();
+        #[cfg(windows)]
+        let reference = {
+            let display = display
+                .strip_prefix(r"\\?\")
+                .unwrap_or(&display)
+                .replace('\\', "/");
+            format!("file:///{display}")
+        };
+        #[cfg(not(windows))]
+        let reference = format!("file://{display}");
+        Ok(Self { path, reference })
     }
-    #[cfg(not(windows))]
-    Ok(format!("file://{path}"))
+
+    fn reference(&self) -> &str {
+        &self.reference
+    }
+}
+
+impl Drop for TestCa {
+    fn drop(&mut self) {
+        if let Err(error) = fs::remove_file(&self.path) {
+            eprintln!("could not remove temporary Pebble CA: {error}");
+        }
+    }
 }
