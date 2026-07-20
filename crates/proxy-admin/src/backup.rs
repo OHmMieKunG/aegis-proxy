@@ -429,11 +429,11 @@ mod tests {
         fs::create_dir_all(state.join("config/revisions")).expect("directories");
         #[cfg(unix)]
         fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).expect("permissions");
-        fs::write(
-            state.join("config/revisions/one.toml"),
-            b"backup-private-canary",
-        )
-        .expect("state");
+        let state_file = state.join("config/revisions/one.toml");
+        fs::write(&state_file, b"backup-private-canary").expect("state");
+        #[cfg(unix)]
+        fs::set_permissions(&state_file, fs::Permissions::from_mode(0o600))
+            .expect("state permissions");
         let identity = x25519::Identity::generate();
         let summary =
             create_backup(&state, &output, &[identity.to_public().to_string()]).expect("backup");
