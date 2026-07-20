@@ -1,8 +1,9 @@
 # Optional Linux confinement examples
 
-These profiles supplement the existing non-root, read-only, capability-free container. They are
-examples, not portable guarantees. Kernel, libc, Rust, crypto provider, DNS, telemetry, and
-container-runtime changes can alter required syscalls and paths.
+These profiles supplement the existing non-root, read-only, capability-free,
+`no-new-privileges` container. They are examples, not portable guarantees. Kernel, libc, Rust,
+crypto provider, DNS, telemetry, and container-runtime changes can alter required syscalls and
+paths.
 
 Validate and load AppArmor on the target host:
 

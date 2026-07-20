@@ -1,6 +1,5 @@
 services:
   proxy:
     security_opt:
-      - no-new-privileges:true
       - seccomp:./deploy/security/seccomp.json
       - apparmor:aegisproxy
