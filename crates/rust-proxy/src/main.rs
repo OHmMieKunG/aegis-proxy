@@ -372,7 +372,9 @@ async fn run(cli: Cli) -> Result<(), BoxError> {
             let cancel = CancellationToken::new();
             let signal = cancel.clone();
             tokio::spawn(async move {
-                let _ = tokio::signal::ctrl_c().await;
+                if let Err(error) = wait_for_shutdown_signal().await {
+                    tracing::error!(%error, "shutdown signal listener failed");
+                }
                 signal.cancel();
             });
             let result = if resume_last_known_good {
@@ -467,6 +469,21 @@ async fn run(cli: Cli) -> Result<(), BoxError> {
         },
     }
     Ok(())
+}
+
+async fn wait_for_shutdown_signal() -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result,
+            received = terminate.recv() => received
+                .ok_or_else(|| io::Error::other("SIGTERM listener closed")),
+        }
+    }
+    #[cfg(not(unix))]
+    tokio::signal::ctrl_c().await
 }
 
 #[derive(Debug)]
