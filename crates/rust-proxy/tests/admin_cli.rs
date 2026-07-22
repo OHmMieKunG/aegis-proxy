@@ -740,6 +740,62 @@ upstream_group = "app"
         ]);
         assert_eq!(repeated_activation.status.code(), Some(4));
         assert_eq!(active_revision(&state), current);
+        let unbound_revision = fs::read_dir(state.join("config/metadata"))
+            .expect("metadata directory")
+            .filter_map(Result::ok)
+            .filter_map(|entry| fs::read(entry.path()).ok())
+            .filter_map(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .find(|metadata| metadata["binding_hash"].is_null() && metadata["id"] != current)
+            .and_then(|metadata| metadata["id"].as_str().map(str::to_owned))
+            .expect("unbound revision");
+        let unbound_rollback = run(&[
+            "proxy-host",
+            "rollback",
+            "--socket",
+            socket,
+            "--expect",
+            &current,
+            &unbound_revision,
+        ]);
+        assert_eq!(unbound_rollback.status.code(), Some(4));
+        assert_eq!(active_revision(&state), current);
+        let denied_rollback = Command::new(binary())
+            .args([
+                "proxy-host",
+                "rollback",
+                "--socket",
+                socket,
+                "--token-ref",
+                &token_ref,
+                "--expect",
+                &current,
+                candidate_id,
+            ])
+            .output()
+            .expect("denied typed rollback");
+        assert_eq!(denied_rollback.status.code(), Some(5));
+        let rollback = run(&[
+            "proxy-host",
+            "rollback",
+            "--socket",
+            socket,
+            "--expect",
+            &current,
+            candidate_id,
+        ]);
+        assert!(rollback.status.success(), "{:?}", rollback.stderr);
+        current = active_revision(&state);
+        assert_ne!(current, candidate_id);
+        assert_ne!(current, updated_candidate_id);
+        let rolled_back = run(&["proxy-host", "get", "--socket", socket, "proxy-cli"]);
+        assert!(rolled_back.status.success(), "{:?}", rolled_back.stderr);
+        let rolled_back_json: serde_json::Value =
+            serde_json::from_slice(&rolled_back.stdout).expect("rolled back Proxy Host JSON");
+        assert_eq!(rolled_back_json["generation"], 3);
+        assert_eq!(
+            rolled_back_json["object"]["spec"]["domain"],
+            "typed.example.test"
+        );
         let stale_delete = run(&[
             "proxy-host",
             "delete",
@@ -760,13 +816,13 @@ upstream_group = "app"
             "--expect",
             &current,
             "--generation",
-            "2",
+            "3",
             "proxy-cli",
         ]);
         assert!(delete.status.success(), "{:?}", delete.stderr);
         let delete_json: serde_json::Value =
             serde_json::from_slice(&delete.stdout).expect("Proxy Host delete JSON");
-        assert_eq!(delete_json["deleted"]["generation"], 2);
+        assert_eq!(delete_json["deleted"]["generation"], 3);
         assert_eq!(active_revision(&state), current);
         let deleted_list = run(&["proxy-host", "list", "--socket", socket]);
         assert!(deleted_list.status.success(), "{:?}", deleted_list.stderr);
@@ -796,7 +852,7 @@ upstream_group = "app"
             &current,
             token_id,
         ]);
-        assert_eq!(denied.status.code(), Some(5));
+        assert_eq!(denied.status.code(), Some(5), "{:?}", denied.stderr);
 
         let revoke = run(&[
             "token", "revoke", "--socket", socket, "--expect", &current, token_id,
@@ -850,6 +906,7 @@ upstream_group = "app"
         assert!(audit.contains("\"action\":\"proxy_host_update\""));
         assert!(audit.contains("\"action\":\"proxy_host_delete\""));
         assert!(audit.contains("\"action\":\"proxy_host_activate\""));
+        assert!(audit.contains("\"action\":\"proxy_host_rollback\""));
         assert!(
             audit
                 .lines()

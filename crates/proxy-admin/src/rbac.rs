@@ -47,6 +47,8 @@ pub enum Action {
     DeleteProxyHost,
     /// Activate a verified complete typed Proxy Host candidate.
     ActivateProxyHost,
+    /// Restore bound typed Proxy Host desired state through a forward revision.
+    RollbackProxyHost,
     /// Read effective routes.
     ReadRoutes,
     /// Read upstream health state.
@@ -188,7 +190,7 @@ impl Role {
 mod tests {
     use super::{Action, Role, TokenScopeError, TokenScopes};
 
-    const ACTIONS: [Action; 22] = [
+    const ACTIONS: [Action; 23] = [
         Action::ReadStatus,
         Action::ReadConfig,
         Action::ValidateConfig,
@@ -202,6 +204,7 @@ mod tests {
         Action::UpdateProxyHost,
         Action::DeleteProxyHost,
         Action::ActivateProxyHost,
+        Action::RollbackProxyHost,
         Action::ReadRoutes,
         Action::ReadUpstreams,
         Action::Drain,

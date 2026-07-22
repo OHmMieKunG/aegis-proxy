@@ -258,6 +258,14 @@ enum ProxyHostCommand {
         expect: String,
         candidate: String,
     },
+    /// Restore bound typed desired state through a new forward revision.
+    Rollback {
+        #[command(flatten)]
+        admin: AdminConnection,
+        #[arg(long)]
+        expect: String,
+        revision: String,
+    },
     /// Compile and semantically validate one owned Proxy Host without persistence.
     Validate {
         #[command(flatten)]
@@ -295,6 +303,7 @@ enum CliScope {
     UpdateProxyHost,
     DeleteProxyHost,
     ActivateProxyHost,
+    RollbackProxyHost,
     ReadRoutes,
     ReadUpstreams,
     Drain,
@@ -322,6 +331,7 @@ impl CliScope {
             Self::UpdateProxyHost => "update_proxy_host",
             Self::DeleteProxyHost => "delete_proxy_host",
             Self::ActivateProxyHost => "activate_proxy_host",
+            Self::RollbackProxyHost => "rollback_proxy_host",
             Self::ReadRoutes => "read_routes",
             Self::ReadUpstreams => "read_upstreams",
             Self::Drain => "drain",
@@ -881,6 +891,21 @@ async fn run_proxy_host_command(command: ProxyHostCommand) -> Result<(), BoxErro
                 &admin,
                 Method::POST,
                 &format!("/v1/proxy-hosts/candidates/{candidate}/activate"),
+                Some(expect),
+                None,
+                Vec::new(),
+            )
+            .await?
+        }
+        ProxyHostCommand::Rollback {
+            admin,
+            expect,
+            revision,
+        } => {
+            admin_request(
+                &admin,
+                Method::POST,
+                &format!("/v1/proxy-hosts/revisions/{revision}/rollback"),
                 Some(expect),
                 None,
                 Vec::new(),

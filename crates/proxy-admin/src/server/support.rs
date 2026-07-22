@@ -122,6 +122,16 @@ pub(super) async fn begin_mutation(
             .await
             .map_err(|_| ApiError::Unavailable)?,
     );
+    if state.proxy_hosts.rollback_pending() {
+        audit
+            .record(
+                AuditOutcome::Failed,
+                spec.new_revision,
+                Some("rollback_recovery_required"),
+            )
+            .await?;
+        return Err(ApiError::Unavailable);
+    }
     audit
         .record(AuditOutcome::Intent, spec.new_revision, None)
         .await?;

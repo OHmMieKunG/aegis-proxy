@@ -902,6 +902,243 @@ pub(super) async fn activate_proxy_host_candidate(
     Ok(response)
 }
 
+pub(super) async fn rollback_proxy_hosts(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+    principal: Principal,
+) -> Result<Response, ApiError> {
+    let current_revision = state.control.runtime().revision().to_string();
+    let audit = begin_mutation(
+        &state,
+        &principal,
+        &request_id,
+        Some(current_revision.clone()),
+        MutationSpec {
+            permission: Action::RollbackProxyHost,
+            action: "proxy_host_rollback",
+            resource_id: &id,
+            new_revision: None,
+        },
+    )
+    .await?;
+    let expected_revision = match expected_revision(&headers) {
+        Ok(expected) => expected,
+        Err(error) => return Err(audited_failure(&audit, "invalid_if_match", error).await),
+    };
+    if current_revision != expected_revision
+        || state.control.runtime().revision().as_ref() != expected_revision
+    {
+        return Err(audited_failure(&audit, "revision_conflict", ApiError::Conflict).await);
+    }
+    if id == current_revision || principal.owner_id.is_none() {
+        return Err(
+            audited_failure(&audit, "rollback_conflict", ApiError::CandidateConflict).await,
+        );
+    }
+
+    let revisions = state.control.revisions();
+    let target_id = id.clone();
+    let binding_hash = match tokio::task::spawn_blocking(move || {
+        let metadata = revisions.metadata(&target_id)?;
+        revisions.load(&target_id)?;
+        Ok::<_, RevisionError>(metadata.binding_hash)
+    })
+    .await
+    {
+        Ok(Ok(Some(hash))) => hash,
+        Ok(Ok(None)) => {
+            return Err(
+                audited_failure(&audit, "rollback_conflict", ApiError::CandidateConflict).await,
+            );
+        }
+        Ok(Err(RevisionError::InvalidStored(_))) => {
+            return Err(audited_failure(&audit, "revision_not_found", ApiError::NotFound).await);
+        }
+        Ok(Err(RevisionError::Io(error))) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(audited_failure(&audit, "revision_not_found", ApiError::NotFound).await);
+        }
+        Ok(Err(_)) | Err(_) => {
+            return Err(
+                audited_failure(&audit, "revision_store_failed", ApiError::Unavailable).await,
+            );
+        }
+    };
+    let store = Arc::clone(&state.proxy_hosts);
+    let target_id = id.clone();
+    let target =
+        match tokio::task::spawn_blocking(move || store.load_candidate(&target_id, &binding_hash))
+            .await
+        {
+            Ok(Ok(target)) => target,
+            Ok(Err(ProxyHostStoreError::Io(error)))
+                if error.kind() == std::io::ErrorKind::NotFound =>
+            {
+                return Err(audited_failure(
+                    &audit,
+                    "rollback_conflict",
+                    ApiError::CandidateConflict,
+                )
+                .await);
+            }
+            Ok(Err(_)) | Err(_) => {
+                return Err(audited_failure(
+                    &audit,
+                    "candidate_binding_failed",
+                    ApiError::Unavailable,
+                )
+                .await);
+            }
+        };
+    let store = Arc::clone(&state.proxy_hosts);
+    let current = match tokio::task::spawn_blocking(move || store.snapshot()).await {
+        Ok(snapshot) => snapshot,
+        Err(_) => {
+            return Err(audited_failure(&audit, "object_store_failed", ApiError::Internal).await);
+        }
+    };
+    let current_objects = current
+        .objects()
+        .iter()
+        .map(|stored| stored.object.clone())
+        .collect::<Vec<_>>();
+    let target_objects = target.objects().to_vec();
+    let active = state.control.runtime().config();
+    let (config, target_objects) = match tokio::task::spawn_blocking(move || {
+        crate::proxy_host::prepare_proxy_host_set(&current_objects, &target_objects, &active)
+            .map(|candidate| (candidate.config().clone(), candidate.objects().to_vec()))
+    })
+    .await
+    {
+        Ok(Ok(candidate)) => candidate,
+        Ok(Err(_)) => {
+            return Err(
+                audited_failure(&audit, "invalid_proxy_host", ApiError::InvalidRequest).await,
+            );
+        }
+        Err(_) => return Err(audited_failure(&audit, "compile_failed", ApiError::Internal).await),
+    };
+    let forward_binding = match ProxyHostStore::binding_hash(&target_objects) {
+        Ok(hash) => hash,
+        Err(_) => {
+            return Err(
+                audited_failure(&audit, "invalid_proxy_host", ApiError::InvalidRequest).await,
+            );
+        }
+    };
+    let revisions = state.control.revisions();
+    let source = format!("rollback:proxy-host:{id}");
+    let revision_binding = forward_binding.clone();
+    let forward = match tokio::task::spawn_blocking(move || {
+        revisions.create_bound_forward_revision(&config, &source, &revision_binding)
+    })
+    .await
+    {
+        Ok(Ok(metadata)) => metadata,
+        Ok(Err(RevisionError::InvalidConfig(_))) => {
+            return Err(
+                audited_failure(&audit, "invalid_candidate", ApiError::InvalidRequest).await,
+            );
+        }
+        Ok(Err(_)) | Err(_) => {
+            return Err(
+                audited_failure(&audit, "revision_store_failed", ApiError::Unavailable).await,
+            );
+        }
+    };
+    let store = Arc::clone(&state.proxy_hosts);
+    let forward_id = forward.id.clone();
+    let snapshot_binding = forward_binding;
+    let bound_objects = target_objects.clone();
+    match tokio::task::spawn_blocking(move || {
+        store.bind_candidate(&forward_id, &snapshot_binding, &bound_objects)
+    })
+    .await
+    {
+        Ok(Ok(_)) => {}
+        Ok(Err(_)) | Err(_) => {
+            return Err(
+                audited_failure(&audit, "candidate_binding_failed", ApiError::Unavailable).await,
+            );
+        }
+    }
+    if state.control.runtime().revision().as_ref() != expected_revision {
+        return Err(audited_failure(&audit, "revision_conflict", ApiError::Conflict).await);
+    }
+    let store = Arc::clone(&state.proxy_hosts);
+    let rollback_revision = forward.id.clone();
+    let rollback_objects = target_objects;
+    let expected_epoch = current.epoch();
+    match tokio::task::spawn_blocking(move || {
+        store.begin_rollback(&rollback_revision, &rollback_objects, expected_epoch)
+    })
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(ProxyHostStoreError::Conflict)) => {
+            return Err(audited_failure(&audit, "object_conflict", ApiError::ObjectConflict).await);
+        }
+        Ok(Err(_)) | Err(_) => {
+            return Err(
+                audited_failure(&audit, "object_store_failed", ApiError::Unavailable).await,
+            );
+        }
+    }
+    let result = match state
+        .control
+        .coordinator()
+        .activate(&forward.id, Some(&expected_revision))
+        .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            if matches!(error, ActivationError::RecoveryRequired) {
+                return Err(audited_failure(
+                    &audit,
+                    "rollback_recovery_required",
+                    ApiError::Unavailable,
+                )
+                .await);
+            }
+            let store = Arc::clone(&state.proxy_hosts);
+            let forward_id = forward.id.clone();
+            let recovered =
+                tokio::task::spawn_blocking(move || store.abort_rollback(&forward_id)).await;
+            if !matches!(recovered, Ok(Ok(()))) {
+                return Err(audited_failure(
+                    &audit,
+                    "rollback_recovery_failed",
+                    ApiError::Unavailable,
+                )
+                .await);
+            }
+            let (code, error) = activation_error(error);
+            return Err(audited_failure(&audit, code, error).await);
+        }
+    };
+    let store = Arc::clone(&state.proxy_hosts);
+    let forward_id = forward.id.clone();
+    if !matches!(
+        tokio::task::spawn_blocking(move || store.commit_rollback(&forward_id)).await,
+        Ok(Ok(()))
+    ) {
+        return Err(audited_failure(&audit, "rollback_commit_failed", ApiError::Unavailable).await);
+    }
+    audit
+        .record(AuditOutcome::Success, Some(result.active.clone()), None)
+        .await?;
+    let mut response = axum::Json(ActivationResponse {
+        active: result.active.clone(),
+        previous: result.previous,
+    })
+    .into_response();
+    response
+        .headers_mut()
+        .insert(ETAG, etag(&result.active).ok_or(ApiError::Internal)?);
+    Ok(response)
+}
+
 pub(super) async fn preview_proxy_host(
     State(state): State<AppState>,
     PreviewProxyHostPrincipal(principal): PreviewProxyHostPrincipal,

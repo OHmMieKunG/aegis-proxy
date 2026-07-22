@@ -603,11 +603,15 @@ pub async fn serve(
         .map_err(|error| AdminServerError::Initialization(error.to_string()))?
         .map_err(|_| AdminServerError::Token)?;
     let proxy_host_path = state_dir.join("admin/proxy-hosts.json");
-    let proxy_host_store =
-        tokio::task::spawn_blocking(move || ProxyHostStore::open(proxy_host_path))
-            .await
-            .map_err(|error| AdminServerError::Initialization(error.to_string()))?
-            .map_err(|_| AdminServerError::ProxyHosts)?;
+    let active_revision = control.runtime().revision().to_string();
+    let proxy_host_store = tokio::task::spawn_blocking(move || {
+        let store = ProxyHostStore::open(proxy_host_path)?;
+        store.recover_rollback(&active_revision)?;
+        Ok::<_, ProxyHostStoreError>(store)
+    })
+    .await
+    .map_err(|error| AdminServerError::Initialization(error.to_string()))?
+    .map_err(|_| AdminServerError::ProxyHosts)?;
     let audit = match config.admin.audit_key.clone() {
         Some(reference) => {
             let audit_path = state_dir.join("audit/admin.jsonl");
@@ -675,6 +679,10 @@ pub async fn serve(
         .route(
             "/v1/proxy-hosts/candidates/{id}/activate",
             post(activate_proxy_host_candidate),
+        )
+        .route(
+            "/v1/proxy-hosts/revisions/{id}/rollback",
+            post(rollback_proxy_hosts),
         )
         .route("/v1/config/candidates", post(create_candidate))
         .route(

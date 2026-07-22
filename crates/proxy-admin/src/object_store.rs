@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -22,6 +22,7 @@ use crate::{ApiObject, ObjectId, ProxyHostSpec};
 const STORE_SCHEMA_VERSION: u32 = 1;
 pub(crate) const MAX_PROXY_HOSTS: usize = 4_096;
 const MAX_STORE_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_TRANSACTION_BYTES: u64 = 4 * 1024 * 1024 + 64 * 1024;
 const MAX_CANDIDATE_SNAPSHOTS: usize = 1_000;
 
 /// One persisted Proxy Host desired-state generation.
@@ -138,6 +139,15 @@ struct ProxyHostCandidateFile {
     objects: Vec<ApiObject<ProxyHostSpec>>,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProxyHostTransactionFile {
+    schema_version: u32,
+    target_revision: String,
+    previous: Vec<StoredProxyHost>,
+    target: Vec<StoredProxyHost>,
+}
+
 #[derive(Serialize)]
 struct ProxyHostBinding<'a> {
     schema_version: u32,
@@ -152,6 +162,7 @@ pub struct ProxyHostStore {
     candidate_dir: PathBuf,
     objects: Mutex<ObjectIndex>,
     epoch: AtomicU64,
+    rollback_pending: AtomicBool,
 }
 
 impl fmt::Debug for ProxyHostStore {
@@ -181,11 +192,21 @@ impl ProxyHostStore {
             .ok_or(ProxyHostStoreError::Invalid)?
             .join("proxy-host-candidates");
         let objects = load_file(&path)?;
+        let rollback_pending = match fs::symlink_metadata(
+            path.parent()
+                .ok_or(ProxyHostStoreError::Invalid)?
+                .join("proxy-host-rollback.json"),
+        ) {
+            Ok(_) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error.into()),
+        };
         Ok(Self {
             path,
             candidate_dir,
             objects: Mutex::new(index_objects(objects)?),
             epoch: AtomicU64::new(0),
+            rollback_pending: AtomicBool::new(rollback_pending),
         })
     }
 
@@ -218,6 +239,7 @@ impl ProxyHostStore {
             .objects
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.ensure_no_transaction()?;
         let next_epoch = self.next_epoch(expected_epoch)?;
         let count = object_count(&objects);
         if count >= MAX_PROXY_HOSTS
@@ -280,6 +302,7 @@ impl ProxyHostStore {
             .objects
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.ensure_no_transaction()?;
         let next_epoch = self.next_epoch(expected_epoch)?;
         let previous = objects
             .get(&owner_id)
@@ -348,6 +371,7 @@ impl ProxyHostStore {
             .objects
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.ensure_no_transaction()?;
         let next_epoch = self.next_epoch(expected_epoch)?;
         let previous = objects
             .get(owner_id)
@@ -426,6 +450,12 @@ impl ProxyHostStore {
                 .cloned()
                 .collect(),
         }
+    }
+
+    /// Whether an interrupted typed rollback blocks all administrative mutation.
+    #[must_use]
+    pub fn rollback_pending(&self) -> bool {
+        self.rollback_pending.load(Ordering::Acquire)
     }
 
     /// Return the canonical typed desired-state hash used by revision metadata.
@@ -531,6 +561,152 @@ impl ProxyHostStore {
         self.candidate_dir.join(format!("{revision_id}.json"))
     }
 
+    /// Durably replace complete desired state under a recovery journal.
+    pub fn begin_rollback(
+        &self,
+        target_revision: &str,
+        target_objects: &[ApiObject<ProxyHostSpec>],
+        expected_epoch: u64,
+    ) -> Result<(), ProxyHostStoreError> {
+        validate_revision_id(target_revision)?;
+        let canonical = canonical_objects(target_objects)?;
+        let mut objects = self
+            .objects
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let next_epoch = self.next_epoch(Some(expected_epoch))?;
+        let transaction_path = self.transaction_path()?;
+        match fs::symlink_metadata(&transaction_path) {
+            Ok(_) => return Err(ProxyHostStoreError::Conflict),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        let target = rollback_index(&objects, canonical)?;
+        let journal = ProxyHostTransactionFile {
+            schema_version: STORE_SCHEMA_VERSION,
+            target_revision: target_revision.to_owned(),
+            previous: flatten_index(&objects),
+            target: flatten_index(&target),
+        };
+        persist_transaction(&transaction_path, &journal)?;
+        self.rollback_pending.store(true, Ordering::Release);
+        if let Err(error) = persist(&self.path, &target) {
+            if remove_private_file(&transaction_path).is_ok() {
+                self.rollback_pending.store(false, Ordering::Release);
+            }
+            return Err(error);
+        }
+        *objects = target;
+        self.epoch.store(next_epoch, Ordering::Release);
+        Ok(())
+    }
+
+    /// Commit a rollback desired-state transaction after runtime activation succeeds.
+    pub fn commit_rollback(&self, target_revision: &str) -> Result<(), ProxyHostStoreError> {
+        let journal = self
+            .load_transaction()?
+            .ok_or(ProxyHostStoreError::Conflict)?;
+        if journal.target_revision != target_revision {
+            return Err(ProxyHostStoreError::Conflict);
+        }
+        remove_private_file(&self.transaction_path()?)?;
+        self.rollback_pending.store(false, Ordering::Release);
+        Ok(())
+    }
+
+    /// Restore pre-rollback desired state after runtime activation fails.
+    pub fn abort_rollback(&self, target_revision: &str) -> Result<(), ProxyHostStoreError> {
+        let journal = self
+            .load_transaction()?
+            .ok_or(ProxyHostStoreError::Conflict)?;
+        if journal.target_revision != target_revision {
+            return Err(ProxyHostStoreError::Conflict);
+        }
+        let previous = index_objects(journal.previous)?;
+        let mut objects = self
+            .objects
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        persist(&self.path, &previous)?;
+        *objects = previous;
+        let next = self.next_epoch(None)?;
+        self.epoch.store(next, Ordering::Release);
+        remove_private_file(&self.transaction_path()?)?;
+        self.rollback_pending.store(false, Ordering::Release);
+        Ok(())
+    }
+
+    /// Recover an interrupted rollback according to the durably active revision.
+    pub fn recover_rollback(&self, active_revision: &str) -> Result<(), ProxyHostStoreError> {
+        let Some(journal) = self.load_transaction()? else {
+            return Ok(());
+        };
+        let recovered = if journal.target_revision == active_revision {
+            index_objects(journal.target)?
+        } else {
+            index_objects(journal.previous)?
+        };
+        let mut objects = self
+            .objects
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        persist(&self.path, &recovered)?;
+        *objects = recovered;
+        let next = self.next_epoch(None)?;
+        self.epoch.store(next, Ordering::Release);
+        remove_private_file(&self.transaction_path()?)?;
+        self.rollback_pending.store(false, Ordering::Release);
+        Ok(())
+    }
+
+    fn load_transaction(&self) -> Result<Option<ProxyHostTransactionFile>, ProxyHostStoreError> {
+        let path = self.transaction_path()?;
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        if !metadata.is_file()
+            || metadata.file_type().is_symlink()
+            || metadata.len() > MAX_TRANSACTION_BYTES
+        {
+            return Err(ProxyHostStoreError::Invalid);
+        }
+        reject_insecure_file_permissions(&metadata)?;
+        let mut bytes = Vec::new();
+        File::open(path)?
+            .take(MAX_TRANSACTION_BYTES.saturating_add(1))
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_TRANSACTION_BYTES {
+            return Err(ProxyHostStoreError::Limit);
+        }
+        let journal: ProxyHostTransactionFile =
+            serde_json::from_slice(&bytes).map_err(|_| ProxyHostStoreError::Invalid)?;
+        if journal.schema_version != STORE_SCHEMA_VERSION {
+            return Err(ProxyHostStoreError::Invalid);
+        }
+        validate_revision_id(&journal.target_revision)?;
+        index_objects(journal.previous.clone())?;
+        index_objects(journal.target.clone())?;
+        Ok(Some(journal))
+    }
+
+    fn transaction_path(&self) -> Result<PathBuf, ProxyHostStoreError> {
+        Ok(self
+            .path
+            .parent()
+            .ok_or(ProxyHostStoreError::Invalid)?
+            .join("proxy-host-rollback.json"))
+    }
+
+    fn ensure_no_transaction(&self) -> Result<(), ProxyHostStoreError> {
+        match fs::symlink_metadata(self.transaction_path()?) {
+            Ok(_) => Err(ProxyHostStoreError::Conflict),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     fn next_epoch(&self, expected: Option<u64>) -> Result<u64, ProxyHostStoreError> {
         let current = self.epoch.load(Ordering::Acquire);
         if expected.is_some_and(|expected| expected != current) {
@@ -585,6 +761,34 @@ fn directory_entry_count(path: &Path) -> Result<usize, ProxyHostStoreError> {
 
 fn object_count(objects: &ObjectIndex) -> usize {
     objects.values().map(BTreeMap::len).sum()
+}
+
+fn flatten_index(objects: &ObjectIndex) -> Vec<StoredProxyHost> {
+    objects
+        .values()
+        .flat_map(BTreeMap::values)
+        .cloned()
+        .collect()
+}
+
+fn rollback_index(
+    current: &ObjectIndex,
+    target: Vec<ApiObject<ProxyHostSpec>>,
+) -> Result<ObjectIndex, ProxyHostStoreError> {
+    let mut stored = Vec::with_capacity(target.len());
+    for object in target {
+        let generation = current
+            .get(&object.metadata.owner_id)
+            .and_then(|owned| owned.get(&object.metadata.id))
+            .map_or(Ok(1), |value| {
+                value
+                    .generation
+                    .checked_add(1)
+                    .ok_or(ProxyHostStoreError::Limit)
+            })?;
+        stored.push(StoredProxyHost { generation, object });
+    }
+    index_objects(stored)
 }
 
 fn validate_object(object: &ApiObject<ProxyHostSpec>) -> Result<(), ProxyHostStoreError> {
@@ -704,6 +908,42 @@ fn persist(path: &Path, objects: &ObjectIndex) -> Result<(), ProxyHostStoreError
         let _ = fs::remove_file(&temporary);
     }
     result.map_err(ProxyHostStoreError::Io)
+}
+
+fn persist_transaction(
+    path: &Path,
+    journal: &ProxyHostTransactionFile,
+) -> Result<(), ProxyHostStoreError> {
+    let parent = path.parent().ok_or(ProxyHostStoreError::Invalid)?;
+    create_private_directory(parent)?;
+    let bytes = serde_json::to_vec_pretty(journal).map_err(|_| ProxyHostStoreError::Invalid)?;
+    if bytes.len() as u64 > MAX_TRANSACTION_BYTES {
+        return Err(ProxyHostStoreError::Limit);
+    }
+    let mut suffix = [0_u8; 8];
+    getrandom::fill(&mut suffix).map_err(|_| ProxyHostStoreError::Invalid)?;
+    let temporary = parent.join(format!(
+        ".proxy-host-rollback-{}.tmp",
+        URL_SAFE_NO_PAD.encode(suffix)
+    ));
+    let result = write_private_file(&temporary, &bytes).and_then(|()| {
+        fs::rename(&temporary, path)?;
+        File::open(parent)?.sync_all()
+    });
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result.map_err(ProxyHostStoreError::Io)
+}
+
+fn remove_private_file(path: &Path) -> Result<(), ProxyHostStoreError> {
+    match fs::remove_file(path) {
+        Ok(()) => File::open(path.parent().ok_or(ProxyHostStoreError::Invalid)?)
+            .and_then(|directory| directory.sync_all())
+            .map_err(ProxyHostStoreError::Io),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 #[cfg(unix)]
@@ -1031,6 +1271,80 @@ mod tests {
             reopened.load_candidate(&revision, &binding_hash),
             Err(ProxyHostStoreError::Invalid)
         ));
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn rollback_journal_aborts_and_recovers_by_active_revision() {
+        let (path, root) = temporary_store("rollback-journal");
+        let store = ProxyHostStore::open(&path).expect("store");
+        let owner: ObjectId = "alice".parse().expect("owner");
+        let id: ObjectId = "proxy-a".parse().expect("id");
+        store
+            .create(object("proxy-a", "alice", "a.example.test"))
+            .expect("create");
+        let target_revision = format!("{:020}-{}", 1, "ab".repeat(32));
+        let other_revision = format!("{:020}-{}", 2, "cd".repeat(32));
+        let target = vec![object("proxy-a", "alice", "target.example.test")];
+
+        store
+            .begin_rollback(&target_revision, &target, 1)
+            .expect("begin rollback");
+        assert!(store.rollback_pending());
+        assert!(matches!(
+            store.create(object("blocked", "alice", "blocked.example.test")),
+            Err(ProxyHostStoreError::Conflict)
+        ));
+        assert_eq!(
+            store
+                .get(&owner, &id)
+                .map(|stored| (stored.generation, stored.object.spec.domain)),
+            Some((2, "target.example.test".into()))
+        );
+        store
+            .abort_rollback(&target_revision)
+            .expect("abort rollback");
+        assert!(!store.rollback_pending());
+        assert_eq!(
+            store
+                .get(&owner, &id)
+                .map(|stored| (stored.generation, stored.object.spec.domain)),
+            Some((1, "a.example.test".into()))
+        );
+
+        let epoch = store.snapshot().epoch();
+        store
+            .begin_rollback(&target_revision, &target, epoch)
+            .expect("begin interrupted rollback");
+        drop(store);
+        let reopened = ProxyHostStore::open(&path).expect("reopen");
+        reopened
+            .recover_rollback(&other_revision)
+            .expect("recover previous");
+        assert_eq!(
+            reopened
+                .get(&owner, &id)
+                .map(|stored| stored.object.spec.domain),
+            Some("a.example.test".into())
+        );
+
+        let epoch = reopened.snapshot().epoch();
+        reopened
+            .begin_rollback(&target_revision, &target, epoch)
+            .expect("begin committed rollback");
+        drop(reopened);
+        let committed = ProxyHostStore::open(&path).expect("reopen committed");
+        committed
+            .recover_rollback(&target_revision)
+            .expect("recover target");
+        assert_eq!(
+            committed
+                .get(&owner, &id)
+                .map(|stored| stored.object.spec.domain),
+            Some("target.example.test".into())
+        );
+        assert!(!root.join("admin/proxy-host-rollback.json").exists());
 
         fs::remove_dir_all(root).expect("cleanup");
     }

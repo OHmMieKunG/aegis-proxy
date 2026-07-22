@@ -218,6 +218,16 @@ impl RevisionStore {
         self.persist_candidate(config, source, None, false)
     }
 
+    /// Persist a new bound forward revision even when retained content matches.
+    pub fn create_bound_forward_revision(
+        &self,
+        config: &Config,
+        source: &str,
+        binding_hash: &str,
+    ) -> Result<RevisionMetadata, RevisionError> {
+        self.persist_candidate(config, source, Some(binding_hash), false)
+    }
+
     fn persist_candidate(
         &self,
         config: &Config,
