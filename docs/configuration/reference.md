@@ -70,6 +70,10 @@ Create requires exact active-revision and complete desired-state optimistic conc
 the canonical immutable candidate before generation-one object state, then returns both metadata
 records. Update replaces the exact owner/object identity; delete removes it. Both additionally
 require the current object generation, return candidate metadata, and never change active revision.
+Every typed candidate has a strict immutable snapshot of its complete owner/object-ordered desired
+state. Its SHA-256 binding is recorded in revision metadata. Snapshot files contain the seven-field
+objects but no object generations or secret plaintext, are capped at 2 MiB each, and the directory
+is capped at 1,000 entries. Missing or invalid bindings fail typed activation.
 The Admin-only `proxy-host activate --expect REV CANDIDATE` command activates a candidate only after
 the server recompiles all stored Proxy Hosts and verifies exact canonical content. It uses the
 normal atomic activation coordinator and does not change desired objects. Stale, orphaned,

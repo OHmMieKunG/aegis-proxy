@@ -115,9 +115,12 @@ Admin-only typed activation recompiles the complete stored desired set against t
 configuration, requires exact active-revision CAS, verifies immutable candidate content, rejects
 stale/orphan/repeated candidates, and delegates to the existing atomic activation coordinator.
 All administrative mutations are serialized while their durable audit transaction is open.
+Typed candidates now carry an optional validated desired-state binding hash in immutable revision
+metadata. Typed create/update/delete persist a strict private owner/object-ordered snapshot before
+changing desired state; activation requires that snapshot to equal complete current desired state.
 
-**Remaining units:** add typed rollback with desired-state history; access-policy and
-certificate objects; remaining domain objects; remaining OpenAPI and CLI contracts;
+**Remaining units:** add crash-safe typed rollback using bound desired-state history; access-policy
+and certificate objects; remaining domain objects; remaining OpenAPI and CLI contracts;
 migration/compatibility policy and tests; full authorization/security review.
 
 **Objective:** provide versioned high-level objects usable by GUI and advanced automation.

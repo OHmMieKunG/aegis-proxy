@@ -30,6 +30,8 @@
   owner-scoped mutation, immutable candidates, and non-activation evidence.
 - [Phase 15 Proxy Host activation](reviews/phase-15-proxy-host-activation.md): complete desired-state
   verification, serialized audit boundary, atomic activation reuse, and rejection evidence.
+- [Phase 15 typed candidate binding](reviews/phase-15-proxy-host-candidate-binding.md): immutable
+  desired-state snapshots, metadata linkage, tamper rejection, and compatibility evidence.
 
 ## Operators
 

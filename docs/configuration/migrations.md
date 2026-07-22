@@ -51,3 +51,9 @@ downgrade or repair is attempted. Administration opens the store at
 than being skipped. Read/create endpoints do not migrate or repair it. Process-local store epoch is
 concurrency state, is not serialized, and resets safely on restart because no in-flight request
 survives restart. A release migration command must exist before schema can change incompatibly.
+
+Typed candidate snapshots use strict schema version 1 under
+`<state_dir>/admin/proxy-host-candidates/`. Revision metadata's optional `binding_hash` is additive:
+old low-level revisions without it still load and remain usable through low-level configuration
+operations, but typed activation rejects them. No automatic binding is inferred from runtime
+configuration because disabled typed objects cannot be recovered from generated routes.

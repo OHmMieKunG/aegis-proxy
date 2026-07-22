@@ -147,15 +147,16 @@ Cargo tools `nextest`, `audit`, `deny`, `machete`, `llvm-cov`, and `fuzz`, plus 
 
 ## Known limitations and completion decision
 
-Typed candidate revisions do not yet retain a durable typed desired-state snapshot. Therefore a
-safe high-level rollback cannot restore both desired objects and runtime configuration and remains
-deferred. Access-policy and managed-HTTPS endpoints still fail closed. Activation is global and
-Admin-only. Historical low-level configuration activation/rollback remains available separately.
+At the activation commit, typed candidate revisions did not retain a durable typed desired-state
+snapshot. Subsequent commit `80a7f27` adds that binding and makes activation require it; see
+[typed candidate binding](phase-15-proxy-host-candidate-binding.md). Crash-safe high-level rollback
+still needs a transaction restoring both desired objects and runtime configuration. Access-policy
+and managed-HTTPS endpoints still fail closed. Activation is global and Admin-only. Historical
+low-level configuration activation/rollback remains available separately.
 
 Phase 15 growth places `server/handlers.rs` at 1,629 lines and CLI `main.rs` at 1,257 lines. Their
 transport ownership is an explicit temporary exception; split them after Phase 15 contracts
 stabilize and before Phase 15 exit.
 
-The typed activation unit meets its gate. Phase 15 is not complete. The next dependency is durable
-binding of typed desired-state snapshots to candidate revisions so typed rollback can restore both
-planes atomically through the existing coordinator.
+The typed activation unit meets its gate. Phase 15 is not complete. Its binding dependency is now
+implemented; crash-safe forward rollback remains next.

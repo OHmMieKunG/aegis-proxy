@@ -50,6 +50,10 @@ plaintext credential field.
 Typed activation accepts only an opaque revision ID and metadata-only desired-state snapshot. It
 recompiles and hashes the already validated configuration without resolving secret references;
 errors and audit records use fixed codes, not configuration or secret contents.
+Immutable typed candidate snapshots contain only strict seven-field Proxy Host objects. Their hash
+is bound into revision metadata, and activation verifies file schema, permissions, size, revision
+identity, hash, canonical object order, and equality with current desired state. The snapshot has no
+field capable of carrying secret plaintext.
 
 Never put secret values in TOML, command arguments, logs, traces, audit records, screenshots,
 tickets, backups without encryption, or repository fixtures. See

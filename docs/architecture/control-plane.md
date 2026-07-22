@@ -64,6 +64,13 @@ epoch-checked object write. Failure can leave an immutable non-active orphan can
 durable object without its candidate. Activation remains available only through the established
 revision coordinator and is not performed by this endpoint.
 
+Each typed candidate revision stores an optional lowercase SHA-256 `binding_hash` in immutable
+revision metadata. Before desired-state mutation, administration writes a strict schema-v1,
+owner/object-ordered snapshot under the private bounded `admin/proxy-host-candidates` directory.
+The hash covers schema version and the complete seven-field object set, including disabled objects
+that generate no runtime resources. Low-level configuration candidates remain unbound. Identical
+configuration with different typed state is not deduplicated into one revision.
+
 `PUT` and `DELETE /v1/proxy-hosts/{id}` follow the same ordering. They require
 `X-Aegis-Object-Generation` in addition to active-revision `If-Match`. Update enforces path/body
 identity and owner equality; delete resolves only within authenticated owner. Stale generation or
@@ -74,10 +81,11 @@ Admin role plus exact `activate_proxy_host` scope for tokens and exact active-re
 While the durable mutation audit is open, a single bounded permit serializes administrative
 mutations. The handler snapshots every stored Proxy Host, recompiles the complete desired set
 against the active configuration, compares canonical content hashes with the immutable revision,
-then invokes the existing activation coordinator. Missing, stale, orphaned, already-active, or
-unauthorized candidates fail without publication. The compiler itself still has no activation or
-persistence capability. Operator activation stays disabled until candidates carry safe ownership
-and approval metadata.
+requires the bound snapshot to equal complete current desired state, then invokes the existing
+activation coordinator. Missing, stale, orphaned, already-active, tampered, or unauthorized
+candidates fail without publication. The compiler itself still has no activation or persistence
+capability. Operator activation stays disabled until candidates carry safe ownership and approval
+metadata.
 
 Machine contract: [`config/schema/admin-openapi.yaml`](../../config/schema/admin-openapi.yaml).
 The checked contract requires nonempty canonical scopes when creating tokens and returns only token

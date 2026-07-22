@@ -39,5 +39,8 @@ AegisProxy has not published a supported release.
   state, verifies the immutable candidate hash, serializes mutations, and delegates publication to
   the existing atomic activation coordinator; stale, orphaned, repeated, or unauthorized requests
   fail without runtime change.
+- Bound typed candidates to strict immutable desired-state snapshots through a validated metadata
+  hash. Creation persists the binding before desired-state mutation, and activation rejects
+  missing, mismatched, or tampered bindings.
 
 See [`STATUS.md`](STATUS.md) and [`docs/history/`](docs/history/README.md).

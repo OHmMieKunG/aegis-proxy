@@ -6,7 +6,9 @@ Verification basis: Phase 14 plus Phase 15 compiler `fa7913f`, preview service `
 `2617f0e`, API-token scopes `81bd500`, owned Proxy Host endpoints `00cfa32`, typed object store
 `5c8898b`, owner-scoped typed reads `d1514dd`, aggregate compiler `35d7d38`, mutation-scope fix
 `106f2fa`, desired-state snapshot CAS `f204012`, audited typed create `068f408`, audited typed
-update/delete `7e8b47d`, and verified typed activation `7c6f613`
+update/delete `7e8b47d`, verified typed activation `7c6f613`, and immutable typed candidate binding
+`80a7f27`.
+
 Working tree at Phase 14 start: clean at `10aae8c`
 
 ## Release status
@@ -60,8 +62,10 @@ evidence.
   unchanged. Admin-only typed activation now recompiles the complete stored desired set, verifies
   candidate content, serializes administrative mutations, and invokes only the existing atomic
   activation coordinator. Stale, orphaned, repeated, or unauthorized candidates cannot change the
-  runtime. Typed desired-state rollback, certificate/access-policy ownership metadata, and a
-  complete ownership matrix do not exist yet.
+  runtime. Typed candidate revision metadata now binds a strict private immutable snapshot of the
+  complete desired objects; mismatched or tampered bindings fail activation. Crash-safe typed
+  desired-state rollback, certificate/access-policy ownership metadata, and a complete ownership
+  matrix do not exist yet.
 - Preview returns redacted config, fingerprints, and activation class; a separate pure function
   produces the ordered typed diff. Neither can persist or activate candidates.
 - Restore validates archives but does not extract or activate them.
@@ -83,7 +87,7 @@ evidence.
 [Phase 15 stable typed control plane](PLAN.md#phase-15--stable-typed-control-plane). Phase 14
 completed behavior-preserving modularization: inline tests are focused and production ownership is
 split by domain. At Phase 14 completion no production Rust module exceeded 1,200 measured lines.
-Phase 15 endpoint growth now places `server/handlers.rs` at 1,629 lines and CLI `main.rs` at 1,257;
+Phase 15 endpoint growth now places `server/handlers.rs` at 1,691 lines and CLI `main.rs` at 1,257;
 their single transport-orchestration ownership is an explicit temporary exception that must be
 split after Phase 15 contracts stabilize. See the [completion evidence](docs/reviews/phase-14-completion.md).
 
@@ -103,7 +107,7 @@ split after Phase 15 contracts stabilize. See the [completion evidence](docs/rev
 | `cargo fmt --all -- --check` | passed |
 | `cargo check --workspace --all-targets --all-features` | passed; transitive warning below |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | passed |
-| `cargo test --workspace --all-features` | passed: 295 passed, 2 intentionally ignored |
+| `cargo test --workspace --all-features` | passed: 297 passed, 2 intentionally ignored |
 | `cargo test --workspace --doc` | passed; no doctests defined |
 | valid configuration corpus | seven accepted |
 | invalid configuration corpus | three rejected as expected |

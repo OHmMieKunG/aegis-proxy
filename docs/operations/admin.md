@@ -73,15 +73,17 @@ creating a revision, or activating runtime configuration. Current endpoint polic
 access-policy references and managed HTTPS until typed ownership metadata is implemented.
 Create additionally requires `create-proxy-host`, matching owner, exact active revision, durable
 audit intent, complete-state compilation, and an unchanged object-store epoch. It creates an
-immutable candidate before generation-one desired state and returns without activation. Failed
+immutable candidate plus private desired-state binding before generation-one desired state and
+returns without activation. Failed
 authorization, validation, or concurrency cannot modify desired or active state; a late store
 failure may leave only an immutable non-active candidate for retention cleanup.
 Update/delete use distinct `update-proxy-host`/`delete-proxy-host` scopes and additionally require
 exact `--generation`. A stale generation returns conflict before candidate or object persistence.
 Activation requires Admin role and the distinct `activate-proxy-host` scope for bearer tokens.
 Exact active revision, current complete desired-state compilation, immutable candidate hash, and
-unchanged desired-state epoch must all match. The request serializes with other audited mutations,
-then invokes the normal atomic coordinator. Operator tokens cannot activate typed candidates.
+immutable bound object snapshot plus unchanged desired-state epoch must all match. The request
+serializes with other audited mutations, then invokes the normal atomic coordinator. Operator
+tokens cannot activate typed candidates.
 
 ## Recovery and review
 
