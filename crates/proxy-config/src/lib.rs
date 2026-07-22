@@ -33,11 +33,11 @@ use validation_acme::validate_acme;
 use validation_middleware::validate_middleware;
 pub use validation_platform::estimated_metric_series;
 use validation_platform::{validate_admin, validate_observability, validate_providers};
-pub use validation_routing::validate_egress_ip;
 use validation_routing::{
     valid_certificate_host, valid_id, valid_upstream_host, validate_route_matchers,
     validate_tcp_route, validate_unique_strings, validate_upstream_policy,
 };
+pub use validation_routing::{validate_egress_ip, validate_exact_host, validate_upstream_hostname};
 
 /// Maximum configuration bytes accepted by the offline parser.
 pub const MAX_CONFIG_BYTES: usize = 2 * 1024 * 1024;

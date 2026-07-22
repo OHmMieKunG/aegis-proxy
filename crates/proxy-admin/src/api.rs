@@ -251,6 +251,9 @@ mod tests {
 
         let bad_id = OBJECT.replace("proxy-home", "../proxy-home");
         assert!(serde_json::from_str::<ApiObject<ProxyHostSpec>>(&bad_id).is_err());
+
+        let unsupported_protocol = OBJECT.replace("\"http\"", "\"ftp\"");
+        assert!(serde_json::from_str::<ApiObject<ProxyHostSpec>>(&unsupported_protocol).is_err());
     }
 
     #[test]

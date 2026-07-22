@@ -442,3 +442,18 @@ pub(crate) fn valid_certificate_host(value: &str) -> Result<(), ConfigError> {
     }
     Ok(())
 }
+
+/// Validate one exact canonical ASCII host name used by typed control-plane objects.
+pub fn validate_exact_host(value: &str) -> Result<(), ConfigError> {
+    if value.contains('*') {
+        return Err(ConfigError::Invalid(
+            "wildcard hosts are unsupported for this object".into(),
+        ));
+    }
+    valid_certificate_host(value)
+}
+
+/// Validate one canonical ASCII DNS upstream name without performing resolution.
+pub fn validate_upstream_hostname(value: &str) -> Result<(), ConfigError> {
+    valid_upstream_host(value).map_err(|message| ConfigError::Invalid(message.into()))
+}
