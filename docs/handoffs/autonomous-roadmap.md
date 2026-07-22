@@ -3,12 +3,11 @@
 Updated: 2026-07-22
 
 - Current branch: `work/autonomous-roadmap`
-- Current completed-unit commit: `f380f98`
+- Current completed-unit commit: `cc25c84`
 - Current phase: Phase 15, in progress
-- Completed unit: audited owner-scoped Proxy Host create with immutable non-active candidate
-- Store snapshot commit: `f204012`
-- Endpoint implementation commit: `068f408`
-- Documentation commit: `f380f98`
+- Completed unit: audited owner-scoped Proxy Host update/delete with immutable non-active candidate
+- Implementation commit: `7e8b47d`
+- Documentation commit: `cc25c84`
 - Working tree before this handoff: clean
 
 ## Validation status
@@ -21,17 +20,17 @@ Docker-backed Pebble integration.
 
 ## Remaining Phase 15 work
 
-Audited generation-CAS update/delete; typed activation/rollback with current desired-state
-verification; access-policy/certificate ownership; remaining domain objects and contracts;
-migration/compatibility tests; full authorization/security review.
+Typed activation/rollback with current desired-state verification; access-policy/certificate
+ownership; remaining domain objects and contracts; migration/compatibility tests; transport module
+split; full authorization/security review.
 
 ## Exact next task
 
-Implement owner-scoped Proxy Host update and delete. Add distinct exact action scopes; require
-active-revision `If-Match` plus object-generation precondition; snapshot complete desired state;
-compile/validate replacement or removal; persist immutable non-active candidate before epoch-CAS
-desired-state mutation; audit every outcome; prove runtime remains unchanged. Reuse create ordering
-and extract only duplication that is already real.
+Implement typed Proxy Host candidate activation. Require exact activation scope and active revision,
+load immutable candidate, snapshot and recompile complete current desired state against active
+manual configuration, verify candidate hash/config equality, then invoke existing atomic activation
+coordinator and audit outcome. Reject stale/orphan candidates without runtime change. Define typed
+rollback semantics without creating a second activation system.
 
 ## Known risks
 
@@ -44,6 +43,8 @@ and extract only duplication that is already real.
 - Local Unix peer identity maps to stable `uid-<uid>`; user/session identity remains Phase 15/16.
 - Transitive `proc-macro-error2 2.0.1` has a pre-existing future-incompatibility warning.
 - Product remains production NO-GO pending later phases and independent review.
+- Phase 15 growth puts private handler and CLI dispatch modules above approximate size guidance;
+  split after contracts stabilize and before Phase 15 exit.
 
 ## Unavailable tooling
 
