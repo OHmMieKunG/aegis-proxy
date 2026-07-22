@@ -203,6 +203,7 @@ enum TokenCommand {
         admin: AdminConnection,
         #[arg(long)]
         expect: String,
+        #[arg(allow_hyphen_values = true)]
         id: String,
     },
 }
@@ -1279,4 +1280,30 @@ fn write_certificate(certificate: &aegisproxy_tls::StoredCertificate) -> io::Res
         "imported_unix_secs = {}",
         certificate.imported_unix_secs
     )
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use clap::Parser;
+
+    use super::{Cli, Command, TokenCommand};
+
+    #[test]
+    fn revoke_accepts_generated_token_id_starting_with_hyphen() {
+        let cli = Cli::try_parse_from([
+            "rust-proxy",
+            "token",
+            "revoke",
+            "--expect",
+            "revision",
+            "-generated-token-id",
+        ])
+        .expect("hyphen-prefixed token ID");
+        assert!(matches!(
+            cli.command,
+            Command::Token {
+                command: TokenCommand::Revoke { id, .. }
+            } if id == "-generated-token-id"
+        ));
+    }
 }
