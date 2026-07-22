@@ -99,9 +99,12 @@ owner-indexed reads, deterministic serialization, object-local generation CAS, p
 and rollback of in-memory mutation when atomic persistence fails. Administration opens this store,
 exposes owner-scoped stable list/get operations with object-generation ETags under the exact
 `read_proxy_hosts` scope, and includes stored identity/domain claims in validation and preview.
+The side-effect-free aggregate compiler accepts explicit current and complete desired object sets,
+orders them by owner/object ID, preserves pending objects, strips only complete compiler-shaped
+resources reserved by current objects, rejects manual/tampered collisions, and validates once.
 
-**Remaining units:** aggregate all typed desired state into one canonical candidate; add audited
-generation-CAS mutation and typed candidate/revision/activation endpoints; access-policy and
+**Remaining units:** add audited generation-CAS mutation and typed candidate/revision/activation
+endpoints; access-policy and
 certificate objects; remaining domain objects; remaining OpenAPI and CLI contracts;
 migration/compatibility policy and tests; full authorization/security review.
 

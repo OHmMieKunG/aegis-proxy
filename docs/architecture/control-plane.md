@@ -45,6 +45,15 @@ it at `<state_dir>/admin/proxy-hosts.json`; `GET /v1/proxy-hosts` and
 `GET /v1/proxy-hosts/{id}` return only authenticated owner's records under `read_proxy_hosts`.
 Single-object responses carry generation ETags. No endpoint mutates the store.
 
+`compile_proxy_hosts` is the non-persistent aggregate boundary needed before mutation. Caller passes
+current stored objects separately from complete desired objects. Only current identities reserve
+generated namespaces; a new desired identity cannot claim a manual route/group/endpoint. Existing
+reserved resources are removed only when their route, group, and endpoint form a complete compiler
+shape. Missing resources are allowed for pending state; partial or tampered shapes fail closed.
+Desired objects are owner/object ordered and rebuilt over retained manual configuration before one
+semantic-validation pass. Compiler owns no store, revision, activation, runtime, filesystem,
+environment, DNS, network, or secret handle.
+
 Machine contract: [`config/schema/admin-openapi.yaml`](../../config/schema/admin-openapi.yaml).
 The checked contract requires nonempty canonical scopes when creating tokens and returns only token
 ID, role, owner ID, scopes, expiry, and revocation metadata after the one-time plaintext response.

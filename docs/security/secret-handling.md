@@ -28,6 +28,8 @@ handle, or runtime handle. Candidate and context `Debug` output summarizes IDs/c
 configuration secret references. Typed candidate preview uses the existing complete redaction pass;
 its `Debug` output omits the configuration. Typed field differences use a closed value enum and
 compare only preview summaries; raw configuration and secret fields cannot enter the diff contract.
+Aggregate compilation accepts typed objects and metadata-only policy/certificate maps, returns only
+typed desired state plus canonical configuration, and exposes counts—not configuration—in `Debug`.
 Private typed validation/preview endpoints apply authorization before JSON deserialization, require
 exact principal ownership, and reuse this redaction boundary. They return fixed error envelopes and
 cannot persist or activate. Access-policy and managed-HTTPS preparation remains unavailable until

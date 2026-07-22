@@ -25,5 +25,7 @@ AegisProxy has not published a supported release.
   owner indexing, generation compare-and-swap, atomic replacement, and write-failure rollback.
 - Added owner-scoped Proxy Host list/get API and CLI operations with exact token scope, generation
   ETags, and stored identity/domain conflict checks for typed validation and preview.
+- Added deterministic aggregate Proxy Host compilation that preserves complete pending desired state
+  and rejects unreserved, partial, or tampered generated-resource collisions.
 
 See [`STATUS.md`](STATUS.md) and [`docs/history/`](docs/history/README.md).

@@ -22,6 +22,8 @@
   contract, generation concurrency, and failure evidence.
 - [Phase 15 Proxy Host reads](reviews/phase-15-proxy-host-reads.md): exact read scope, owner-scoped
   API/CLI, stored conflict claims, and validation evidence.
+- [Phase 15 aggregate Proxy Host compiler](reviews/phase-15-proxy-host-aggregate-compiler.md):
+  complete desired-state compilation, managed namespace verification, and pending-state evidence.
 
 ## Operators
 

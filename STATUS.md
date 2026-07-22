@@ -4,7 +4,7 @@ Verification date: 2026-07-22
 Branch: `work/autonomous-roadmap`
 Verification basis: Phase 14 plus Phase 15 compiler `fa7913f`, preview service `d3de105`, typed diff
 `2617f0e`, API-token scopes `81bd500`, owned Proxy Host endpoints `00cfa32`, typed object store
-`5c8898b`, and owner-scoped typed reads `d1514dd`
+`5c8898b`, owner-scoped typed reads `d1514dd`, and aggregate compiler `35d7d38`
 Working tree at Phase 14 start: clean at `10aae8c`
 
 ## Release status
@@ -46,7 +46,9 @@ evidence.
   enforce principal ownership, reject persisted identity/domain conflicts, and cannot persist or
   activate. The bounded private typed object store is opened at administration startup and exposes
   owner-scoped stable list/get operations under the exact `read_proxy_hosts` action; it supports
-  generation CAS internally but has no mutation endpoint yet.
+  generation CAS internally but has no mutation endpoint yet. A side-effect-free aggregate compiler
+  deterministically rebuilds complete desired state, preserves pending objects, and removes only
+  structurally verified namespaces reserved by current stored objects.
   Typed mutation, certificate/access-policy ownership metadata, and a complete ownership matrix do
   not exist yet.
 - Preview returns redacted config, fingerprints, and activation class; a separate pure function
@@ -88,7 +90,7 @@ is split by domain, and no production Rust module exceeds 1,200 measured lines. 
 | `cargo fmt --all -- --check` | passed |
 | `cargo check --workspace --all-targets --all-features` | passed; transitive warning below |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | passed |
-| `cargo test --workspace --all-features` | passed: 291 passed, 2 intentionally ignored |
+| `cargo test --workspace --all-features` | passed: 294 passed, 2 intentionally ignored |
 | `cargo test --workspace --doc` | passed; no doctests defined |
 | valid configuration corpus | seven accepted |
 | invalid configuration corpus | three rejected as expected |

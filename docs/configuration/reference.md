@@ -25,6 +25,13 @@ control-plane state but add no route or upstream. Managed HTTPS selects an exist
 and certificate covering the domain; compilation neither orders nor claims issuance of a
 certificate. Every result passes the normal semantic validator before it becomes a candidate.
 
+Complete desired state may be compiled with explicit current and desired object sets. Current stored
+identities reserve deterministic generated namespaces; only complete compiler-shaped
+route/group/endpoint trios are removed from active input. Missing trios represent pending state.
+Partial/tampered trios and manual collisions fail closed. Desired objects are sorted by owner/object
+ID, every enabled object is rebuilt, disabled objects generate nothing, and semantic validation runs
+once on the complete candidate. This library operation neither persists nor activates.
+
 Library consumers may create a typed preview from a compiled candidate and active configuration.
 Preview revalidates both inputs, returns generated resource IDs, canonical hash, route fingerprints,
 and hot-reload/restart classification, plus a configuration clone where every secret reference is
