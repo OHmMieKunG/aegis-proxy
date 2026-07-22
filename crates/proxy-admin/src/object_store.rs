@@ -6,7 +6,10 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{
+        Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -36,6 +39,37 @@ pub struct ProxyHostClaims {
     pub objects: BTreeSet<(ObjectId, ObjectId)>,
     /// Claimed exact domains and their owner/object identities.
     pub domains: BTreeMap<String, (ObjectId, ObjectId)>,
+}
+
+/// Immutable complete desired-state snapshot used for optimistic compilation.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ProxyHostSnapshot {
+    epoch: u64,
+    objects: Vec<StoredProxyHost>,
+}
+
+impl fmt::Debug for ProxyHostSnapshot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProxyHostSnapshot")
+            .field("epoch", &self.epoch)
+            .field("object_count", &self.objects.len())
+            .finish()
+    }
+}
+
+impl ProxyHostSnapshot {
+    /// Return process-local store epoch captured with objects.
+    #[must_use]
+    pub const fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    /// Return stable owner/object-ordered stored records.
+    #[must_use]
+    pub fn objects(&self) -> &[StoredProxyHost] {
+        &self.objects
+    }
 }
 
 /// Durable typed-object storage failure.
@@ -68,6 +102,7 @@ type ObjectIndex = BTreeMap<ObjectId, BTreeMap<ObjectId, StoredProxyHost>>;
 pub struct ProxyHostStore {
     path: PathBuf,
     objects: Mutex<ObjectIndex>,
+    epoch: AtomicU64,
 }
 
 impl fmt::Debug for ProxyHostStore {
@@ -96,6 +131,7 @@ impl ProxyHostStore {
         Ok(Self {
             path,
             objects: Mutex::new(index_objects(objects)?),
+            epoch: AtomicU64::new(0),
         })
     }
 
@@ -104,6 +140,23 @@ impl ProxyHostStore {
         &self,
         object: ApiObject<ProxyHostSpec>,
     ) -> Result<StoredProxyHost, ProxyHostStoreError> {
+        self.create_inner(object, None)
+    }
+
+    /// Create only when complete desired state still matches `expected_epoch`.
+    pub fn create_if_epoch(
+        &self,
+        object: ApiObject<ProxyHostSpec>,
+        expected_epoch: u64,
+    ) -> Result<StoredProxyHost, ProxyHostStoreError> {
+        self.create_inner(object, Some(expected_epoch))
+    }
+
+    fn create_inner(
+        &self,
+        object: ApiObject<ProxyHostSpec>,
+        expected_epoch: Option<u64>,
+    ) -> Result<StoredProxyHost, ProxyHostStoreError> {
         validate_object(&object)?;
         let owner_id = object.metadata.owner_id.clone();
         let object_id = object.metadata.id.clone();
@@ -111,6 +164,7 @@ impl ProxyHostStore {
             .objects
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let next_epoch = self.next_epoch(expected_epoch)?;
         let count = object_count(&objects);
         if count >= MAX_PROXY_HOSTS
             || objects
@@ -136,6 +190,7 @@ impl ProxyHostStore {
             remove_indexed(&mut objects, &owner_id, &object_id);
             return Err(error);
         }
+        self.epoch.store(next_epoch, Ordering::Release);
         Ok(stored)
     }
 
@@ -152,6 +207,7 @@ impl ProxyHostStore {
             .objects
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let next_epoch = self.next_epoch(None)?;
         let previous = objects
             .get(&owner_id)
             .and_then(|owned| owned.get(&object_id))
@@ -178,6 +234,7 @@ impl ProxyHostStore {
                 .insert(object_id, previous);
             return Err(error);
         }
+        self.epoch.store(next_epoch, Ordering::Release);
         Ok(stored)
     }
 
@@ -192,6 +249,7 @@ impl ProxyHostStore {
             .objects
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let next_epoch = self.next_epoch(None)?;
         let previous = objects
             .get(owner_id)
             .and_then(|owned| owned.get(object_id))
@@ -206,6 +264,7 @@ impl ProxyHostStore {
                 .insert(object_id.clone(), previous.clone());
             return Err(error);
         }
+        self.epoch.store(next_epoch, Ordering::Release);
         Ok(previous)
     }
 
@@ -251,6 +310,31 @@ impl ProxyHostStore {
             }
         }
         claims
+    }
+
+    /// Capture complete bounded state and epoch under one store lock.
+    #[must_use]
+    pub fn snapshot(&self) -> ProxyHostSnapshot {
+        let objects = self
+            .objects
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ProxyHostSnapshot {
+            epoch: self.epoch.load(Ordering::Acquire),
+            objects: objects
+                .values()
+                .flat_map(BTreeMap::values)
+                .cloned()
+                .collect(),
+        }
+    }
+
+    fn next_epoch(&self, expected: Option<u64>) -> Result<u64, ProxyHostStoreError> {
+        let current = self.epoch.load(Ordering::Acquire);
+        if expected.is_some_and(|expected| expected != current) {
+            return Err(ProxyHostStoreError::Conflict);
+        }
+        current.checked_add(1).ok_or(ProxyHostStoreError::Limit)
     }
 }
 
@@ -497,11 +581,17 @@ mod tests {
     fn persists_owner_indexed_objects_in_stable_order() {
         let (path, root) = temporary_store("round-trip");
         let store = ProxyHostStore::open(&path).expect("store");
+        assert_eq!(store.snapshot().epoch(), 0);
         let alice: ObjectId = "alice".parse().expect("owner");
         let bob: ObjectId = "bob".parse().expect("owner");
         store
-            .create(object("proxy-z", "alice", "z.example.test"))
+            .create_if_epoch(object("proxy-z", "alice", "z.example.test"), 0)
             .expect("create z");
+        assert_eq!(store.snapshot().epoch(), 1);
+        assert!(matches!(
+            store.create_if_epoch(object("stale", "alice", "stale.example.test"), 0),
+            Err(ProxyHostStoreError::Conflict)
+        ));
         store
             .create(object("proxy-a", "alice", "a.example.test"))
             .expect("create a");
@@ -527,9 +617,13 @@ mod tests {
                 .map(|(owner, object)| (owner.as_str(), object.as_str())),
             Some(("alice", "proxy-a"))
         );
+        let snapshot = store.snapshot();
+        assert_eq!(snapshot.epoch(), 3);
+        assert_eq!(snapshot.objects().len(), 3);
         drop(store);
 
         let reopened = ProxyHostStore::open(&path).expect("reopen");
+        assert_eq!(reopened.snapshot().epoch(), 0);
         assert_eq!(reopened.list(&alice).len(), 2);
         let bytes = fs::read(&path).expect("stored bytes");
         let first = bytes
