@@ -11,6 +11,8 @@ API tokens return plaintext once at creation; only Argon2 hashes and safe metada
 tokens require explicit bounded action scopes and inherit creator's stable typed owner. Effective
 permission is the intersection of role and scope, while legacy records without scopes authorize no
 action until replaced. Legacy records without owner metadata cannot use typed-object endpoints.
+Mutation audit intent applies this same intersection before any state change; role permission alone
+is insufficient for a bearer token.
 Certificate, provider, audit, authentication, backup, and age identities are never returned as
 plaintext through API or preview. Keys necessarily exist in process memory while used; encryption
 at rest does not protect a compromised process.

@@ -74,3 +74,11 @@ with explicit replacement documented in
 Subsequent commit `00cfa32` adds owner metadata to newly issued tokens and owner-aware read-only
 Proxy Host validation/preview endpoints. Subsequent commit `d1514dd` adds the eighteenth action,
 `read_proxy_hosts`, for owner-scoped desired-state reads. Typed mutation remains absent.
+
+> Security correction — 2026-07-22
+>
+> Review after aggregate compilation found `begin_mutation` checked role permission without checking
+> a bearer token's explicit scope. Commit `106f2fa` routes mutation authorization through the same
+> role-and-scope intersection and adds integration proof that an operator token lacking
+> `create_candidate` cannot create an immutable revision. Earlier broad “every bearer request”
+> wording was not fully evidenced until this correction.

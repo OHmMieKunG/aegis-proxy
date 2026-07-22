@@ -4,7 +4,8 @@ Verification date: 2026-07-22
 Branch: `work/autonomous-roadmap`
 Verification basis: Phase 14 plus Phase 15 compiler `fa7913f`, preview service `d3de105`, typed diff
 `2617f0e`, API-token scopes `81bd500`, owned Proxy Host endpoints `00cfa32`, typed object store
-`5c8898b`, owner-scoped typed reads `d1514dd`, and aggregate compiler `35d7d38`
+`5c8898b`, owner-scoped typed reads `d1514dd`, aggregate compiler `35d7d38`, and mutation-scope fix
+`106f2fa`
 Working tree at Phase 14 start: clean at `10aae8c`
 
 ## Release status
@@ -28,6 +29,8 @@ evidence.
   rewrites, compression, maintenance, and static errors.
 - Private Unix API/CLI, fixed RBAC, explicitly scoped hash-only API tokens, concurrency checks,
   audit, backup creation, restore validation, status, metrics, and node drain.
+- Mutation audit authorization uses the same role-and-explicit-token-scope intersection as reads;
+  an out-of-scope bearer request records denial before any candidate or state mutation.
 - JSON logs, OpenMetrics, optional OTLP tracing, request correlation, HMAC-chained audit.
 - Bounded file and DNS A/AAAA providers; external-load-balancer fleet checks.
 - Eight fuzz targets and broad unit/integration/security regression coverage.

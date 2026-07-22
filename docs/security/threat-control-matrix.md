@@ -20,7 +20,7 @@ independent review is still required. A status is not a vulnerability-free claim
 | Certificate/account-key theft | age-encrypted keys/accounts; restrictive files; redacted types | key/account round trips, permissions, wrong identity, backup tests | external-gate: host key custody review pending |
 | Secret leakage | typed references; bounded providers; redaction; zeroization where practical | secret debug/export/canary, audit, backup tests | external-gate: artifact/log scan pending |
 | Authentication bypass | Basic/ForwardAuth/admin token fail closed; untrusted identity headers stripped | auth negative/timeout/hash-only/token-expiry tests | external-gate: independent auth review pending |
-| Authorization bypass | deny-by-default RBAC per admin operation and mutation preconditions | full role matrix; admin CLI CAS/RBAC integration test | external-gate: endpoint-by-endpoint review pending |
+| Authorization bypass | deny-by-default role-and-token-scope intersection per admin operation and mutation preconditions | full role matrix; admin CLI proves an out-of-scope mutation creates no revision | external-gate: endpoint-by-endpoint review pending |
 | Session fixation/CSRF/admin XSS | no current UI/session; Phase 16 requires strict browser controls | ADR-0029; no UI crate/routes/assets | planned; independent application-security gate before UI ships |
 | SQL injection | no database/SQL layer in initial release | ADR-0018; dependency/source inventory | deferred; must reopen before database introduction |
 | Command injection | no runtime shell/exec secret or plugin provider | secret provider rejection and provider schema tests; source review | verified-local; deployment wrapper scripts need separate review |

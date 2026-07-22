@@ -27,5 +27,7 @@ AegisProxy has not published a supported release.
   ETags, and stored identity/domain conflict checks for typed validation and preview.
 - Added deterministic aggregate Proxy Host compilation that preserves complete pending desired state
   and rejects unreserved, partial, or tampered generated-resource collisions.
+- Fixed administrative mutation authorization to enforce explicit bearer-token scopes, preventing a
+  role-allowed but out-of-scope token from creating candidates or changing state.
 
 See [`STATUS.md`](STATUS.md) and [`docs/history/`](docs/history/README.md).
