@@ -16,7 +16,7 @@ use thiserror::Error;
 use crate::{ApiObject, ObjectId, ProxyHostSpec};
 
 const STORE_SCHEMA_VERSION: u32 = 1;
-const MAX_PROXY_HOSTS: usize = 4_096;
+pub(crate) const MAX_PROXY_HOSTS: usize = 4_096;
 const MAX_STORE_BYTES: u64 = 2 * 1024 * 1024;
 
 /// One persisted Proxy Host desired-state generation.

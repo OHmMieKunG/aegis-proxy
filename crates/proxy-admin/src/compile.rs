@@ -12,6 +12,7 @@ use aegisproxy_config::{
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+use crate::object_store::MAX_PROXY_HOSTS;
 use crate::{ApiObject, AutomaticHttps, ForwardProtocol, ObjectId, ProxyHostSpec};
 
 /// Read-only access-policy metadata available during compilation.
@@ -72,6 +73,33 @@ impl fmt::Debug for CompileContext<'_> {
     }
 }
 
+/// Immutable inputs for compiling complete typed Proxy Host desired state.
+pub struct ProxyHostSetCompileContext<'a> {
+    /// Existing semantically valid active configuration.
+    pub base_config: &'a Config,
+    /// Existing HTTP listener used when automatic HTTPS is disabled.
+    pub http_listener_id: &'a str,
+    /// Existing upstream group whose policy is cloned.
+    pub upstream_template_id: &'a str,
+    /// Available access-policy metadata keyed by opaque policy ID.
+    pub access_policies: &'a BTreeMap<ObjectId, AccessPolicyMetadata>,
+    /// Prepared HTTPS policy keyed by owner and object identity.
+    pub managed_https: &'a BTreeMap<(ObjectId, ObjectId), ManagedHttpsPolicy>,
+}
+
+impl fmt::Debug for ProxyHostSetCompileContext<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProxyHostSetCompileContext")
+            .field("schema_version", &self.base_config.schema_version)
+            .field("http_listener_id", &self.http_listener_id)
+            .field("upstream_template_id", &self.upstream_template_id)
+            .field("access_policy_count", &self.access_policies.len())
+            .field("managed_https_count", &self.managed_https.len())
+            .finish()
+    }
+}
+
 /// High-level object plus semantically validated configuration candidate.
 #[derive(Clone)]
 pub struct ProxyHostCandidate {
@@ -100,6 +128,38 @@ impl ProxyHostCandidate {
     }
 
     /// Return canonical candidate configuration; this does not persist or activate it.
+    #[must_use]
+    pub const fn config(&self) -> &Config {
+        &self.config
+    }
+}
+
+/// Complete typed desired state plus one semantically validated configuration candidate.
+#[derive(Clone)]
+pub struct ProxyHostSetCandidate {
+    objects: Vec<ApiObject<ProxyHostSpec>>,
+    config: Config,
+}
+
+impl fmt::Debug for ProxyHostSetCandidate {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProxyHostSetCandidate")
+            .field("object_count", &self.objects.len())
+            .field("route_count", &self.config.routes.len())
+            .field("upstream_group_count", &self.config.upstream_groups.len())
+            .finish()
+    }
+}
+
+impl ProxyHostSetCandidate {
+    /// Return canonical owner/object-ordered desired state.
+    #[must_use]
+    pub fn objects(&self) -> &[ApiObject<ProxyHostSpec>] {
+        &self.objects
+    }
+
+    /// Return complete canonical candidate configuration without persistence or activation.
     #[must_use]
     pub const fn config(&self) -> &Config {
         &self.config
@@ -148,6 +208,12 @@ pub enum ProxyHostCompileError {
     /// Existing base or template configuration violates compiler invariants.
     #[error("control-plane compilation invariant failed")]
     InternalInvariant,
+    /// Typed desired state exceeds its fixed object bound.
+    #[error("proxy host desired state exceeds its hard limit")]
+    LimitExceeded,
+    /// Active generated resources do not form a verified managed resource set.
+    #[error("managed proxy host resources conflict with active configuration")]
+    ManagedResourceConflict,
     /// Generated candidate failed canonical semantic validation.
     #[error("compiled candidate failed semantic validation")]
     SemanticValidation,
@@ -241,6 +307,252 @@ pub fn compile_proxy_host(
         object: object.clone(),
         config,
     })
+}
+
+/// Compile all typed Proxy Hosts into one canonical candidate without persistence or activation.
+///
+/// `current_objects` reserves namespaces that may already exist in `base_config`; only a complete
+/// compiler-shaped route/group/endpoint set for those identities is removed before desired state is
+/// rebuilt. `desired_objects` is the complete post-change state, not a partial patch.
+pub fn compile_proxy_hosts(
+    current_objects: &[ApiObject<ProxyHostSpec>],
+    desired_objects: &[ApiObject<ProxyHostSpec>],
+    context: &ProxyHostSetCompileContext<'_>,
+) -> Result<ProxyHostSetCandidate, ProxyHostCompileError> {
+    if context.base_config.schema_version != 1 {
+        return Err(ProxyHostCompileError::UnsupportedConfigurationVersion);
+    }
+    validate(context.base_config).map_err(|_| ProxyHostCompileError::InternalInvariant)?;
+    let current = canonical_objects(current_objects)?;
+    let desired = canonical_objects(desired_objects)?;
+    let manual = strip_managed_resources(context.base_config, &current)?;
+    let template = manual
+        .upstream_groups
+        .iter()
+        .find(|group| group.id == context.upstream_template_id)
+        .cloned()
+        .ok_or(ProxyHostCompileError::InternalInvariant)?;
+    let prototype = template
+        .endpoints
+        .first()
+        .cloned()
+        .ok_or(ProxyHostCompileError::InternalInvariant)?;
+
+    let empty_objects = BTreeSet::new();
+    let empty_domains = BTreeMap::new();
+    let mut route_ids = manual
+        .routes
+        .iter()
+        .map(|route| route.id.clone())
+        .collect::<BTreeSet<_>>();
+    let mut group_ids = manual
+        .upstream_groups
+        .iter()
+        .map(|group| group.id.clone())
+        .collect::<BTreeSet<_>>();
+    let mut endpoint_ids = manual
+        .upstream_groups
+        .iter()
+        .flat_map(|group| group.endpoints.iter().map(|endpoint| endpoint.id.clone()))
+        .collect::<BTreeSet<_>>();
+    let manual_hosts = DomainClaims::from_config(&manual);
+    let mut config = manual.clone();
+
+    for object in &desired {
+        if manual_hosts.conflicts(&object.spec.domain) {
+            return Err(ProxyHostCompileError::ConflictingDomain);
+        }
+        let identity = (object.metadata.owner_id.clone(), object.metadata.id.clone());
+        let single = CompileContext {
+            base_config: &manual,
+            owner_id: &object.metadata.owner_id,
+            http_listener_id: context.http_listener_id,
+            upstream_template_id: context.upstream_template_id,
+            access_policies: context.access_policies,
+            claimed_objects: &empty_objects,
+            claimed_domains: &empty_domains,
+            managed_https: context.managed_https.get(&identity),
+        };
+        let middlewares = resolve_access_policy(object, &single)?;
+        let listener_id = resolve_listener(object, &single)?;
+        if !object.spec.enabled {
+            continue;
+        }
+        let ids = ManagedIds::new(object);
+        if !route_ids.insert(ids.route.clone())
+            || !group_ids.insert(ids.group.clone())
+            || !endpoint_ids.insert(ids.endpoint.clone())
+        {
+            return Err(ProxyHostCompileError::ConflictingObjectId);
+        }
+        let mut group = template.clone();
+        group.id = ids.group.clone();
+        group.endpoints = vec![compile_endpoint(object, prototype.clone(), ids.endpoint)?];
+        config.upstream_groups.push(group);
+        config.routes.push(RouteConfig {
+            id: ids.route,
+            listeners: vec![listener_id],
+            hosts: vec![object.spec.domain.clone()],
+            paths: Vec::new(),
+            path_prefixes: Vec::new(),
+            methods: Vec::new(),
+            headers: Vec::new(),
+            default: false,
+            priority: 0,
+            middlewares,
+            upstream_group: Some(ids.group),
+        });
+    }
+    validate(&config).map_err(|_| ProxyHostCompileError::SemanticValidation)?;
+    Ok(ProxyHostSetCandidate {
+        objects: desired,
+        config,
+    })
+}
+
+#[derive(Clone)]
+struct ManagedIds {
+    route: String,
+    group: String,
+    endpoint: String,
+}
+
+impl ManagedIds {
+    fn new(object: &ApiObject<ProxyHostSpec>) -> Self {
+        let namespace = namespace(&object.metadata.owner_id, &object.metadata.id);
+        Self {
+            route: format!("{namespace}-route"),
+            group: format!("{namespace}-upstream"),
+            endpoint: format!("{namespace}-endpoint"),
+        }
+    }
+}
+
+fn canonical_objects(
+    objects: &[ApiObject<ProxyHostSpec>],
+) -> Result<Vec<ApiObject<ProxyHostSpec>>, ProxyHostCompileError> {
+    if objects.len() > MAX_PROXY_HOSTS {
+        return Err(ProxyHostCompileError::LimitExceeded);
+    }
+    let mut objects = objects.to_vec();
+    objects.sort_by(|left, right| {
+        (&left.metadata.owner_id, &left.metadata.id)
+            .cmp(&(&right.metadata.owner_id, &right.metadata.id))
+    });
+    let mut identities = BTreeSet::new();
+    let mut domains = BTreeSet::new();
+    for object in &objects {
+        validate_domain(&object.spec.domain)?;
+        validate_forward_host(&object.spec.forward_host)?;
+        if object.spec.forward_port == 0 {
+            return Err(ProxyHostCompileError::InvalidPort);
+        }
+        if !identities.insert((&object.metadata.owner_id, &object.metadata.id)) {
+            return Err(ProxyHostCompileError::ConflictingObjectId);
+        }
+        if !domains.insert(&object.spec.domain) {
+            return Err(ProxyHostCompileError::ConflictingDomain);
+        }
+    }
+    Ok(objects)
+}
+
+fn strip_managed_resources(
+    base: &Config,
+    current: &[ApiObject<ProxyHostSpec>],
+) -> Result<Config, ProxyHostCompileError> {
+    let mut routes = BTreeMap::new();
+    let mut groups = BTreeMap::new();
+    let mut endpoints = BTreeSet::new();
+    for object in current {
+        let ids = ManagedIds::new(object);
+        if routes.insert(ids.route, ids.group.clone()).is_some()
+            || groups.insert(ids.group, ids.endpoint.clone()).is_some()
+            || !endpoints.insert(ids.endpoint)
+        {
+            return Err(ProxyHostCompileError::ConflictingObjectId);
+        }
+    }
+
+    let mut config = base.clone();
+    let mut seen_routes = BTreeSet::new();
+    let mut retained_routes = Vec::with_capacity(config.routes.len());
+    for route in std::mem::take(&mut config.routes) {
+        let Some(group) = routes.get(&route.id) else {
+            retained_routes.push(route);
+            continue;
+        };
+        if route.listeners.len() != 1
+            || route.hosts.len() != 1
+            || !route.paths.is_empty()
+            || !route.path_prefixes.is_empty()
+            || !route.methods.is_empty()
+            || !route.headers.is_empty()
+            || route.default
+            || route.priority != 0
+            || route.upstream_group.as_ref() != Some(group)
+        {
+            return Err(ProxyHostCompileError::ManagedResourceConflict);
+        }
+        seen_routes.insert(route.id);
+    }
+    config.routes = retained_routes;
+
+    let mut seen_groups = BTreeSet::new();
+    let mut retained_groups = Vec::with_capacity(config.upstream_groups.len());
+    for group in std::mem::take(&mut config.upstream_groups) {
+        if let Some(endpoint) = groups.get(&group.id) {
+            if group.endpoints.len() != 1 || group.endpoints[0].id != *endpoint {
+                return Err(ProxyHostCompileError::ManagedResourceConflict);
+            }
+            seen_groups.insert(group.id);
+        } else {
+            if group
+                .endpoints
+                .iter()
+                .any(|endpoint| endpoints.contains(&endpoint.id))
+            {
+                return Err(ProxyHostCompileError::ManagedResourceConflict);
+            }
+            retained_groups.push(group);
+        }
+    }
+    config.upstream_groups = retained_groups;
+
+    for (route, group) in routes {
+        if seen_routes.contains(&route) != seen_groups.contains(&group) {
+            return Err(ProxyHostCompileError::ManagedResourceConflict);
+        }
+    }
+    validate(&config).map_err(|_| ProxyHostCompileError::ManagedResourceConflict)?;
+    Ok(config)
+}
+
+#[derive(Default)]
+struct DomainClaims {
+    exact: BTreeSet<String>,
+    wildcard: BTreeSet<String>,
+}
+
+impl DomainClaims {
+    fn from_config(config: &Config) -> Self {
+        let mut claims = Self::default();
+        for host in config.routes.iter().flat_map(|route| &route.hosts) {
+            if host.starts_with("*.") {
+                claims.wildcard.insert(host.clone());
+            } else {
+                claims.exact.insert(host.clone());
+            }
+        }
+        claims
+    }
+
+    fn conflicts(&self, domain: &str) -> bool {
+        self.exact.contains(domain)
+            || domain
+                .split_once('.')
+                .is_some_and(|(_, suffix)| self.wildcard.contains(&format!("*.{suffix}")))
+    }
 }
 
 fn validate_domain(domain: &str) -> Result<(), ProxyHostCompileError> {
@@ -484,6 +796,20 @@ mod tests {
         }
     }
 
+    fn set_context<'a>(
+        config: &'a Config,
+        policies: &'a BTreeMap<ObjectId, AccessPolicyMetadata>,
+        https: &'a BTreeMap<(ObjectId, ObjectId), ManagedHttpsPolicy>,
+    ) -> ProxyHostSetCompileContext<'a> {
+        ProxyHostSetCompileContext {
+            base_config: config,
+            http_listener_id: "public",
+            upstream_template_id: "app",
+            access_policies: policies,
+            managed_https: https,
+        }
+    }
+
     #[test]
     fn compiles_valid_variants_deterministically() {
         let config = base_config();
@@ -568,6 +894,149 @@ mod tests {
             config.upstream_groups.len()
         );
         assert!(!disabled.object().spec.enabled);
+    }
+
+    #[test]
+    fn compiles_complete_desired_state_deterministically_and_preserves_pending_objects() {
+        let config = base_config();
+        let policies = BTreeMap::new();
+        let https = BTreeMap::new();
+        let first = object();
+        let mut second = object();
+        second.metadata.owner_id = "bob".parse().expect("owner");
+        second.metadata.id = "proxy-second".parse().expect("object ID");
+        second.spec.domain = "second.example.test".into();
+
+        let ordered = compile_proxy_hosts(
+            &[],
+            &[second.clone(), first.clone()],
+            &set_context(&config, &policies, &https),
+        )
+        .expect("aggregate candidate");
+        let repeated = compile_proxy_hosts(
+            &[],
+            &[first.clone(), second.clone()],
+            &set_context(&config, &policies, &https),
+        )
+        .expect("repeat aggregate candidate");
+        assert_eq!(ordered.objects()[0].metadata.owner_id.as_str(), "alice");
+        assert_eq!(ordered.objects()[1].metadata.owner_id.as_str(), "bob");
+        assert_eq!(
+            serde_json::to_vec(ordered.config()).expect("ordered config"),
+            serde_json::to_vec(repeated.config()).expect("repeated config")
+        );
+        assert_eq!(ordered.config().routes.len(), config.routes.len() + 2);
+
+        let pending = compile_proxy_hosts(
+            std::slice::from_ref(&first),
+            &[first.clone(), second],
+            &set_context(&config, &policies, &https),
+        )
+        .expect("pending desired state");
+        assert_eq!(pending.config().routes.len(), config.routes.len() + 2);
+        validate(pending.config()).expect("semantic validation");
+    }
+
+    #[test]
+    fn aggregate_replaces_only_reserved_managed_resources() {
+        let config = base_config();
+        let parts = parts();
+        let policies = BTreeMap::new();
+        let https = BTreeMap::new();
+        let current = object();
+        let active = compile_proxy_host(&current, &context(&config, &parts, None))
+            .expect("active generated config")
+            .config()
+            .clone();
+        let mut desired = current.clone();
+        desired.spec.domain = "replacement.example.test".into();
+
+        let replacement = compile_proxy_hosts(
+            std::slice::from_ref(&current),
+            std::slice::from_ref(&desired),
+            &set_context(&active, &policies, &https),
+        )
+        .expect("replacement candidate");
+        assert_eq!(replacement.config().routes.len(), config.routes.len() + 1);
+        assert!(
+            replacement
+                .config()
+                .routes
+                .iter()
+                .any(|route| route.hosts == ["replacement.example.test"])
+        );
+        assert!(
+            !replacement
+                .config()
+                .routes
+                .iter()
+                .any(|route| { route.hosts == ["new.example.test"] })
+        );
+
+        desired.spec.enabled = false;
+        let disabled = compile_proxy_hosts(
+            std::slice::from_ref(&current),
+            std::slice::from_ref(&desired),
+            &set_context(&active, &policies, &https),
+        )
+        .expect("disabled candidate");
+        assert_eq!(disabled.config().routes.len(), config.routes.len());
+        assert_eq!(
+            disabled.config().upstream_groups.len(),
+            config.upstream_groups.len()
+        );
+    }
+
+    #[test]
+    fn aggregate_rejects_manual_takeover_partial_resources_and_duplicate_state() {
+        let config = base_config();
+        let parts = parts();
+        let policies = BTreeMap::new();
+        let https = BTreeMap::new();
+        let current = object();
+        let active = compile_proxy_host(&current, &context(&config, &parts, None))
+            .expect("active generated config")
+            .config()
+            .clone();
+
+        assert_eq!(
+            compile_proxy_hosts(
+                &[],
+                std::slice::from_ref(&current),
+                &set_context(&active, &policies, &https),
+            )
+            .expect_err("unreserved manual collision"),
+            ProxyHostCompileError::ConflictingDomain
+        );
+
+        let mut partial = active.clone();
+        partial
+            .routes
+            .iter_mut()
+            .find(|route| route.id == ManagedIds::new(&current).route)
+            .expect("managed route")
+            .paths
+            .push("/tampered".into());
+        validate(&partial).expect("structurally valid tamper");
+        assert_eq!(
+            compile_proxy_hosts(
+                std::slice::from_ref(&current),
+                std::slice::from_ref(&current),
+                &set_context(&partial, &policies, &https),
+            )
+            .expect_err("partial managed shape"),
+            ProxyHostCompileError::ManagedResourceConflict
+        );
+
+        assert_eq!(
+            compile_proxy_hosts(
+                &[],
+                &[current.clone(), current],
+                &set_context(&config, &policies, &https),
+            )
+            .expect_err("duplicate objects"),
+            ProxyHostCompileError::ConflictingObjectId
+        );
     }
 
     #[test]

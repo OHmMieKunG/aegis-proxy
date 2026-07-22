@@ -23,7 +23,8 @@ pub use auth::{IssuedToken, TokenError, TokenMetadata, TokenRecord, TokenStore, 
 pub use backup::{BackupError, BackupSummary, create_backup, validate_backup};
 pub use compile::{
     AccessPolicyMetadata, CompileContext, ManagedHttpsPolicy, ProxyHostCandidate,
-    ProxyHostCompileError, compile_proxy_host,
+    ProxyHostCompileError, ProxyHostSetCandidate, ProxyHostSetCompileContext, compile_proxy_host,
+    compile_proxy_hosts,
 };
 pub use diff::{
     DiffOperation, ProxyHostDiff, ProxyHostDiffError, ProxyHostDiffValue, ProxyHostField,
