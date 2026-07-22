@@ -10,8 +10,8 @@ mod rbac;
 mod server;
 
 pub use api::{
-    API_VERSION, AccessPolicyRef, ApiObject, AutomaticHttps, ContractError, ForwardProtocol,
-    ObjectId, ObjectMetadata, ProxyHostSpec,
+    API_VERSION, AccessPolicyRef, ApiObject, ApiVersion, AutomaticHttps, ContractError,
+    ForwardProtocol, ObjectId, ObjectMetadata, ProxyHostSpec,
 };
 pub use audit::{AuditError, AuditEvent, AuditLog, AuditOutcome, AuditRecord};
 pub use auth::{IssuedToken, TokenError, TokenMetadata, TokenRecord, TokenStore, TokenStoreError};

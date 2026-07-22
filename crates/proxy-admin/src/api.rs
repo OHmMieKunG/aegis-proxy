@@ -2,7 +2,7 @@
 
 use std::{fmt, str::FromStr};
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
 /// Current high-level administration contract version.
@@ -11,6 +11,33 @@ pub const API_VERSION: &str = "v1";
 const MAX_OBJECT_ID_BYTES: usize = 64;
 const MAX_DOMAIN_BYTES: usize = 253;
 const MAX_FORWARD_HOST_BYTES: usize = 253;
+
+/// Exact supported high-level administration contract version.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ApiVersion;
+
+impl Serialize for ApiVersion {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(API_VERSION)
+    }
+}
+
+impl<'de> Deserialize<'de> for ApiVersion {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        if value == API_VERSION {
+            Ok(Self)
+        } else {
+            Err(serde::de::Error::custom(ContractError::UnsupportedVersion))
+        }
+    }
+}
 
 /// Stable control-plane object identifier.
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -79,22 +106,11 @@ pub struct ObjectMetadata {
 #[serde(deny_unknown_fields)]
 pub struct ApiObject<T> {
     /// Exact contract version; currently `v1`.
-    pub api_version: String,
+    pub api_version: ApiVersion,
     /// Stable object metadata.
     pub metadata: ObjectMetadata,
     /// Typed object-specific desired state.
     pub spec: T,
-}
-
-impl<T> ApiObject<T> {
-    /// Reject an unsupported API contract version.
-    pub fn validate_version(&self) -> Result<(), ContractError> {
-        if self.api_version == API_VERSION {
-            Ok(())
-        } else {
-            Err(ContractError::UnsupportedVersion)
-        }
-    }
 }
 
 /// Reference to a stored access-policy object.
@@ -207,7 +223,7 @@ mod tests {
     #[test]
     fn proxy_host_contract_is_versioned_strict_and_round_trips() {
         let object: ApiObject<ProxyHostSpec> = serde_json::from_str(OBJECT).expect("valid object");
-        object.validate_version().expect("supported version");
+        assert_eq!(object.api_version, ApiVersion);
         object.spec.validate_shape().expect("valid shape");
         assert_eq!(object.metadata.id.as_str(), "proxy-home");
         assert_eq!(
@@ -231,12 +247,7 @@ mod tests {
         assert!(serde_json::from_str::<ApiObject<ProxyHostSpec>>(&unknown).is_err());
 
         let future = OBJECT.replace("\"v1\"", "\"v2\"");
-        let future: ApiObject<ProxyHostSpec> =
-            serde_json::from_str(&future).expect("shape remains parseable");
-        assert_eq!(
-            future.validate_version(),
-            Err(ContractError::UnsupportedVersion)
-        );
+        assert!(serde_json::from_str::<ApiObject<ProxyHostSpec>>(&future).is_err());
 
         let bad_id = OBJECT.replace("proxy-home", "../proxy-home");
         assert!(serde_json::from_str::<ApiObject<ProxyHostSpec>>(&bad_id).is_err());
