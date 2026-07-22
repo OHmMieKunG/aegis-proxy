@@ -9,5 +9,7 @@ AegisProxy has not published a supported release.
 - Adopted user-first GUI and typed-control-plane direction with secret isolation.
 - Completed behavior-preserving modularization: focused tests and domain-owned core, configuration,
   and administration modules now replace oversized mixed-responsibility files.
+- Began Phase 15 with a strict fail-closed `v1` object envelope and library-only Proxy Host contract;
+  it is not yet exposed as an administrative endpoint.
 
 See [`STATUS.md`](STATUS.md) and [`docs/history/`](docs/history/README.md).

@@ -78,6 +78,10 @@ available gate passes.
 
 ## Phase 15 — Stable typed control plane
 
+**Status:** in progress. Baseline:
+[`docs/reviews/phase-15-baseline.md`](docs/reviews/phase-15-baseline.md). Initial strict `v1` object
+envelope and Proxy Host contract exist, but no high-level endpoint or canonical compiler exists yet.
+
 **Objective:** provide versioned high-level objects usable by GUI and advanced automation.
 
 **Scope:** Proxy Hosts, Stream Hosts, Certificates, Access Policies, Users, Roles, Stored

@@ -35,6 +35,9 @@ evidence.
 - ACME requires explicit low-level issuer/challenge policy; common automatic HTTPS is Phase 17.
 - SSE uses generic streaming and skips compression but lacks a focused protocol test.
 - Administration is typed but TOML/revision oriented; high-level domain APIs are Phase 15.
+- Phase 15 has a strict library-only `v1` envelope, stable IDs/ownership metadata, opaque
+  access-policy references, and common Proxy Host fields. No endpoint, persistence, typed diff, or
+  canonical configuration compiler exposes this contract yet.
 - Preview returns redacted config, fingerprints, and activation class; field-level diff is absent.
 - Restore validates archives but does not extract or activate them.
 - Fleet operation uses external orchestration; no cluster or consensus exists.
