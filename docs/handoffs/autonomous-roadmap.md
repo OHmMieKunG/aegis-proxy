@@ -3,39 +3,39 @@
 Updated: 2026-07-22
 
 - Current branch: `work/autonomous-roadmap`
-- Current completed-unit commit: `89de6fc`
+- Current completed-unit commit: `9961231`
 - Current phase: Phase 15, in progress
-- Completed unit: deny-by-default API-token action scopes
-- Implementation commit: `81bd500`
-- Documentation commit: `89de6fc`
+- Completed unit: owner-aware private Proxy Host validation and preview endpoints
+- Implementation commit: `00cfa32`
+- Documentation commit: `9961231`
 - Working tree before this handoff: clean
 
 ## Validation status
 
-Format, workspace check, Clippy with denied warnings, 284 workspace tests, doc tests, Rustdoc,
-feature tree, fuzz-manifest check, documentation links, configuration corpus, and manifest/schema/
-OpenAPI validation passed. Two intentional ignored tests remain: manual reload benchmark and
-Docker-backed Pebble integration. Admin OpenAPI intentionally changed for scoped tokens.
+Format, workspace check, Clippy with denied warnings, 287 workspace tests, doc tests, Rustdoc,
+feature tree, fuzz-manifest check, changed documentation links, configuration corpus, and OpenAPI
+YAML parsing passed. Two intentional ignored tests remain: manual reload benchmark and Docker-backed
+Pebble integration. Admin OpenAPI intentionally changed for typed endpoints and token owner metadata.
 
 ## Remaining Phase 15 work
 
-Complete typed-object ownership/RBAC enforcement; typed validation, mutation, activation, and
-rollback endpoints; remaining domain objects; remaining OpenAPI/CLI contracts;
-migration/compatibility policy; full authorization/security review.
+Add typed object persistence and complete ownership/RBAC metadata; typed mutation, activation, and
+rollback endpoints; access-policy/certificate and remaining domain objects; remaining OpenAPI/CLI
+contracts; migration/compatibility policy; full authorization/security review.
 
 ## Exact next task
 
-Add owner-aware typed Proxy Host validation and preview endpoints. Authenticate and authorize before
-deserialization/compilation; derive owner from the principal rather than trusting request metadata;
-reuse compiler, preview, and diff; perform no persistence or activation; add strict OpenAPI/CLI and
-cross-owner non-disclosure tests.
+Implement a bounded durable typed Proxy Host object store with strict schema/version validation,
+owner-indexed reads, atomic file replacement, and no runtime or revision activation. Reuse it as the
+state prerequisite for audited CAS mutation and typed update diffs.
 
 ## Known risks
 
 - High-level object persistence and update semantics do not exist yet.
-- Compiler, preview, and diff are library-only until RBAC/scopes/endpoints are complete.
-- Public error mapping must not leak policy existence across ownership boundaries.
-- Local Unix peer identity currently maps to UID; typed owner mapping must be explicit and stable.
+- Access-policy and managed-HTTPS endpoint preparation fails closed until typed ownership metadata
+  exists.
+- Public error mapping must not leak policy or object existence across ownership boundaries.
+- Local Unix peer identity maps to stable `uid-<uid>`; user/session identity remains Phase 15/16.
 - Transitive `proc-macro-error2 2.0.1` has a pre-existing future-incompatibility warning.
 - Product remains production NO-GO pending later phases and independent review.
 
