@@ -81,7 +81,7 @@ pub(super) async fn begin_mutation(
         request_id: request_id.0.clone(),
         old_revision,
     };
-    if !principal.role.allows(spec.permission) {
+    if authorize(principal, spec.permission).is_err() {
         audit
             .record(
                 AuditOutcome::Denied,

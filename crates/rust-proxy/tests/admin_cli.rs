@@ -419,6 +419,31 @@ upstream_group = "app"
         fs::write(&token_file, plaintext).expect("token file");
         fs::set_permissions(&token_file, fs::Permissions::from_mode(0o600)).expect("token mode");
         let token_ref = format!("file://{}", token_file.display());
+        let unauthorized_config = daemon.root.join("unauthorized.toml");
+        write_config(
+            &unauthorized_config,
+            &state,
+            &audit_key,
+            port,
+            telemetry_port,
+            99,
+        );
+        let revisions_before = fs::read_dir(state.join("config/revisions"))
+            .expect("revision directory")
+            .count();
+        let denied_candidate = Command::new(binary())
+            .args(["config", "activate", "--socket", socket, "--file"])
+            .arg(&unauthorized_config)
+            .args(["--expect", &current, "--token-ref", &token_ref])
+            .output()
+            .expect("denied candidate");
+        assert_eq!(denied_candidate.status.code(), Some(5));
+        assert_eq!(
+            fs::read_dir(state.join("config/revisions"))
+                .expect("revision directory")
+                .count(),
+            revisions_before
+        );
         let scoped_status = run(&[
             "fleet",
             "status",
