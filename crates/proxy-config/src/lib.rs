@@ -60,7 +60,7 @@ pub struct Config {
     /// Resource limits.
     #[serde(default)]
     pub limits: LimitsConfig,
-    /// Public/admin listeners.
+    /// Public data-plane listeners.
     #[serde(default)]
     pub listeners: Vec<ListenerConfig>,
     /// Global TLS policy.
@@ -453,7 +453,7 @@ pub enum BalancingAlgorithm {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DnsConfig {
-    /// Maximum accepted A/AAAA or SRV answers per lookup.
+    /// Maximum accepted A/AAAA answers per lookup.
     pub max_answers: usize,
     /// Maximum lookup duration.
     pub lookup_timeout_secs: u64,

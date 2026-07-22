@@ -28,7 +28,7 @@ retain and review coverage-minimized corpus changes, use the limits above, and a
 the exact toolchain, command, exit status, crash artifacts, and corpus hash. Any crash,
 timeout, sanitizer finding, or unbounded growth blocks release until triaged.
 
-Phase 13 local smoke on 2026-07-19 ran 500 cases per target under ASan with
+Dated local smoke on 2026-07-19 ran 500 cases per target under ASan with
 `cargo-fuzz 0.13.2` and `rustc 1.99.0-nightly (eff8269f7 2026-07-18)`. All eight
 targets exited successfully with no crash artifact. This smoke is not the required
 long campaign.

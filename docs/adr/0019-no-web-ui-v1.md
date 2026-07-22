@@ -1,7 +1,11 @@
 # ADR-0019: Keep web UI outside initial release
 
-Status: Accepted; Phase 10 closed without UI
+Status: Superseded by ADR-0029 on 2026-07-22
 Date: 2026-07-19
+
+This decision accurately records the earlier initial-release boundary. Product direction now
+requires a user-friendly GUI over the typed control plane. Original rationale remains below for
+traceability; browser security and independent-review requirements still apply.
 
 ## Context
 

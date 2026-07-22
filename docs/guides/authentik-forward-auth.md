@@ -1,6 +1,6 @@
 # Authentik ForwardAuth
 
-Status: Phase 7 integration contract. Validate against the deployed Authentik version before rollout.
+Status: current ForwardAuth integration contract. Native OIDC is not implemented. Validate against the deployed Authentik version before rollout.
 
 AegisProxy calls a configured HTTP-family upstream with an empty `GET` request. It supplies the canonical original URI, method, host, scheme, trusted client address, and request ID. Only explicitly allowlisted client headers are copied. A `2xx` response permits the request; `401`/`403` deny it; validated `301`, `302`, `303`, `307`, or `308` responses may redirect the client. Errors, timeouts, oversized responses, missing principals, malformed headers, and every other status fail closed with `503`.
 
@@ -62,7 +62,7 @@ Operational rules:
 - `principal_header` is mandatory on successful responses and becomes the bounded internal `X-AegisProxy-User` value sent to the application.
 - Only relative redirects or HTTPS redirects to `redirect_hosts` are accepted. List every expected browser-facing Authentik/application host explicitly.
 - Adding `authorization` to `response_headers` permits Authentik's optional generated Basic credential to replace the inbound authorization value. Enable it only when the protected application requires that feature.
-- Check the outpost ping path through the dedicated public route before enabling the protected route. Alert on ForwardAuth `503`, timeout, invalid-response, and upstream-health signals when observability support lands in Phase 9.
+- Check the outpost ping path through the dedicated public route before enabling the protected route. Alert on ForwardAuth `503`, timeout, invalid-response, and upstream-health signals using current observability signals.
 
 This integration is a policy boundary and requires an independent security review before production use, especially when cookies, generated authorization headers, or domain-level ForwardAuth are enabled.
 

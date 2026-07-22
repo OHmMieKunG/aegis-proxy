@@ -2,7 +2,9 @@ openapi: 3.1.0
 info:
   title: AegisProxy private administration API
   version: 1.0.0
-  description: Unix-socket-only v1 contract. This document is not served by the daemon.
+  description: >-
+    Current low-level Unix-socket-only v1 contract. This document is not served by the daemon.
+    Planned high-level user-facing objects are not part of this contract.
 servers:
   - url: http://localhost
     description: HTTP over the configured private Unix socket
@@ -80,7 +82,7 @@ paths:
       operationId: previewConfig
       requestBody: {$ref: "#/components/requestBodies/TomlConfig"}
       responses:
-        "200": {description: Redacted preview and activation class}
+        "200": {description: Redacted preview, fingerprints, and activation class; not a field-level diff}
         default: {$ref: "#/components/responses/Error"}
   /v1/config/candidates:
     post:

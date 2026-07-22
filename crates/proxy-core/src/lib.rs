@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 #![warn(missing_debug_implementations, missing_docs)]
-//! Data-plane HTTP forwarding primitives.
+//! Data-plane HTTP and TCP reverse-proxy runtime.
 
 mod acme_manager;
 mod middleware;

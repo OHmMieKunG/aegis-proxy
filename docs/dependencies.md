@@ -1,7 +1,9 @@
 # Direct dependency inventory
 
-Versions are locked in `Cargo.lock` and must be re-reviewed on upgrade. Every row was last
-reviewed on 2026-07-19 unless it carries a newer date.
+Versions are locked in `Cargo.lock` and must be re-reviewed on upgrade. The table records the
+2026-07-19 review unless a row carries a newer date. On 2026-07-22, `cargo tree -e features`
+completed; `cargo audit` and `cargo deny check` were unavailable in this environment and therefore
+were not re-verified. See [`STATUS.md`](../STATUS.md).
 
 | Crate | Purpose | Features | License | Native/unsafe surface | Alternative | Upgrade policy |
 |---|---|---|---|---|---|---|
@@ -12,7 +14,7 @@ reviewed on 2026-07-19 unless it carries a newer date.
 | http-body/http-body-util | Bounded streaming body traits, combinators, collectors, and length limiter | default | MIT | No native code; transitive unsafe review | hand-written body polling | Review with Hyper releases; retain ACME oversized-body regression |
 | serde/toml | Typed strict config and preview | derive | MIT/Apache-2.0 | Proc macros; audited | JSON-only | Lockfile/advisory gate |
 | url/ipnet | URL and CIDR parsing | serde | MIT/Apache-2.0 | None expected | custom parsers | Keep standard parsers |
-| rustls/rustls-pki-types | TLS and strict mixed-section PEM parsing | Phase 2 selected provider | Apache-2.0/MIT/ISC | Crypto provider/native build reviewed | OpenSSL | Security advisory gate |
+| rustls/rustls-pki-types | TLS and strict mixed-section PEM parsing | `aws_lc_rs`, `std`, `tls12`; defaults disabled | Apache-2.0/MIT/ISC | Crypto provider/native build reviewed | OpenSSL | Security advisory gate |
 | tokio-rustls | Async Rustls accept/connect adapters | `aws_lc_rs`, `tls12` | MIT/Apache-2.0 | AWS-LC native build | manual Tokio adapter | Review with Rustls |
 | hyper-rustls | Verified pooled HTTPS/H2 upstream connections | `aws-lc-rs`, `http1`, `http2`, `tls12`, `webpki-tokio` | Apache-2.0/ISC/MIT | Rustls/AWS-LC native build | custom connector | Review with Hyper and Rustls |
 | hickory-resolver | Bounded async A/AAAA resolution and TTL metadata | `system-config`, `tokio`; defaults/TLS/DNSSEC disabled | MIT/Apache-2.0 | No native code in selected features; transitive safe/unsafe review required | system resolver, custom DNS client | Pin 0.26 lockfile; resolver/rebinding tests and advisory gate on upgrade |
@@ -47,4 +49,6 @@ reviewed on 2026-07-19 unless it carries a newer date.
 | clap | CLI parsing | derive | MIT/Apache-2.0 | None expected | std::env | Stable CLI contract |
 | thiserror | Typed internal errors | default | MIT/Apache-2.0 | Proc macro | manual impl | Keep small |
 
-`cargo tree -e features`, `cargo audit`, `cargo deny check`, source/license review, and transitive unsafe review are Phase 0/CI gates. No Git dependency is permitted.
+`cargo tree -e features`, `cargo audit`, `cargo deny check`, source/license review, and transitive
+unsafe review are release gates. Phase 21 must make them reproducible in CI. No Git dependency is
+permitted.

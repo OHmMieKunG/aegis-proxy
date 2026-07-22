@@ -1,6 +1,6 @@
 # Service discovery operations
 
-Phase 11 supports only bounded file and DNS A/AAAA providers. Providers replace endpoint lists in one predeclared upstream group; trusted base configuration still owns routes, listeners, transport, TLS, egress, balancing, health, retry, and circuit policy. Providers default disabled. Static endpoints are mandatory and serve as startup and post-stale fallback.
+Current implementation supports only bounded file and DNS A/AAAA providers. Providers replace endpoint lists in one predeclared upstream group; trusted base configuration still owns routes, listeners, transport, TLS, egress, balancing, health, retry, and circuit policy. Providers default disabled. Static endpoints are mandatory and serve as startup and post-stale fallback.
 
 ## File provider
 
@@ -38,7 +38,7 @@ Unknown fields, duplicate keys/IDs, hostnames, policy, empty sets, oversized fil
 
 DNS provider fixes hostname, port, transport, weight, optional HTTPS server name/CA, answer cap, refresh, and stale deadline in trusted configuration. Set `enabled = true` only after group `allowed_cidrs` and `denied_cidrs` express intended network. Every complete A/AAAA answer set is bounded and validated before activation. Existing connect-time policy rechecks each literal result. Any forbidden answer rejects entire refresh, preventing mixed-answer and rebinding bypass.
 
-DNS providers do not implement SRV, TXT metadata, labels, port discovery, or policy discovery. Phase 4 configured-hostname DNS remains separate transport resolution.
+DNS providers do not implement SRV, TXT metadata, labels, port discovery, or policy discovery. Configured-hostname DNS remains separate transport resolution.
 
 ## Activation and failure behavior
 
@@ -46,7 +46,7 @@ DNS providers do not implement SRV, TXT metadata, labels, port discovery, or pol
 2. Normalize only endpoint IDs, literal addresses, and weights through trusted template.
 3. Replace endpoints in provider-owned group on cloned base configuration.
 4. Run full configuration and egress validation.
-5. Persist immutable candidate and activate through Phase 5 CAS, prepare, atomic publish, probation, and drain flow.
+5. Persist immutable candidate and activate through normal CAS, prepare, atomic publish, probation, and drain flow.
 
 Invalid refresh never replaces active snapshot. Last accepted provider endpoints remain until `stale_after_secs`; expiry activates static endpoints. Recovery needs one new valid/stable result. Initial startup serves static endpoints until first provider poll succeeds. Removing or disabling provider activates static endpoints.
 

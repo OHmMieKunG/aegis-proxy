@@ -1,6 +1,7 @@
 # Threat-to-control verification matrix
 
-Review date: 2026-07-19
+Evidence review date: 2026-07-19
+Documentation rebaseline: 2026-07-22
 
 Status meanings: **verified-local** means named automated/local evidence passed; **deferred** means
 the feature is absent and guarded by scope; **external-gate** means local evidence exists but
@@ -20,7 +21,7 @@ independent review is still required. A status is not a vulnerability-free claim
 | Secret leakage | typed references; bounded providers; redaction; zeroization where practical | secret debug/export/canary, audit, backup tests | external-gate: artifact/log scan pending |
 | Authentication bypass | Basic/ForwardAuth/admin token fail closed; untrusted identity headers stripped | auth negative/timeout/hash-only/token-expiry tests | external-gate: independent auth review pending |
 | Authorization bypass | deny-by-default RBAC per admin operation and mutation preconditions | full role matrix; admin CLI CAS/RBAC integration test | external-gate: endpoint-by-endpoint review pending |
-| Session fixation/CSRF/admin XSS | no web UI or browser session in initial release | ADR-0019; no UI crate/routes/assets | deferred; must reopen before UI introduction |
+| Session fixation/CSRF/admin XSS | no current UI/session; Phase 16 requires strict browser controls | ADR-0029; no UI crate/routes/assets | planned; independent application-security gate before UI ships |
 | SQL injection | no database/SQL layer in initial release | ADR-0018; dependency/source inventory | deferred; must reopen before database introduction |
 | Command injection | no runtime shell/exec secret or plugin provider | secret provider rejection and provider schema tests; source review | verified-local; deployment wrapper scripts need separate review |
 | Configuration injection | strict typed bounded TOML; unknown fields denied; transactional activation | config corpus/unit tests; config/route fuzz targets; failed activation tests | external-gate: malicious-config review pending |

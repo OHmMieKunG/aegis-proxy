@@ -25,7 +25,7 @@ pub enum Action {
     ReadConfig,
     /// Validate configuration without persistence.
     ValidateConfig,
-    /// Preview configuration and its diff.
+    /// Preview redacted configuration, fingerprints, and activation class.
     PreviewConfig,
     /// Persist an immutable candidate.
     CreateCandidate,

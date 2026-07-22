@@ -152,7 +152,7 @@ The scheduler reconciles at most once per minute, applies stable jitter to the c
 - `ACME partial challenge cleanup failed`;
 - repeated `ACME reconciliation failed` or `ACME schedule inspection failed`.
 
-Phase 9 adds durable metrics and alert rules. Until then, route structured process logs to the operational log system and alert on these event names.
+Durable metrics and alert-rule examples are available under `deploy/observability/`. Route structured process logs to the operational log system and alert on these event names.
 
 ## Durable state
 
@@ -201,11 +201,11 @@ A production certificate may replace staging material only after all candidate c
 
 ## Account rollover
 
-There is no in-place account-key rollover command in Phase 6. To rotate safely, configure a new issuer ID with the same directory and update managed certificates to that issuer through validated configuration. The proxy creates and encrypts a new account; old account state remains available for rollback. Remove retained account state only during a separately reviewed retention/backup operation.
+There is no in-place account-key rollover command. To rotate safely, configure a new issuer ID with the same directory and update managed certificates to that issuer through validated configuration. The proxy creates and encrypts a new account; old account state remains available for rollback. Remove retained account state only during a separately reviewed retention/backup operation.
 
 ## Revocation and compromise
 
-ACME revocation is not implemented in Phase 6. For suspected key compromise:
+ACME revocation is not implemented. For suspected key compromise:
 
 1. Remove or isolate the affected listener/route if exposure must stop immediately.
 2. Revoke the certificate using the CA's authenticated external procedure.

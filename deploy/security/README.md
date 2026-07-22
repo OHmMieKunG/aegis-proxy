@@ -23,5 +23,6 @@ The AppArmor profile permits UDP only for DNS/ACME name resolution; it does not 
 proxying. It denies executing other packaged binaries. The seccomp allowlist denies mount,
 namespace, module, ptrace, BPF, reboot, keyring, and raw kernel-management syscalls by omission.
 
-Phase 13 locally parsed the JSON and AppArmor policy in query mode. Docker is unavailable in this
-WSL distribution, so runtime compatibility and Compose merge remain unverified release gates.
+Dated local evidence parsed the JSON and AppArmor policy in query mode. Current WSL environment
+lacks Docker integration, so runtime compatibility and Compose merge remain unverified release
+gates.

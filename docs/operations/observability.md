@@ -1,6 +1,6 @@
 # Observability operations
 
-Phase 9 emits structured JSON logs, bounded OpenMetrics, and optional OTLP/HTTP
+Current implementation emits structured JSON logs, bounded OpenMetrics, and optional OTLP/HTTP
 protobuf traces. Telemetry is diagnostic and best effort. The HMAC-chained
 administrative audit log remains the durable mutation record.
 

@@ -1,4 +1,4 @@
-# HTTP/3 and QUIC Phase 13 spike
+# HTTP/3 and QUIC decision
 
 Date: 2026-07-19 | Outcome: **NO-GO for the initial release**
 

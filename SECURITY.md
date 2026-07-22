@@ -1,5 +1,9 @@
 # Security policy
 
+AegisProxy is pre-release and has no production-supported version. See [`STATUS.md`](STATUS.md),
+the [threat/control matrix](docs/security/threat-control-matrix.md), and
+[secret-handling boundary](docs/security/secret-handling.md).
+
 Do not report secrets, private keys, production host details, or real certificates in issues or tests.
 
 Report suspected vulnerabilities privately through the GitHub security-advisory form:

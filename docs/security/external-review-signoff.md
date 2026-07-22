@@ -15,5 +15,5 @@ and compensating control, long fuzz/soak evidence is attached, and reviewer rete
 two-person rule. Repository maintainers must not fill reviewer names or signatures without the
 person's explicit review result.
 
-Local implementation can finish Phase 13 documentation and controls, but Phase 13 acceptance/exit
-cannot be marked complete while this table is unsigned.
+Local implementation and documentation cannot satisfy Phase 21 release acceptance while this table
+is unsigned.

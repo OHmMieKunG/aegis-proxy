@@ -1,4 +1,4 @@
-# Bounded UDP session Phase 13 decision
+# Bounded UDP session decision
 
 Date: 2026-07-19 | Outcome: **NO-GO without a named protocol**
 

@@ -2,7 +2,8 @@
 
 Review date: 2026-07-19
 
-Scope: release workspace through Phase 13 candidate `a3a005d`
+Scope: dated release workspace candidate `a3a005d`. Current verification status is in
+[`STATUS.md`](../../STATUS.md); current environment lacks `cargo-audit` and `cargo-deny`.
 
 Owner: dependency maintainer; security owner must approve release exceptions
 
@@ -50,7 +51,7 @@ policy must perform its own review.
 
 ## Rejected and removed dependency
 
-RUSTSEC-2025-0134 marks `rustls-pemfile` unmaintained. It was a direct dependency, so Phase 13
+RUSTSEC-2025-0134 marks `rustls-pemfile` unmaintained. It was a direct dependency, so the repository
 replaced it with Rustls' underlying `rustls-pki-types::pem::PemObject` parser while preserving
 strict rejection of mixed recognized PEM sections. Existing certificate/key tests pass.
 

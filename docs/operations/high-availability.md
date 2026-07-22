@@ -1,6 +1,6 @@
 # External-load-balancer high availability
 
-Phase 12 runs independent AegisProxy nodes behind an operator-owned L4 load balancer. There is no cluster protocol, quorum, shared database, shared writable certificate directory, global rate limiter, or remote administration port. Every node serves its local last-known-good revision when orchestration is unavailable.
+Current high-availability model runs independent AegisProxy nodes behind an operator-owned L4 load balancer. There is no cluster protocol, quorum, shared database, shared writable certificate directory, global rate limiter, or remote administration port. Every node serves its local last-known-good revision when orchestration is unavailable.
 
 ## Supported topology
 
