@@ -42,8 +42,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     Action, ApiObject, AuditEvent, AuditLog, AuditOutcome, ObjectId, PreparedProxyHost,
-    ProxyHostPreparationError, ProxyHostPreviewSummary, ProxyHostSpec, ProxyHostStore, Role,
-    StoredProxyHost, TokenScopes, TokenStore,
+    ProxyHostPreparationError, ProxyHostPreviewSummary, ProxyHostSpec, ProxyHostStore,
+    ProxyHostStoreError, Role, StoredProxyHost, TokenScopes, TokenStore,
 };
 use handlers::*;
 use support::*;
@@ -279,6 +279,7 @@ enum ApiError {
     InvalidRequest,
     NotFound,
     Conflict,
+    ObjectConflict,
     Unavailable,
     Internal,
 }
@@ -305,6 +306,7 @@ impl ApiError {
             Self::InvalidRequest => (StatusCode::BAD_REQUEST, "invalid_request"),
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             Self::Conflict => (StatusCode::CONFLICT, "revision_conflict"),
+            Self::ObjectConflict => (StatusCode::CONFLICT, "object_conflict"),
             Self::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
             Self::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
         };
@@ -317,6 +319,7 @@ impl ApiError {
             Self::InvalidRequest => "request is invalid",
             Self::NotFound => "resource was not found",
             Self::Conflict => "active revision changed",
+            Self::ObjectConflict => "object state changed",
             Self::Unavailable => "administrative dependency is unavailable",
             Self::Internal => "administrative request failed",
         };
@@ -494,6 +497,12 @@ struct CandidateResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct ProxyHostCreateResponse {
+    object: StoredProxyHost,
+    candidate: CandidateResponse,
+}
+
+#[derive(Debug, Serialize)]
 struct ActivationResponse {
     active: String,
     previous: Option<String>,
@@ -639,7 +648,7 @@ pub async fn serve(
         .route("/v1/config/active", get(active_config))
         .route("/v1/config/validate", post(validate_config))
         .route("/v1/config/preview", post(preview_config))
-        .route("/v1/proxy-hosts", get(proxy_hosts))
+        .route("/v1/proxy-hosts", get(proxy_hosts).post(create_proxy_host))
         .route("/v1/proxy-hosts/{id}", get(proxy_host))
         .route("/v1/proxy-hosts/validate", post(validate_proxy_host))
         .route("/v1/proxy-hosts/preview", post(preview_proxy_host))

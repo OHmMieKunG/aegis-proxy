@@ -220,6 +220,15 @@ enum ProxyHostCommand {
         admin: AdminConnection,
         id: String,
     },
+    /// Create owned desired state and a non-active immutable candidate.
+    Create {
+        #[command(flatten)]
+        admin: AdminConnection,
+        /// Exact active revision required by optimistic concurrency.
+        #[arg(long)]
+        expect: String,
+        file: PathBuf,
+    },
     /// Compile and semantically validate one owned Proxy Host without persistence.
     Validate {
         #[command(flatten)]
@@ -253,6 +262,7 @@ enum CliScope {
     RollbackConfig,
     ReadRevisions,
     ReadProxyHosts,
+    CreateProxyHost,
     ReadRoutes,
     ReadUpstreams,
     Drain,
@@ -276,6 +286,7 @@ impl CliScope {
             Self::RollbackConfig => "rollback_config",
             Self::ReadRevisions => "read_revisions",
             Self::ReadProxyHosts => "read_proxy_hosts",
+            Self::CreateProxyHost => "create_proxy_host",
             Self::ReadRoutes => "read_routes",
             Self::ReadUpstreams => "read_upstreams",
             Self::Drain => "drain",
@@ -758,6 +769,22 @@ async fn run_proxy_host_command(command: ProxyHostCommand) -> Result<(), BoxErro
                 None,
                 None,
                 Vec::new(),
+            )
+            .await?
+        }
+        ProxyHostCommand::Create {
+            admin,
+            expect,
+            file,
+        } => {
+            let body = read_bounded(file, aegisproxy_config::MAX_CONFIG_BYTES).await?;
+            admin_request(
+                &admin,
+                Method::POST,
+                "/v1/proxy-hosts",
+                Some(expect),
+                Some("application/json"),
+                body,
             )
             .await?
         }

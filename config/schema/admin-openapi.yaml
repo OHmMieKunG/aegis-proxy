@@ -4,7 +4,8 @@ info:
   version: 1.0.0
   description: >-
     Current private Unix-socket-only v1 contract. This document is not served by the daemon.
-    Typed Proxy Host validation and preview are non-persistent and non-active.
+    Typed Proxy Host validation and preview are non-persistent. Creation persists owned desired
+    state and an immutable candidate but never activates it.
 servers:
   - url: http://localhost
     description: HTTP over the configured private Unix socket
@@ -96,6 +97,17 @@ paths:
                 type: array
                 maxItems: 4096
                 items: {$ref: "#/components/schemas/StoredProxyHost"}
+        default: {$ref: "#/components/responses/Error"}
+    post:
+      operationId: createProxyHost
+      parameters: [{$ref: "#/components/parameters/IfMatch"}]
+      requestBody: {$ref: "#/components/requestBodies/ProxyHostObject"}
+      responses:
+        "201":
+          description: Owned desired state and immutable non-active candidate created
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ProxyHostCreate"}
         default: {$ref: "#/components/responses/Error"}
   /v1/proxy-hosts/{id}:
     get:
@@ -243,7 +255,7 @@ paths:
                 scopes:
                   type: array
                   minItems: 1
-                  maxItems: 18
+                  maxItems: 19
                   uniqueItems: true
                   items:
                     $ref: "#/components/schemas/TokenScope"
@@ -393,6 +405,21 @@ components:
       properties:
         generation: {type: integer, minimum: 1}
         object: {$ref: "#/components/schemas/ProxyHostObject"}
+    Candidate:
+      type: object
+      additionalProperties: false
+      required: [id, hash, sequence]
+      properties:
+        id: {type: string, pattern: '^[0-9]{20}-[0-9a-f]{64}$'}
+        hash: {type: string, pattern: '^[0-9a-f]{64}$'}
+        sequence: {type: integer, minimum: 1}
+    ProxyHostCreate:
+      type: object
+      additionalProperties: false
+      required: [object, candidate]
+      properties:
+        object: {$ref: "#/components/schemas/StoredProxyHost"}
+        candidate: {$ref: "#/components/schemas/Candidate"}
     GeneratedProxyHost:
       type: object
       additionalProperties: false
@@ -461,7 +488,7 @@ components:
             changes: {type: array, minItems: 7, maxItems: 8, items: {type: object}}
     TokenScope:
       type: string
-      enum: [read_status, read_config, validate_config, preview_config, create_candidate, activate_config, rollback_config, read_revisions, read_proxy_hosts, read_routes, read_upstreams, drain, read_certificates, renew_certificate, read_audit, create_backup, validate_restore, manage_identities]
+      enum: [read_status, read_config, validate_config, preview_config, create_candidate, activate_config, rollback_config, read_revisions, read_proxy_hosts, create_proxy_host, read_routes, read_upstreams, drain, read_certificates, renew_certificate, read_audit, create_backup, validate_restore, manage_identities]
     TokenMetadata:
       type: object
       additionalProperties: false
@@ -475,7 +502,7 @@ components:
             - {type: "null"}
         scopes:
           type: array
-          maxItems: 18
+          maxItems: 19
           uniqueItems: true
           items: {$ref: "#/components/schemas/TokenScope"}
         expires_unix_secs: {type: integer, minimum: 1}

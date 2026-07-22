@@ -476,6 +476,59 @@ upstream_group = "app"
             "{:?}",
             scoped_preview.stderr
         );
+        let denied_create = Command::new(binary())
+            .args([
+                "proxy-host",
+                "create",
+                "--socket",
+                socket,
+                "--token-ref",
+                &token_ref,
+                "--expect",
+                &current,
+            ])
+            .arg(&proxy_host_path)
+            .output()
+            .expect("denied Proxy Host create");
+        assert_eq!(denied_create.status.code(), Some(5));
+        assert_eq!(
+            fs::read_dir(state.join("config/revisions"))
+                .expect("revision directory")
+                .count(),
+            revisions_before
+        );
+        let create = Command::new(binary())
+            .args([
+                "proxy-host",
+                "create",
+                "--socket",
+                socket,
+                "--expect",
+                &current,
+            ])
+            .arg(&proxy_host_path)
+            .output()
+            .expect("Proxy Host create");
+        assert!(create.status.success(), "{:?}", create.stderr);
+        let create_json: serde_json::Value =
+            serde_json::from_slice(&create.stdout).expect("Proxy Host create JSON");
+        assert_eq!(create_json["object"]["generation"], 1);
+        assert_eq!(create_json["object"]["object"], proxy_host);
+        let candidate_id = create_json["candidate"]["id"]
+            .as_str()
+            .expect("candidate ID");
+        assert!(
+            state
+                .join("config/revisions")
+                .join(format!("{candidate_id}.toml"))
+                .is_file()
+        );
+        assert_eq!(active_revision(&state), current);
+        let created_list = run(&["proxy-host", "list", "--socket", socket]);
+        assert!(created_list.status.success(), "{:?}", created_list.stderr);
+        let created_list_json: serde_json::Value =
+            serde_json::from_slice(&created_list.stdout).expect("created list JSON");
+        assert_eq!(created_list_json.as_array().map(Vec::len), Some(2));
         let malformed_path = daemon.root.join("malformed-proxy-host.json");
         fs::write(&malformed_path, b"{").expect("malformed file");
         let authorization_first = run(&[

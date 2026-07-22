@@ -229,6 +229,12 @@ fn mutation_preconditions_are_exact_and_single_valued() {
     assert!(require_toml(&headers).is_ok());
     assert_eq!(expected_revision(&headers).expect("revision"), revision);
 
+    let mut json_headers = HeaderMap::new();
+    json_headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    assert!(require_json(&json_headers).is_ok());
+    json_headers.append(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    assert!(require_json(&json_headers).is_err());
+
     headers.append(CONTENT_TYPE, HeaderValue::from_static("application/toml"));
     assert!(require_toml(&headers).is_err());
     headers.append(IF_MATCH, HeaderValue::from_static("\"duplicate\""));

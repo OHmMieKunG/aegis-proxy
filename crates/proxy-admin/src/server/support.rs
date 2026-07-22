@@ -20,6 +20,14 @@ pub(super) fn require_toml(headers: &HeaderMap) -> Result<(), ApiError> {
     }
 }
 
+pub(super) fn require_json(headers: &HeaderMap) -> Result<(), ApiError> {
+    let values: Vec<_> = headers.get_all(CONTENT_TYPE).iter().collect();
+    match values.as_slice() {
+        [value] if value.as_bytes() == b"application/json" => Ok(()),
+        _ => Err(ApiError::InvalidRequest),
+    }
+}
+
 pub(super) fn valid_api_path(path: &Path) -> bool {
     let Some(value) = path.to_str() else {
         return false;

@@ -9,7 +9,8 @@ use thiserror::Error;
 use crate::{
     ApiObject, AutomaticHttps, CompileContext, ContractError, ObjectId, ProxyHostCandidatePreview,
     ProxyHostClaims, ProxyHostCompileError, ProxyHostDiff, ProxyHostDiffError,
-    ProxyHostPreviewError, ProxyHostSpec, compile_proxy_host, diff_proxy_host_previews,
+    ProxyHostPreviewError, ProxyHostSetCandidate, ProxyHostSetCompileContext, ProxyHostSpec,
+    compile_proxy_host, compile_proxy_hosts, diff_proxy_host_previews,
     preview_proxy_host_candidate,
 };
 
@@ -104,6 +105,29 @@ pub(crate) fn prepare_proxy_host_with_claims(
     let diff = diff_proxy_host_previews(None, &preview.summary)
         .map_err(|_error: ProxyHostDiffError| ProxyHostPreparationError::Diff)?;
     Ok(PreparedProxyHost { preview, diff })
+}
+
+pub(crate) fn prepare_proxy_host_set(
+    current: &[ApiObject<ProxyHostSpec>],
+    desired: &[ApiObject<ProxyHostSpec>],
+    active: &Config,
+) -> Result<ProxyHostSetCandidate, ProxyHostPreparationError> {
+    let http_listener_id = single_http_listener(active)?;
+    let upstream_template_id = single_http_upstream_template(active)?;
+    let access_policies = BTreeMap::new();
+    let managed_https = BTreeMap::new();
+    compile_proxy_hosts(
+        current,
+        desired,
+        &ProxyHostSetCompileContext {
+            base_config: active,
+            http_listener_id,
+            upstream_template_id,
+            access_policies: &access_policies,
+            managed_https: &managed_https,
+        },
+    )
+    .map_err(map_compile_error)
 }
 
 fn map_contract_error(_error: ContractError) -> ProxyHostPreparationError {
