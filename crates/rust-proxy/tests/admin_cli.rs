@@ -234,6 +234,21 @@ upstream_group = "app"
         }
 
         let current = active_revision(&state);
+        let escalation = run(&[
+            "token",
+            "create",
+            "--socket",
+            socket,
+            "--expect",
+            &current,
+            "--role",
+            "viewer",
+            "--scope",
+            "activate-config",
+            "--ttl-secs",
+            "600",
+        ]);
+        assert_eq!(escalation.status.code(), Some(3));
         let token = run(&[
             "token",
             "create",
@@ -243,6 +258,8 @@ upstream_group = "app"
             &current,
             "--role",
             "operator",
+            "--scope",
+            "read-status",
             "--ttl-secs",
             "600",
         ]);
@@ -255,6 +272,15 @@ upstream_group = "app"
         fs::write(&token_file, plaintext).expect("token file");
         fs::set_permissions(&token_file, fs::Permissions::from_mode(0o600)).expect("token mode");
         let token_ref = format!("file://{}", token_file.display());
+        let scoped_status = run(&[
+            "fleet",
+            "status",
+            "--socket",
+            socket,
+            "--token-ref",
+            &token_ref,
+        ]);
+        assert!(scoped_status.status.success());
         let denied = run(&[
             "token",
             "revoke",

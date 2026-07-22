@@ -181,6 +181,9 @@ enum TokenCommand {
         expect: String,
         #[arg(long, value_enum)]
         role: CliRole,
+        /// Explicit action scope; repeat for multiple scopes.
+        #[arg(long, value_enum, required = true)]
+        scope: Vec<CliScope>,
         #[arg(long, default_value_t = 3_600)]
         ttl_secs: u64,
     },
@@ -205,6 +208,51 @@ enum CliRole {
     Auditor,
     Operator,
     Admin,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum CliScope {
+    ReadStatus,
+    ReadConfig,
+    ValidateConfig,
+    PreviewConfig,
+    CreateCandidate,
+    ActivateConfig,
+    RollbackConfig,
+    ReadRevisions,
+    ReadRoutes,
+    ReadUpstreams,
+    Drain,
+    ReadCertificates,
+    RenewCertificate,
+    ReadAudit,
+    CreateBackup,
+    ValidateRestore,
+    ManageIdentities,
+}
+
+impl CliScope {
+    const fn as_api_str(self) -> &'static str {
+        match self {
+            Self::ReadStatus => "read_status",
+            Self::ReadConfig => "read_config",
+            Self::ValidateConfig => "validate_config",
+            Self::PreviewConfig => "preview_config",
+            Self::CreateCandidate => "create_candidate",
+            Self::ActivateConfig => "activate_config",
+            Self::RollbackConfig => "rollback_config",
+            Self::ReadRevisions => "read_revisions",
+            Self::ReadRoutes => "read_routes",
+            Self::ReadUpstreams => "read_upstreams",
+            Self::Drain => "drain",
+            Self::ReadCertificates => "read_certificates",
+            Self::RenewCertificate => "renew_certificate",
+            Self::ReadAudit => "read_audit",
+            Self::CreateBackup => "create_backup",
+            Self::ValidateRestore => "validate_restore",
+            Self::ManageIdentities => "manage_identities",
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -248,6 +296,7 @@ struct CandidateResponse {
 #[derive(Debug, Serialize)]
 struct TokenCreateBody<'a> {
     role: &'a str,
+    scopes: Vec<&'static str>,
     expires_unix_secs: u64,
 }
 
@@ -592,6 +641,7 @@ async fn run_token_command(command: TokenCommand) -> Result<(), BoxError> {
             admin,
             expect,
             role,
+            scope,
             ttl_secs,
         } => {
             if ttl_secs == 0 || ttl_secs > 365 * 24 * 60 * 60 {
@@ -610,6 +660,7 @@ async fn run_token_command(command: TokenCommand) -> Result<(), BoxError> {
             };
             let body = serde_json::to_vec(&TokenCreateBody {
                 role,
+                scopes: scope.into_iter().map(CliScope::as_api_str).collect(),
                 expires_unix_secs: now.saturating_add(ttl_secs),
             })?;
             let response = admin_request(

@@ -77,6 +77,8 @@ fn checked_openapi_contains_every_private_route() {
     }
     assert!(!openapi.contains("0.0.0.0"));
     assert!(!openapi.contains("private_key"));
+    assert!(!openapi.contains("password_hash"));
+    assert!(openapi.contains("TokenScope:"));
 }
 
 #[test]
@@ -126,6 +128,7 @@ fn principal_rate_limit_enforces_burst_refill_and_key_bound() {
         actor_type: "unix_peer",
         actor_id: "1000".into(),
         role: Role::Admin,
+        token_scopes: None,
     };
     assert!(limiter.check_at(&first, start).is_ok());
     assert!(limiter.check_at(&first, start).is_ok());
@@ -140,8 +143,41 @@ fn principal_rate_limit_enforces_burst_refill_and_key_bound() {
         actor_type: "api_token",
         actor_id: "second".into(),
         role: Role::Viewer,
+        token_scopes: Some(
+            TokenScopes::new(Role::Viewer, vec![Action::ReadStatus]).expect("viewer scope"),
+        ),
     };
     assert!(limiter.check_at(&second, start).is_err());
+}
+
+#[test]
+fn token_authorization_requires_role_and_explicit_scope() {
+    let scoped = Principal {
+        actor_type: "api_token",
+        actor_id: "scoped".into(),
+        role: Role::Admin,
+        token_scopes: Some(
+            TokenScopes::new(Role::Admin, vec![Action::ReadStatus]).expect("admin scope"),
+        ),
+    };
+    assert!(authorize(&scoped, Action::ReadStatus).is_ok());
+    assert!(authorize(&scoped, Action::ActivateConfig).is_err());
+
+    let legacy = Principal {
+        actor_type: "api_token",
+        actor_id: "legacy".into(),
+        role: Role::Admin,
+        token_scopes: Some(TokenScopes::default()),
+    };
+    assert!(authorize(&legacy, Action::ReadStatus).is_err());
+
+    let peer = Principal {
+        actor_type: "unix_peer",
+        actor_id: "1000".into(),
+        role: Role::Admin,
+        token_scopes: None,
+    };
+    assert!(authorize(&peer, Action::ActivateConfig).is_ok());
 }
 
 #[test]

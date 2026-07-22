@@ -13,7 +13,9 @@ server-side authorization, audit, concurrency, secret, and activation boundary.
 Local socket peers are authenticated by kernel credentials and receive the
 fixed `admin` role. Automation may additionally send a bearer API token. Token
 plaintext is returned once, only hashes are persisted, and tokens have explicit
-expiry and revocation state. CLI `--token-ref` accepts only `env://NAME` or an
+expiry, revocation state, and action scopes. Effective permission is the intersection of the token's
+role and explicit scopes. Legacy records without scopes load deny-all and must be replaced through a
+local authorized Unix peer. CLI `--token-ref` accepts only `env://NAME` or an
 absolute `file:///path`; token values never belong in command arguments.
 
 ## Mutation safety
@@ -36,7 +38,7 @@ rust-proxy fleet status --socket SOCKET
 rust-proxy drain --socket SOCKET --expect REV
 rust-proxy config activate --socket SOCKET --file proxy.toml --expect REV
 rust-proxy config rollback --socket SOCKET REV --expect CURRENT
-rust-proxy token create --socket SOCKET --expect REV --role operator
+rust-proxy token create --socket SOCKET --expect REV --role operator --scope read-status
 rust-proxy token list --socket SOCKET --token-ref file:///run/secrets/admin-token
 rust-proxy token revoke --socket SOCKET --expect REV TOKEN_ID
 rust-proxy backup create --socket SOCKET --expect REV --output /backup/aegis.age

@@ -40,7 +40,7 @@ use thiserror::Error;
 use tokio::{net::UnixListener, sync::Semaphore};
 use tokio_util::sync::CancellationToken;
 
-use crate::{Action, AuditEvent, AuditLog, AuditOutcome, Role, TokenStore};
+use crate::{Action, AuditEvent, AuditLog, AuditOutcome, Role, TokenScopes, TokenStore};
 use handlers::*;
 use support::*;
 
@@ -104,6 +104,7 @@ struct Principal {
     actor_type: &'static str,
     actor_id: String,
     role: Role,
+    token_scopes: Option<TokenScopes>,
 }
 
 impl FromRequestParts<AppState> for Principal {
@@ -129,6 +130,7 @@ impl FromRequestParts<AppState> for Principal {
                     actor_type: "unix_peer",
                     actor_id: uid.to_string(),
                     role: Role::Admin,
+                    token_scopes: None,
                 };
                 state.rate_limiter.check(&principal)?;
                 return Ok(principal);
@@ -155,6 +157,7 @@ impl FromRequestParts<AppState> for Principal {
                 actor_type: "api_token",
                 actor_id: metadata.id,
                 role: metadata.role,
+                token_scopes: Some(metadata.scopes),
             };
             state.rate_limiter.check(&principal)?;
             Ok(principal)
@@ -448,6 +451,7 @@ struct ActivationResponse {
 #[serde(deny_unknown_fields)]
 struct TokenCreateRequest {
     role: Role,
+    scopes: Vec<Action>,
     expires_unix_secs: u64,
 }
 

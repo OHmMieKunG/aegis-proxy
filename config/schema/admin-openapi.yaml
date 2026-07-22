@@ -172,7 +172,14 @@ paths:
     get:
       operationId: listTokens
       responses:
-        "200": {description: Hash-free token metadata}
+        "200":
+          description: Hash-free token metadata
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 1024
+                items: {$ref: "#/components/schemas/TokenMetadata"}
         default: {$ref: "#/components/responses/Error"}
     post:
       operationId: createToken
@@ -184,12 +191,23 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [role, expires_unix_secs]
+              required: [role, scopes, expires_unix_secs]
               properties:
                 role: {type: string, enum: [viewer, auditor, operator, admin]}
+                scopes:
+                  type: array
+                  minItems: 1
+                  maxItems: 17
+                  uniqueItems: true
+                  items:
+                    $ref: "#/components/schemas/TokenScope"
                 expires_unix_secs: {type: integer, minimum: 1}
       responses:
-        "201": {description: Plaintext token returned once}
+        "201":
+          description: Plaintext token returned once
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/IssuedToken"}
         default: {$ref: "#/components/responses/Error"}
   /v1/tokens/{id}/revoke:
     post:
@@ -281,6 +299,30 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorEnvelope"
   schemas:
+    TokenScope:
+      type: string
+      enum: [read_status, read_config, validate_config, preview_config, create_candidate, activate_config, rollback_config, read_revisions, read_routes, read_upstreams, drain, read_certificates, renew_certificate, read_audit, create_backup, validate_restore, manage_identities]
+    TokenMetadata:
+      type: object
+      additionalProperties: false
+      required: [id, role, scopes, expires_unix_secs, revoked]
+      properties:
+        id: {type: string, pattern: '^[A-Za-z0-9_-]{16}$'}
+        role: {type: string, enum: [viewer, auditor, operator, admin]}
+        scopes:
+          type: array
+          maxItems: 17
+          uniqueItems: true
+          items: {$ref: "#/components/schemas/TokenScope"}
+        expires_unix_secs: {type: integer, minimum: 1}
+        revoked: {type: boolean}
+    IssuedToken:
+      type: object
+      additionalProperties: false
+      required: [token, metadata]
+      properties:
+        token: {type: string, description: Plaintext returned once and never persisted}
+        metadata: {$ref: "#/components/schemas/TokenMetadata"}
     ErrorEnvelope:
       type: object
       additionalProperties: false

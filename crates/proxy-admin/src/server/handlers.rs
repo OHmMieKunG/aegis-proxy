@@ -724,6 +724,12 @@ pub(super) async fn create_token(
     {
         return Err(audited_failure(&audit, "invalid_expiry", ApiError::InvalidRequest).await);
     }
+    let scopes = match crate::TokenScopes::new(request.role, request.scopes) {
+        Ok(scopes) => scopes,
+        Err(_) => {
+            return Err(audited_failure(&audit, "invalid_scopes", ApiError::InvalidRequest).await);
+        }
+    };
     let permit = match Arc::clone(&state.auth_permits).try_acquire_owned() {
         Ok(permit) => permit,
         Err(_) => return Err(audited_failure(&audit, "capacity_exhausted", ApiError::Busy).await),
@@ -731,7 +737,7 @@ pub(super) async fn create_token(
     let store = Arc::clone(&state.tokens);
     let result = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        store.issue(request.role, request.expires_unix_secs)
+        store.issue(request.role, scopes, request.expires_unix_secs)
     })
     .await;
     let (metadata, issued) = match result {

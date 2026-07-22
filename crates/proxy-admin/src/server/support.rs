@@ -173,11 +173,13 @@ pub(super) fn activation_error(error: ActivationError) -> (&'static str, ApiErro
 }
 
 pub(super) fn authorize(principal: &Principal, action: Action) -> Result<(), ApiError> {
-    principal
-        .role
-        .allows(action)
-        .then_some(())
-        .ok_or(ApiError::Forbidden)
+    (principal.role.allows(action)
+        && principal
+            .token_scopes
+            .as_ref()
+            .is_none_or(|scopes| scopes.allows(action)))
+    .then_some(())
+    .ok_or(ApiError::Forbidden)
 }
 
 pub(super) fn authorization_header(headers: &HeaderMap) -> Result<Option<String>, ApiError> {

@@ -1,6 +1,7 @@
 //! Fixed deny-by-default administrative authorization.
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 /// Built-in administrative role.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -17,7 +18,8 @@ pub enum Role {
 }
 
 /// One server-side authorization decision.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Action {
     /// Read redacted status.
     ReadStatus,
@@ -53,6 +55,74 @@ pub enum Action {
     ValidateRestore,
     /// Manage administrative identities and roles.
     ManageIdentities,
+}
+
+/// Invalid API-token scope set.
+#[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
+pub enum TokenScopeError {
+    /// New tokens must grant at least one explicit action.
+    #[error("API token requires at least one scope")]
+    Empty,
+    /// A scope appeared more than once.
+    #[error("API token scopes contain a duplicate")]
+    Duplicate,
+    /// A scope exceeds the selected role.
+    #[error("API token scope exceeds its role")]
+    ExceedsRole,
+}
+
+/// Canonically ordered explicit action scopes for one API token.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct TokenScopes(Vec<Action>);
+
+impl TokenScopes {
+    /// Validate, sort, and construct a nonempty scope set bounded by `role`.
+    pub fn new(role: Role, mut actions: Vec<Action>) -> Result<Self, TokenScopeError> {
+        if actions.is_empty() {
+            return Err(TokenScopeError::Empty);
+        }
+        if actions.iter().any(|action| !role.allows(*action)) {
+            return Err(TokenScopeError::ExceedsRole);
+        }
+        actions.sort_unstable();
+        if actions.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(TokenScopeError::Duplicate);
+        }
+        Ok(Self(actions))
+    }
+
+    /// Return whether this token explicitly grants `action`.
+    #[must_use]
+    pub fn allows(&self, action: Action) -> bool {
+        self.0.binary_search(&action).is_ok()
+    }
+
+    /// Return the canonical read-only scope slice.
+    #[must_use]
+    pub fn as_slice(&self) -> &[Action] {
+        &self.0
+    }
+
+    pub(crate) fn validate_stored(&self, role: Role) -> Result<(), TokenScopeError> {
+        if self.0.is_empty() {
+            return Ok(());
+        }
+        if self.0.iter().any(|action| !role.allows(*action)) {
+            return Err(TokenScopeError::ExceedsRole);
+        }
+        if self.0.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(TokenScopeError::Duplicate);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_for_issue(&self, role: Role) -> Result<(), TokenScopeError> {
+        if self.0.is_empty() {
+            return Err(TokenScopeError::Empty);
+        }
+        self.validate_stored(role)
+    }
 }
 
 impl Role {
@@ -100,7 +170,7 @@ impl Role {
 
 #[cfg(test)]
 mod tests {
-    use super::{Action, Role};
+    use super::{Action, Role, TokenScopeError, TokenScopes};
 
     const ACTIONS: [Action; 17] = [
         Action::ReadStatus,
@@ -145,5 +215,28 @@ mod tests {
         assert!(!Role::Operator.allows(Action::ActivateConfig));
         assert!(!Role::Operator.allows(Action::ReadAudit));
         assert!(Role::Admin.allows(Action::ManageIdentities));
+    }
+
+    #[test]
+    fn token_scopes_are_explicit_canonical_and_role_bounded() {
+        let scopes = TokenScopes::new(Role::Operator, vec![Action::ReadRoutes, Action::ReadStatus])
+            .expect("operator scopes");
+        assert_eq!(scopes.as_slice(), &[Action::ReadStatus, Action::ReadRoutes]);
+        assert!(scopes.allows(Action::ReadRoutes));
+        assert!(!scopes.allows(Action::CreateCandidate));
+        assert_eq!(
+            TokenScopes::new(Role::Viewer, Vec::new()).expect_err("empty"),
+            TokenScopeError::Empty
+        );
+        assert_eq!(
+            TokenScopes::new(Role::Viewer, vec![Action::ReadStatus, Action::ReadStatus])
+                .expect_err("duplicate"),
+            TokenScopeError::Duplicate
+        );
+        assert_eq!(
+            TokenScopes::new(Role::Viewer, vec![Action::ActivateConfig])
+                .expect_err("role escalation"),
+            TokenScopeError::ExceedsRole
+        );
     }
 }

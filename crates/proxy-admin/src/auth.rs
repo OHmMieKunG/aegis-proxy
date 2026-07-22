@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use zeroize::Zeroizing;
 
-use crate::Role;
+use crate::{Action, Role, TokenScopeError, TokenScopes};
 
 const TOKEN_ID_BYTES: usize = 12;
 const TOKEN_SECRET_BYTES: usize = 32;
@@ -40,6 +40,9 @@ pub enum TokenError {
     /// Argon2id could not create or parse a hash under the fixed policy.
     #[error("API token hashing failed")]
     Hash,
+    /// Requested scopes were empty, duplicated, or exceeded the role.
+    #[error("invalid API token scopes")]
+    InvalidScopes(#[from] TokenScopeError),
 }
 
 /// Durable token-store failure.
@@ -84,6 +87,9 @@ pub struct TokenRecord {
     pub id: String,
     /// Authorized built-in role.
     pub role: Role,
+    /// Explicit action scopes. Missing legacy scopes deserialize to deny-all.
+    #[serde(default)]
+    pub scopes: TokenScopes,
     /// Absolute Unix expiry time.
     pub expires_unix_secs: u64,
     /// Explicit revocation marker.
@@ -98,6 +104,8 @@ pub struct TokenMetadata {
     pub id: String,
     /// Authorized built-in role.
     pub role: Role,
+    /// Explicit action scopes.
+    pub scopes: TokenScopes,
     /// Absolute Unix expiry time.
     pub expires_unix_secs: u64,
     /// Explicit revocation marker.
@@ -135,6 +143,7 @@ impl fmt::Debug for TokenRecord {
             .debug_struct("TokenRecord")
             .field("id", &self.id)
             .field("role", &self.role)
+            .field("scopes", &self.scopes)
             .field("expires_unix_secs", &self.expires_unix_secs)
             .field("revoked", &self.revoked)
             .field("password_hash", &"[REDACTED]")
@@ -144,7 +153,12 @@ impl fmt::Debug for TokenRecord {
 
 impl TokenRecord {
     /// Issue a 256-bit token and return its hash-only record.
-    pub fn issue(role: Role, expires_unix_secs: u64) -> Result<(Self, IssuedToken), TokenError> {
+    pub fn issue(
+        role: Role,
+        scopes: TokenScopes,
+        expires_unix_secs: u64,
+    ) -> Result<(Self, IssuedToken), TokenError> {
+        scopes.validate_for_issue(role)?;
         let mut id = [0_u8; TOKEN_ID_BYTES];
         let mut secret = Zeroizing::new([0_u8; TOKEN_SECRET_BYTES]);
         let mut salt = [0_u8; TOKEN_SALT_BYTES];
@@ -159,6 +173,7 @@ impl TokenRecord {
             Self {
                 id,
                 role,
+                scopes,
                 expires_unix_secs,
                 revoked: false,
                 password_hash: hash,
@@ -201,6 +216,7 @@ impl TokenRecord {
         TokenMetadata {
             id: self.id.clone(),
             role: self.role,
+            scopes: self.scopes.clone(),
             expires_unix_secs: self.expires_unix_secs,
             revoked: self.revoked,
         }
@@ -213,7 +229,10 @@ impl TokenStore {
         let path = path.as_ref().to_path_buf();
         let records = load_token_file(&path)?;
         validate_records(&records)?;
-        let (fallback, fallback_plaintext) = TokenRecord::issue(Role::Viewer, u64::MAX)?;
+        let fallback_scopes =
+            TokenScopes::new(Role::Viewer, vec![Action::ReadStatus]).map_err(TokenError::from)?;
+        let (fallback, fallback_plaintext) =
+            TokenRecord::issue(Role::Viewer, fallback_scopes, u64::MAX)?;
         drop(fallback_plaintext);
         Ok(Self {
             path,
@@ -226,9 +245,10 @@ impl TokenStore {
     pub fn issue(
         &self,
         role: Role,
+        scopes: TokenScopes,
         expires_unix_secs: u64,
     ) -> Result<(TokenMetadata, IssuedToken), TokenStoreError> {
-        let (record, issued) = TokenRecord::issue(role, expires_unix_secs)?;
+        let (record, issued) = TokenRecord::issue(role, scopes, expires_unix_secs)?;
         let metadata = record.metadata();
         let mut records = self
             .records
@@ -349,6 +369,7 @@ fn validate_records(records: &[TokenRecord]) -> Result<(), TokenStoreError> {
         if !valid_token_id(&record.id)
             || !ids.insert(record.id.as_str())
             || !valid_password_hash(&record.password_hash)
+            || record.scopes.validate_stored(record.role).is_err()
         {
             return Err(TokenStoreError::Invalid);
         }
@@ -486,11 +507,17 @@ mod tests {
     use std::fs;
 
     use super::{TokenRecord, TokenStore};
-    use crate::Role;
+    use crate::{Action, Role, TokenScopes};
+
+    fn operator_scopes() -> TokenScopes {
+        TokenScopes::new(Role::Operator, vec![Action::ReadStatus, Action::ReadRoutes])
+            .expect("operator scopes")
+    }
 
     #[test]
     fn token_is_hash_only_redacted_expiring_and_revocable() {
-        let (mut record, issued) = TokenRecord::issue(Role::Operator, 200).expect("issue");
+        let (mut record, issued) =
+            TokenRecord::issue(Role::Operator, operator_scopes(), 200).expect("issue");
         let plaintext = issued.into_plaintext();
         assert_eq!(plaintext.split_once('.').expect("token").1.len(), 43);
         assert!(record.verify(&plaintext, 199));
@@ -513,7 +540,9 @@ mod tests {
         let _ = fs::remove_dir_all(&directory);
         let path = directory.join("tokens.json");
         let store = TokenStore::open(&path).expect("open");
-        let (metadata, issued) = store.issue(Role::Operator, 200).expect("issue");
+        let (metadata, issued) = store
+            .issue(Role::Operator, operator_scopes(), 200)
+            .expect("issue");
         let plaintext = issued.into_plaintext();
         assert_eq!(
             store.authenticate(&plaintext, 100).map(|token| token.role),
@@ -531,6 +560,42 @@ mod tests {
         let reopened = TokenStore::open(&path).expect("reopen");
         assert_eq!(reopened.list().len(), 1);
         assert!(reopened.list()[0].revoked);
+        fs::remove_dir_all(directory).expect("remove");
+    }
+
+    #[test]
+    fn legacy_missing_scopes_load_as_deny_all() {
+        let directory = std::env::temp_dir().join(format!(
+            "aegisproxy-legacy-token-store-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        let path = directory.join("tokens.json");
+        let store = TokenStore::open(&path).expect("open");
+        let (_metadata, issued) = store
+            .issue(Role::Operator, operator_scopes(), 200)
+            .expect("issue");
+        let plaintext = issued.into_plaintext();
+        drop(store);
+
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).expect("read token file")).expect("token JSON");
+        value["records"][0]
+            .as_object_mut()
+            .expect("token record")
+            .remove("scopes");
+        fs::write(
+            &path,
+            serde_json::to_vec_pretty(&value).expect("legacy JSON"),
+        )
+        .expect("write legacy file");
+
+        let reopened = TokenStore::open(&path).expect("open legacy");
+        let authenticated = reopened
+            .authenticate(&plaintext, 100)
+            .expect("authenticate");
+        assert!(authenticated.scopes.as_slice().is_empty());
+        assert!(!authenticated.scopes.allows(Action::ReadStatus));
         fs::remove_dir_all(directory).expect("remove");
     }
 }
