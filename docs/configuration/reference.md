@@ -47,11 +47,13 @@ never policy contents or raw configuration, and performs no persistence or activ
 
 Private typed endpoints include owner-scoped `GET /v1/proxy-hosts` and
 `GET /v1/proxy-hosts/{id}`, plus `POST /v1/proxy-hosts/validate` and
-`POST /v1/proxy-hosts/preview`. CLI equivalents are:
+`POST /v1/proxy-hosts/preview`. `POST /v1/proxy-hosts` creates owned desired state and an immutable
+candidate but does not activate it. CLI equivalents are:
 
 ```text
 rust-proxy proxy-host list --socket SOCKET
 rust-proxy proxy-host get --socket SOCKET OBJECT_ID
+rust-proxy proxy-host create --socket SOCKET --expect ACTIVE_REV proxy-host.json
 rust-proxy proxy-host validate --socket SOCKET proxy-host.json
 rust-proxy proxy-host preview --socket SOCKET proxy-host.json
 ```
@@ -62,13 +64,19 @@ requires exactly one HTTP listener and one all-HTTP upstream template in active 
 Managed HTTPS and access policies fail closed until their typed ownership metadata exists. These
 restrictions apply to endpoints, not lower-level compiler contract.
 
+Create requires exact active-revision and complete desired-state optimistic concurrency. It writes
+the canonical immutable candidate before generation-one object state, then returns both metadata
+records. It never changes active revision. Update, delete, typed activation, access-policy objects,
+and certificate-policy objects remain unavailable.
+
 Typed Proxy Host desired state has a separate internal schema-v1 JSON store. It is bounded to 4,096
 objects and 2 MiB, uses private directory/file permissions, stable owner/object ordering, globally
 unique domains, and object-local generations beginning at one. Create rejects existing identity or
 domain; update/delete require exact generation. File replacement is durable and atomic within its
 directory. Administration opens it at `<state_dir>/admin/proxy-hosts.json`; list/get are owner
 scoped, stable, and require `read_proxy_hosts`. Validation/preview reject its claimed IDs/domains.
-This store is not active configuration and current endpoints do not write it.
+This store is not active configuration. Create writes only after complete-state compilation,
+semantic validation, immutable revision creation, and an unchanged process-local store epoch.
 
 ## Routing rules
 

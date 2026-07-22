@@ -152,3 +152,6 @@ migration and compatibility tests; full security review.
 
 This read-only endpoint unit meets its boundary and validation gate. Phase 15 remains in progress;
 production assessment remains NO-GO.
+
+Subsequent commit `068f408` adds separately scoped audited create. Validation and preview remain
+non-persistent and retain the isolation recorded here.

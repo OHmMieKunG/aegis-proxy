@@ -61,7 +61,9 @@ change active proxy behavior.
 The store validates contract shape, not active-configuration semantics. Future mutation handlers
 must compile and semantically validate before writing, then use existing audited revision and
 activation services. Subsequent commit `d1514dd` opens this store for owner-scoped list/get and
-uses metadata-only claims during validation/preview; it still exposes no mutation.
+uses metadata-only claims during validation/preview. Subsequent commit `f204012` adds a stable
+complete-state snapshot and process-local epoch CAS; `068f408` uses it for audited create after
+candidate persistence and never activates runtime.
 
 ## Tests
 

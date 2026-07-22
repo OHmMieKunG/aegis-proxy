@@ -4,8 +4,8 @@ Verification date: 2026-07-22
 Branch: `work/autonomous-roadmap`
 Verification basis: Phase 14 plus Phase 15 compiler `fa7913f`, preview service `d3de105`, typed diff
 `2617f0e`, API-token scopes `81bd500`, owned Proxy Host endpoints `00cfa32`, typed object store
-`5c8898b`, owner-scoped typed reads `d1514dd`, aggregate compiler `35d7d38`, and mutation-scope fix
-`106f2fa`
+`5c8898b`, owner-scoped typed reads `d1514dd`, aggregate compiler `35d7d38`, mutation-scope fix
+`106f2fa`, desired-state snapshot CAS `f204012`, and audited typed create `068f408`
 Working tree at Phase 14 start: clean at `10aae8c`
 
 ## Release status
@@ -44,16 +44,18 @@ evidence.
   side-effect-free typed preview, and bounded field-level diff. Existing primitives validate
   ownership, references, domains, conflicts, listener/certificate policy, generated configuration,
   redaction, fingerprints, restart classification, and owner/object identity during diff. Existing
-  low-level API tokens use a complete 18-action role-and-scope intersection. Private typed Proxy
+  low-level API tokens use a complete 19-action role-and-scope intersection. Private typed Proxy
   Host validation and preview endpoints authenticate and authorize before JSON deserialization,
   enforce principal ownership, reject persisted identity/domain conflicts, and cannot persist or
   activate. The bounded private typed object store is opened at administration startup and exposes
   owner-scoped stable list/get operations under the exact `read_proxy_hosts` action; it supports
-  generation CAS internally but has no mutation endpoint yet. A side-effect-free aggregate compiler
-  deterministically rebuilds complete desired state, preserves pending objects, and removes only
-  structurally verified namespaces reserved by current stored objects.
-  Typed mutation, certificate/access-policy ownership metadata, and a complete ownership matrix do
-  not exist yet.
+  generation CAS internally. Audited typed create compiles complete desired state, creates an
+  immutable non-active revision, then persists the object through store-epoch CAS under exact
+  active-revision `If-Match`; scoped denial and candidate rejection leave desired/runtime state
+  unchanged. A side-effect-free aggregate compiler deterministically rebuilds complete desired
+  state, preserves pending objects, and removes only structurally verified namespaces reserved by
+  current stored objects. Typed update/delete/activation, certificate/access-policy ownership
+  metadata, and a complete ownership matrix do not exist yet.
 - Preview returns redacted config, fingerprints, and activation class; a separate pure function
   produces the ordered typed diff. Neither can persist or activate candidates.
 - Restore validates archives but does not extract or activate them.
@@ -100,7 +102,7 @@ is split by domain, and no production Rust module exceeds 1,200 measured lines. 
 | changed documentation link targets | passed; every added/changed relative target exists |
 | `cargo tree -e features` | passed; 2,439 output lines |
 | Phase 15 manifest/config-schema comparison against `2d533a8` | passed; no differences |
-| Admin OpenAPI | parsed with Python/PyYAML; intentionally changed for owned typed preview/reads and token ownership/scopes |
+| Admin OpenAPI | parsed with Python/PyYAML; intentionally changed for owned typed create/preview/reads and token ownership/scopes |
 
 ## Unavailable or incomplete checks
 

@@ -30,6 +30,10 @@ rust-proxy token create --socket SOCKET --expect REV --role operator \
   --scope read-status --scope read-proxy-hosts
 ```
 
+Typed Proxy Host creation adds distinct `create-proxy-host` CLI scope (`create_proxy_host` in
+JSON). Existing tokens do not gain it automatically. Replace or issue a token explicitly when
+automation needs create; list/get remain independently grantable.
+
 The checked OpenAPI contract is [`../schema/admin-openapi.yaml`](../../config/schema/admin-openapi.yaml).
 No migration exposes token plaintext or stored password hashes.
 
@@ -40,5 +44,6 @@ versions, zero generations, duplicate owner/object identities, duplicate domains
 objects, oversized state, symlinks, and broad file permissions fail opening the store. No automatic
 downgrade or repair is attempted. Administration opens the store at
 `<state_dir>/admin/proxy-hosts.json`; corrupt or insecure state fails administration startup rather
-than being skipped. Read endpoints do not migrate or repair it. A release migration command must
-exist before its schema can change incompatibly.
+than being skipped. Read/create endpoints do not migrate or repair it. Process-local store epoch is
+concurrency state, is not serialized, and resets safely on restart because no in-flight request
+survives restart. A release migration command must exist before schema can change incompatibly.

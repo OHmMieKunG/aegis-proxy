@@ -82,3 +82,6 @@ Proxy Host validation/preview endpoints. Subsequent commit `d1514dd` adds the ei
 > role-and-scope intersection and adds integration proof that an operator token lacking
 > `create_candidate` cannot create an immutable revision. Earlier broad “every bearer request”
 > wording was not fully evidenced until this correction.
+
+Subsequent commit `068f408` adds nineteenth action `create_proxy_host`. Existing tokens do not gain
+it; typed create requires exact role-and-scope intersection and audit intent before deserialization.

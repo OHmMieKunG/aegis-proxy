@@ -43,5 +43,6 @@ its object compiles through existing validation, revision, audit, RBAC, and acti
 Strict envelope and Proxy Host contract landed before deterministic compiler in `fa7913f`.
 Compiler, preview, diff, token-scope, and private owned endpoint evidence is indexed in
 [`docs/README.md`](../README.md). Durable typed storage and owner-scoped list/get now exist. Phase 15
-remains in progress; aggregate desired-state compilation, mutation/activation, complete
+also has aggregate desired-state compilation and audited owner-scoped create with a non-active
+immutable candidate. Phase 15 remains in progress; update/delete/activation, complete
 ownership/RBAC metadata, remaining objects, and compatibility policy remain open.

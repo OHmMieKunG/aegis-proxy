@@ -82,9 +82,10 @@ available gate passes.
 [`docs/reviews/phase-15-baseline.md`](docs/reviews/phase-15-baseline.md). Initial strict `v1` object
 envelope, Proxy Host contract, and deterministic canonical compiler exist. Compiler evidence:
 [`docs/reviews/phase-15-proxy-host-compiler.md`](docs/reviews/phase-15-proxy-host-compiler.md).
-No high-level mutation endpoint exists. Private owner-aware validation, preview, list, and get
-endpoints are available. Reads use durable typed desired state; validation and preview neither
-persist typed objects nor activate candidates.
+Private owner-aware validation, preview, list, get, and audited create endpoints are available.
+Reads use durable typed desired state; validation and preview neither persist typed objects nor
+activate candidates. Create persists one owned object plus an immutable candidate but never
+activates it.
 
 **Completed units:** strict object envelope; stable object IDs and ownership metadata; seven-field
 Proxy Host contract; opaque access-policy reference; side-effect-free Proxy Host compiler into the
@@ -102,9 +103,13 @@ exposes owner-scoped stable list/get operations with object-generation ETags und
 The side-effect-free aggregate compiler accepts explicit current and complete desired object sets,
 orders them by owner/object ID, preserves pending objects, strips only complete compiler-shaped
 resources reserved by current objects, rejects manual/tampered collisions, and validates once.
+The store exposes a complete process-local epoch snapshot for mutation CAS. Typed create requires
+the exact active revision, exact `create_proxy_host` role/scope intersection, matching owner,
+durable audit intent, aggregate compilation and semantic validation, immutable revision creation,
+then epoch-checked desired-state persistence. It never activates runtime state.
 
-**Remaining units:** add audited generation-CAS mutation and typed candidate/revision/activation
-endpoints; access-policy and
+**Remaining units:** add audited generation-CAS update/delete and typed candidate
+activation/rollback endpoints; access-policy and
 certificate objects; remaining domain objects; remaining OpenAPI and CLI contracts;
 migration/compatibility policy and tests; full authorization/security review.
 

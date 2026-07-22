@@ -11,8 +11,8 @@ activation.
 Current API supports low-level validation, redacted preview, candidates, activation, revisions,
 rollback, routes/upstreams/providers/certificates/status, token management, certificate renewal
 requests, backup creation, and restore validation. It also exposes owner-scoped typed Proxy Host
-list/get plus non-persistent validation and preview. Restore does not extract state. No TCP/public
-admin listener or web GUI exists.
+list/get, non-persistent validation/preview, and audited creation of desired state plus a non-active
+immutable candidate. Restore does not extract state. No TCP/public admin listener or web GUI exists.
 
 Phase 15 now includes a library-only strict Proxy Host object and side-effect-free compiler. Caller
 RBAC supplies immutable owner, object, domain, policy, listener, certificate, and upstream-template
@@ -31,9 +31,9 @@ stable order. It never accepts raw JSON or configuration values and cannot persi
 Request owner must equal Unix peer's stable `uid-<uid>` owner or owner stored with its bearer token.
 Preparation runs off async worker and accepts exactly one configured HTTP listener and one all-HTTP
 upstream template. Access-policy and managed-HTTPS requests fail closed until typed ownership
-metadata exists. Endpoints expose no mutation, audit mutation, revision, or activation handle.
-Validation and preview include immutable identity/domain claims from durable desired state, so a
-new object cannot silently replace a persisted object or domain.
+metadata exists. These validation and preview handlers expose no mutation, audit mutation,
+revision, or activation handle. They include immutable identity/domain claims from durable desired
+state, so a new object cannot silently replace a persisted object or domain.
 
 `ProxyHostStore` is a separate library boundary for desired state. It stores strict schema-v1 JSON
 under a caller-selected private path, limits state to 4,096 objects and 2 MiB, indexes by owner then
@@ -43,7 +43,9 @@ in-memory mutation is restored if persistence fails. Store has no compiler conte
 revision service, activation coordinator, runtime handle, or network access. Administration opens
 it at `<state_dir>/admin/proxy-hosts.json`; `GET /v1/proxy-hosts` and
 `GET /v1/proxy-hosts/{id}` return only authenticated owner's records under `read_proxy_hosts`.
-Single-object responses carry generation ETags. No endpoint mutates the store.
+Single-object responses carry generation ETags. Typed create is the sole endpoint that mutates this
+store: it consumes a complete stable snapshot, compiles and validates the post-create set, creates
+an immutable revision, then uses snapshot epoch as a store CAS. It cannot activate runtime.
 
 `compile_proxy_hosts` is the non-persistent aggregate boundary needed before mutation. Caller passes
 current stored objects separately from complete desired objects. Only current identities reserve
@@ -53,6 +55,13 @@ shape. Missing resources are allowed for pending state; partial or tampered shap
 Desired objects are owner/object ordered and rebuilt over retained manual configuration before one
 semantic-validation pass. Compiler owns no store, revision, activation, runtime, filesystem,
 environment, DNS, network, or secret handle.
+
+`POST /v1/proxy-hosts` is an orchestration boundary, not a compiler shortcut. Authorization and
+durable audit intent precede strict JSON parsing. Exact active-revision `If-Match`, principal owner,
+complete-state compilation, semantic validation, and revision persistence all succeed before the
+epoch-checked object write. Failure can leave an immutable non-active orphan candidate, but never a
+durable object without its candidate. Activation remains available only through the established
+revision coordinator and is not performed by this endpoint.
 
 Machine contract: [`config/schema/admin-openapi.yaml`](../../config/schema/admin-openapi.yaml).
 The checked contract requires nonempty canonical scopes when creating tokens and returns only token

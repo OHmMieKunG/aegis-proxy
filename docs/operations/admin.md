@@ -6,10 +6,11 @@ The socket parent is mode `0700`; the socket is mode `0660`. A configured
 `admin.allowed_uids` list further restricts peer credentials. No TCP, plaintext
 remote, public bind, browser session, or web UI exists in v1.
 
-A strict Proxy Host object can be listed, read, validated, or previewed through private read-only
-endpoints, but no high-level mutation endpoint exists. Remaining high-level API and GUI work is
-planned for Phases 15–16 and must use this same server-side authorization, audit, concurrency,
-secret, and activation boundary.
+A strict Proxy Host object can be listed, read, validated, previewed, or created through private
+typed endpoints. Create persists desired state and an immutable candidate but never activates it.
+Update, delete, typed activation, and remaining high-level objects are planned for Phase 15; GUI
+work remains Phase 16. All must use this same server-side authorization, audit, concurrency, secret,
+revision, and activation boundary.
 
 Local socket peers are authenticated by kernel credentials and receive the
 fixed `admin` role. Automation may additionally send a bearer API token. Token
@@ -45,6 +46,7 @@ rust-proxy token list --socket SOCKET --token-ref file:///run/secrets/admin-toke
 rust-proxy token revoke --socket SOCKET --expect REV TOKEN_ID
 rust-proxy proxy-host list --socket SOCKET
 rust-proxy proxy-host get --socket SOCKET OBJECT_ID
+rust-proxy proxy-host create --socket SOCKET --expect REV proxy-host.json
 rust-proxy proxy-host validate --socket SOCKET proxy-host.json
 rust-proxy proxy-host preview --socket SOCKET proxy-host.json
 rust-proxy backup create --socket SOCKET --expect REV --output /backup/aegis.age
@@ -64,6 +66,11 @@ returns object generation as an ETag. Validation/preview compile and semanticall
 redacted candidate without writing state,
 creating a revision, or activating runtime configuration. Current endpoint policy rejects
 access-policy references and managed HTTPS until typed ownership metadata is implemented.
+Create additionally requires `create-proxy-host`, matching owner, exact active revision, durable
+audit intent, complete-state compilation, and an unchanged object-store epoch. It creates an
+immutable candidate before generation-one desired state and returns without activation. Failed
+authorization, validation, or concurrency cannot modify desired or active state; a late store
+failure may leave only an immutable non-active candidate for retention cleanup.
 
 ## Recovery and review
 

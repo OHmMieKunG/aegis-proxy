@@ -29,5 +29,9 @@ AegisProxy has not published a supported release.
   and rejects unreserved, partial, or tampered generated-resource collisions.
 - Fixed administrative mutation authorization to enforce explicit bearer-token scopes, preventing a
   role-allowed but out-of-scope token from creating candidates or changing state.
+- Added complete desired-state snapshots with process-local epoch CAS so concurrent typed mutations
+  cannot persist a candidate compiled from stale object state.
+- Added audited owner-scoped Proxy Host creation that compiles and validates complete desired state,
+  writes an immutable candidate, then persists generation-one desired state without activation.
 
 See [`STATUS.md`](STATUS.md) and [`docs/history/`](docs/history/README.md).
