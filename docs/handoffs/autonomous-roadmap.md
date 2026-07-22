@@ -3,35 +3,36 @@
 Updated: 2026-07-22
 
 - Current branch: `work/autonomous-roadmap`
-- Current completed-unit commit: `9961231`
+- Current completed-unit commit: `b813116`
 - Current phase: Phase 15, in progress
-- Completed unit: owner-aware private Proxy Host validation and preview endpoints
-- Implementation commit: `00cfa32`
-- Documentation commit: `9961231`
+- Completed unit: bounded durable typed Proxy Host desired-state store
+- Implementation commit: `5c8898b`
+- Documentation commit: `b813116`
 - Working tree before this handoff: clean
 
 ## Validation status
 
-Format, workspace check, Clippy with denied warnings, 287 workspace tests, doc tests, Rustdoc,
+Format, workspace check, Clippy with denied warnings, 291 workspace tests, doc tests, Rustdoc,
 feature tree, fuzz-manifest check, changed documentation links, configuration corpus, and OpenAPI
 YAML parsing passed. Two intentional ignored tests remain: manual reload benchmark and Docker-backed
 Pebble integration. Admin OpenAPI intentionally changed for typed endpoints and token owner metadata.
 
 ## Remaining Phase 15 work
 
-Add typed object persistence and complete ownership/RBAC metadata; typed mutation, activation, and
-rollback endpoints; access-policy/certificate and remaining domain objects; remaining OpenAPI/CLI
-contracts; migration/compatibility policy; full authorization/security review.
+Integrate typed persistence through audited owner-scoped API/CLI; typed candidate, activation, and
+rollback endpoints; access-policy/certificate and remaining domain objects; remaining contracts;
+migration/compatibility policy; full authorization/security review.
 
 ## Exact next task
 
-Implement a bounded durable typed Proxy Host object store with strict schema/version validation,
-owner-indexed reads, atomic file replacement, and no runtime or revision activation. Reuse it as the
-state prerequisite for audited CAS mutation and typed update diffs.
+Wire `ProxyHostStore` into server initialization and owner-scoped list/get/create. Create must
+authorize before deserialization, compile and semantically validate, durably record audit intent,
+require exact active revision, create canonical configuration revision, then persist typed desired
+state without activation. Add strict OpenAPI/CLI and failure-order tests.
 
 ## Known risks
 
-- High-level object persistence and update semantics do not exist yet.
+- Store exists but no endpoint opens it; high-level mutation/update semantics remain absent.
 - Access-policy and managed-HTTPS endpoint preparation fails closed until typed ownership metadata
   exists.
 - Public error mapping must not leak policy or object existence across ownership boundaries.
