@@ -76,7 +76,7 @@ enum Command {
         #[command(subcommand)]
         command: TokenCommand,
     },
-    /// Validate or preview typed Proxy Hosts through the private socket.
+    /// Read, validate, or preview typed Proxy Hosts through the private socket.
     ProxyHost {
         #[command(subcommand)]
         command: ProxyHostCommand,
@@ -209,6 +209,17 @@ enum TokenCommand {
 
 #[derive(Debug, Subcommand)]
 enum ProxyHostCommand {
+    /// List typed Proxy Hosts owned by authenticated principal.
+    List {
+        #[command(flatten)]
+        admin: AdminConnection,
+    },
+    /// Get one typed Proxy Host owned by authenticated principal.
+    Get {
+        #[command(flatten)]
+        admin: AdminConnection,
+        id: String,
+    },
     /// Compile and semantically validate one owned Proxy Host without persistence.
     Validate {
         #[command(flatten)]
@@ -241,6 +252,7 @@ enum CliScope {
     ActivateConfig,
     RollbackConfig,
     ReadRevisions,
+    ReadProxyHosts,
     ReadRoutes,
     ReadUpstreams,
     Drain,
@@ -263,6 +275,7 @@ impl CliScope {
             Self::ActivateConfig => "activate_config",
             Self::RollbackConfig => "rollback_config",
             Self::ReadRevisions => "read_revisions",
+            Self::ReadProxyHosts => "read_proxy_hosts",
             Self::ReadRoutes => "read_routes",
             Self::ReadUpstreams => "read_upstreams",
             Self::Drain => "drain",
@@ -724,20 +737,55 @@ async fn run_token_command(command: TokenCommand) -> Result<(), BoxError> {
 }
 
 async fn run_proxy_host_command(command: ProxyHostCommand) -> Result<(), BoxError> {
-    let (admin, file, path) = match command {
-        ProxyHostCommand::Validate { admin, file } => (admin, file, "/v1/proxy-hosts/validate"),
-        ProxyHostCommand::Preview { admin, file } => (admin, file, "/v1/proxy-hosts/preview"),
+    let response = match command {
+        ProxyHostCommand::List { admin } => {
+            admin_request(
+                &admin,
+                Method::GET,
+                "/v1/proxy-hosts",
+                None,
+                None,
+                Vec::new(),
+            )
+            .await?
+        }
+        ProxyHostCommand::Get { admin, id } => {
+            let id = id.parse::<aegisproxy_admin::ObjectId>()?;
+            admin_request(
+                &admin,
+                Method::GET,
+                &format!("/v1/proxy-hosts/{id}"),
+                None,
+                None,
+                Vec::new(),
+            )
+            .await?
+        }
+        ProxyHostCommand::Validate { admin, file } => {
+            let body = read_bounded(file, aegisproxy_config::MAX_CONFIG_BYTES).await?;
+            admin_request(
+                &admin,
+                Method::POST,
+                "/v1/proxy-hosts/validate",
+                None,
+                Some("application/json"),
+                body,
+            )
+            .await?
+        }
+        ProxyHostCommand::Preview { admin, file } => {
+            let body = read_bounded(file, aegisproxy_config::MAX_CONFIG_BYTES).await?;
+            admin_request(
+                &admin,
+                Method::POST,
+                "/v1/proxy-hosts/preview",
+                None,
+                Some("application/json"),
+                body,
+            )
+            .await?
+        }
     };
-    let body = read_bounded(file, aegisproxy_config::MAX_CONFIG_BYTES).await?;
-    let response = admin_request(
-        &admin,
-        Method::POST,
-        path,
-        None,
-        Some("application/json"),
-        body,
-    )
-    .await?;
     require_admin_success(&response)?;
     io::stdout().lock().write_all(&response.body)?;
     writeln!(io::stdout().lock())?;

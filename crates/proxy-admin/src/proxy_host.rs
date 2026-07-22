@@ -1,6 +1,6 @@
 //! Owner-scoped preparation of typed Proxy Host validation and preview results.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use aegisproxy_config::Config;
 use serde::Serialize;
@@ -8,8 +8,9 @@ use thiserror::Error;
 
 use crate::{
     ApiObject, AutomaticHttps, CompileContext, ContractError, ObjectId, ProxyHostCandidatePreview,
-    ProxyHostCompileError, ProxyHostDiff, ProxyHostDiffError, ProxyHostPreviewError, ProxyHostSpec,
-    compile_proxy_host, diff_proxy_host_previews, preview_proxy_host_candidate,
+    ProxyHostClaims, ProxyHostCompileError, ProxyHostDiff, ProxyHostDiffError,
+    ProxyHostPreviewError, ProxyHostSpec, compile_proxy_host, diff_proxy_host_previews,
+    preview_proxy_host_candidate,
 };
 
 /// Fully validated, non-active Proxy Host preview and creation diff.
@@ -59,6 +60,20 @@ pub fn prepare_proxy_host(
     active: &Config,
     authenticated_owner: &ObjectId,
 ) -> Result<PreparedProxyHost, ProxyHostPreparationError> {
+    prepare_proxy_host_with_claims(
+        object,
+        active,
+        authenticated_owner,
+        &ProxyHostClaims::default(),
+    )
+}
+
+pub(crate) fn prepare_proxy_host_with_claims(
+    object: &ApiObject<ProxyHostSpec>,
+    active: &Config,
+    authenticated_owner: &ObjectId,
+    claims: &ProxyHostClaims,
+) -> Result<PreparedProxyHost, ProxyHostPreparationError> {
     if &object.metadata.owner_id != authenticated_owner {
         return Err(ProxyHostPreparationError::UnauthorizedOwner);
     }
@@ -73,16 +88,14 @@ pub fn prepare_proxy_host(
     let http_listener_id = single_http_listener(active)?;
     let upstream_template_id = single_http_upstream_template(active)?;
     let access_policies = BTreeMap::new();
-    let claimed_objects = BTreeSet::new();
-    let claimed_domains = BTreeMap::new();
     let context = CompileContext {
         base_config: active,
         owner_id: authenticated_owner,
         http_listener_id,
         upstream_template_id,
         access_policies: &access_policies,
-        claimed_objects: &claimed_objects,
-        claimed_domains: &claimed_domains,
+        claimed_objects: &claims.objects,
+        claimed_domains: &claims.domains,
         managed_https: None,
     };
     let candidate = compile_proxy_host(object, &context).map_err(map_compile_error)?;

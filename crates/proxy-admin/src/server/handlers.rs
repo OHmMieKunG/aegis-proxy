@@ -244,6 +244,40 @@ pub(super) async fn validate_proxy_host(
     }))
 }
 
+pub(super) async fn proxy_hosts(
+    State(state): State<AppState>,
+    principal: Principal,
+) -> Result<axum::Json<Vec<StoredProxyHost>>, ApiError> {
+    authorize(&principal, Action::ReadProxyHosts)?;
+    let owner = principal.owner_id.ok_or(ApiError::Forbidden)?;
+    let store = Arc::clone(&state.proxy_hosts);
+    tokio::task::spawn_blocking(move || store.list(&owner))
+        .await
+        .map(axum::Json)
+        .map_err(|_| ApiError::Internal)
+}
+
+pub(super) async fn proxy_host(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    principal: Principal,
+) -> Result<Response, ApiError> {
+    authorize(&principal, Action::ReadProxyHosts)?;
+    let owner = principal.owner_id.ok_or(ApiError::Forbidden)?;
+    let object_id = id.parse::<ObjectId>().map_err(|_| ApiError::NotFound)?;
+    let store = Arc::clone(&state.proxy_hosts);
+    let stored = tokio::task::spawn_blocking(move || store.get(&owner, &object_id))
+        .await
+        .map_err(|_| ApiError::Internal)?
+        .ok_or(ApiError::NotFound)?;
+    let generation = stored.generation.to_string();
+    let mut response = axum::Json(stored).into_response();
+    response
+        .headers_mut()
+        .insert(ETAG, etag(&generation).ok_or(ApiError::Internal)?);
+    Ok(response)
+}
+
 pub(super) async fn preview_proxy_host(
     State(state): State<AppState>,
     PreviewProxyHostPrincipal(principal): PreviewProxyHostPrincipal,
@@ -262,10 +296,14 @@ async fn prepare_proxy_host_request(
     let object = payload.map_err(|_| ApiError::InvalidRequest)?.0;
     let owner = principal.owner_id.clone().ok_or(ApiError::Forbidden)?;
     let active = state.control.runtime().config();
-    tokio::task::spawn_blocking(move || crate::prepare_proxy_host(&object, &active, &owner))
-        .await
-        .map_err(|_| ApiError::Internal)?
-        .map_err(map_proxy_host_preparation_error)
+    let store = Arc::clone(&state.proxy_hosts);
+    tokio::task::spawn_blocking(move || {
+        let claims = store.claims();
+        crate::proxy_host::prepare_proxy_host_with_claims(&object, &active, &owner, &claims)
+    })
+    .await
+    .map_err(|_| ApiError::Internal)?
+    .map_err(map_proxy_host_preparation_error)
 }
 
 fn map_proxy_host_preparation_error(error: ProxyHostPreparationError) -> ApiError {

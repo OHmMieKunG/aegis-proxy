@@ -42,8 +42,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     Action, ApiObject, AuditEvent, AuditLog, AuditOutcome, ObjectId, PreparedProxyHost,
-    ProxyHostPreparationError, ProxyHostPreviewSummary, ProxyHostSpec, Role, TokenScopes,
-    TokenStore,
+    ProxyHostPreparationError, ProxyHostPreviewSummary, ProxyHostSpec, ProxyHostStore, Role,
+    StoredProxyHost, TokenScopes, TokenStore,
 };
 use handlers::*;
 use support::*;
@@ -65,6 +65,9 @@ pub enum AdminServerError {
     /// Audit key or authenticated audit records could not be loaded safely.
     #[error("administrative audit store failed")]
     Audit,
+    /// Typed Proxy Host desired state could not be loaded safely.
+    #[error("administrative Proxy Host store failed")]
+    ProxyHosts,
     /// Blocking initialization task failed.
     #[error("administrative initialization task failed: {0}")]
     Initialization(String),
@@ -74,6 +77,7 @@ pub enum AdminServerError {
 struct AppState {
     control: ManagedControl,
     tokens: Arc<TokenStore>,
+    proxy_hosts: Arc<ProxyHostStore>,
     audit: Option<Arc<AuditLog>>,
     allowed_uids: Arc<[u32]>,
     auth_permits: Arc<Semaphore>,
@@ -575,6 +579,12 @@ pub async fn serve(
         .await
         .map_err(|error| AdminServerError::Initialization(error.to_string()))?
         .map_err(|_| AdminServerError::Token)?;
+    let proxy_host_path = state_dir.join("admin/proxy-hosts.json");
+    let proxy_host_store =
+        tokio::task::spawn_blocking(move || ProxyHostStore::open(proxy_host_path))
+            .await
+            .map_err(|error| AdminServerError::Initialization(error.to_string()))?
+            .map_err(|_| AdminServerError::ProxyHosts)?;
     let audit = match config.admin.audit_key.clone() {
         Some(reference) => {
             let audit_path = state_dir.join("audit/admin.jsonl");
@@ -601,6 +611,7 @@ pub async fn serve(
     let state = AppState {
         control,
         tokens: Arc::new(tokens),
+        proxy_hosts: Arc::new(proxy_host_store),
         audit,
         allowed_uids: Arc::from(config.admin.allowed_uids.clone()),
         auth_permits: Arc::new(Semaphore::new(config.admin.max_auth_in_flight)),
@@ -628,6 +639,8 @@ pub async fn serve(
         .route("/v1/config/active", get(active_config))
         .route("/v1/config/validate", post(validate_config))
         .route("/v1/config/preview", post(preview_config))
+        .route("/v1/proxy-hosts", get(proxy_hosts))
+        .route("/v1/proxy-hosts/{id}", get(proxy_host))
         .route("/v1/proxy-hosts/validate", post(validate_proxy_host))
         .route("/v1/proxy-hosts/preview", post(preview_proxy_host))
         .route("/v1/config/candidates", post(create_candidate))

@@ -57,6 +57,8 @@ fn checked_openapi_contains_every_private_route() {
         "/v1/config/active:",
         "/v1/config/validate:",
         "/v1/config/preview:",
+        "/v1/proxy-hosts:",
+        "/v1/proxy-hosts/{id}:",
         "/v1/proxy-hosts/validate:",
         "/v1/proxy-hosts/preview:",
         "/v1/config/candidates:",

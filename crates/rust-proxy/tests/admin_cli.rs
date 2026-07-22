@@ -126,6 +126,59 @@ upstream_group = "app"
         let root = root();
         fs::create_dir(&root).expect("test root");
         let state = root.join("state");
+        let owner = format!(
+            "uid-{}",
+            fs::metadata("/proc/self").expect("self metadata").uid()
+        );
+        let admin_state = state.join("admin");
+        fs::create_dir_all(&admin_state).expect("admin state");
+        fs::set_permissions(&admin_state, fs::Permissions::from_mode(0o700))
+            .expect("admin state mode");
+        let proxy_host_store = serde_json::json!({
+            "schema_version": 1,
+            "objects": [
+                {
+                    "generation": 3,
+                    "object": {
+                        "api_version": "v1",
+                        "metadata": {"id": "stored-cli", "owner_id": owner.clone()},
+                        "spec": {
+                            "domain": "stored.example.test",
+                            "forward_host": "127.0.0.1",
+                            "forward_port": 9001,
+                            "forward_protocol": "http",
+                            "automatic_https": "disabled",
+                            "access_policy_ref": null,
+                            "enabled": false
+                        }
+                    }
+                },
+                {
+                    "generation": 1,
+                    "object": {
+                        "api_version": "v1",
+                        "metadata": {"id": "other-owner", "owner_id": "other"},
+                        "spec": {
+                            "domain": "other.example.test",
+                            "forward_host": "127.0.0.1",
+                            "forward_port": 9002,
+                            "forward_protocol": "http",
+                            "automatic_https": "disabled",
+                            "access_policy_ref": null,
+                            "enabled": false
+                        }
+                    }
+                }
+            ]
+        });
+        let proxy_host_store_path = admin_state.join("proxy-hosts.json");
+        fs::write(
+            &proxy_host_store_path,
+            serde_json::to_vec_pretty(&proxy_host_store).expect("Proxy Host store JSON"),
+        )
+        .expect("Proxy Host store");
+        fs::set_permissions(&proxy_host_store_path, fs::Permissions::from_mode(0o600))
+            .expect("Proxy Host store mode");
         let audit_key = root.join("audit.key");
         fs::write(&audit_key, [0_u8; 32]).expect("audit key");
         fs::set_permissions(&audit_key, fs::Permissions::from_mode(0o600)).expect("key mode");
@@ -167,6 +220,17 @@ upstream_group = "app"
         wait_for_socket(&mut daemon.child, &socket);
         let socket = socket.to_str().expect("socket UTF-8");
         assert!(run(&["health", "--socket", socket]).status.success());
+        let typed_list = run(&["proxy-host", "list", "--socket", socket]);
+        assert!(typed_list.status.success(), "{:?}", typed_list.stderr);
+        let typed_list_json: serde_json::Value =
+            serde_json::from_slice(&typed_list.stdout).expect("typed list JSON");
+        assert_eq!(typed_list_json.as_array().map(Vec::len), Some(1));
+        assert_eq!(typed_list_json[0]["object"]["metadata"]["id"], "stored-cli");
+        let typed_get = run(&["proxy-host", "get", "--socket", socket, "stored-cli"]);
+        assert!(typed_get.status.success(), "{:?}", typed_get.stderr);
+        let typed_get_json: serde_json::Value =
+            serde_json::from_slice(&typed_get.stdout).expect("typed get JSON");
+        assert_eq!(typed_get_json["generation"], 3);
 
         let expected = active_revision(&state);
         let first_activation = Command::new(binary())
@@ -234,10 +298,6 @@ upstream_group = "app"
         }
 
         let current = active_revision(&state);
-        let owner = format!(
-            "uid-{}",
-            fs::metadata("/proc/self").expect("self metadata").uid()
-        );
         let proxy_host_path = daemon.root.join("proxy-host.json");
         let proxy_host = serde_json::json!({
             "api_version": "v1",
@@ -281,6 +341,23 @@ upstream_group = "app"
             Some(8)
         );
         assert_eq!(active_revision(&state), current);
+
+        let mut claimed_domain = proxy_host.clone();
+        claimed_domain["spec"]["domain"] = serde_json::json!("stored.example.test");
+        let claimed_domain_path = daemon.root.join("claimed-domain.json");
+        fs::write(
+            &claimed_domain_path,
+            serde_json::to_vec_pretty(&claimed_domain).expect("claimed domain JSON"),
+        )
+        .expect("claimed domain file");
+        let claimed = run(&[
+            "proxy-host",
+            "validate",
+            "--socket",
+            socket,
+            claimed_domain_path.to_str().expect("claimed domain path"),
+        ]);
+        assert_eq!(claimed.status.code(), Some(3));
 
         let mut cross_owner = proxy_host.clone();
         cross_owner["metadata"]["owner_id"] = serde_json::json!("uid-unauthorized");
@@ -327,6 +404,8 @@ upstream_group = "app"
             "read-status",
             "--scope",
             "preview-config",
+            "--scope",
+            "read-proxy-hosts",
             "--ttl-secs",
             "600",
         ]);
@@ -349,6 +428,15 @@ upstream_group = "app"
             &token_ref,
         ]);
         assert!(scoped_status.status.success());
+        let scoped_list = run(&[
+            "proxy-host",
+            "list",
+            "--socket",
+            socket,
+            "--token-ref",
+            &token_ref,
+        ]);
+        assert!(scoped_list.status.success(), "{:?}", scoped_list.stderr);
         let scoped_preview = run(&[
             "proxy-host",
             "preview",

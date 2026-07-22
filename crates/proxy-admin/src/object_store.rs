@@ -29,6 +29,15 @@ pub struct StoredProxyHost {
     pub object: ApiObject<ProxyHostSpec>,
 }
 
+/// Immutable object/domain claims used during candidate compilation.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ProxyHostClaims {
+    /// Claimed owner/object identities.
+    pub objects: BTreeSet<(ObjectId, ObjectId)>,
+    /// Claimed exact domains and their owner/object identities.
+    pub domains: BTreeMap<String, (ObjectId, ObjectId)>,
+}
+
 /// Durable typed-object storage failure.
 #[derive(Debug, Error)]
 pub enum ProxyHostStoreError {
@@ -222,6 +231,26 @@ impl ProxyHostStore {
             .flat_map(BTreeMap::values)
             .cloned()
             .collect()
+    }
+
+    /// Snapshot bounded identity and domain claims without object contents.
+    #[must_use]
+    pub fn claims(&self) -> ProxyHostClaims {
+        let objects = self
+            .objects
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut claims = ProxyHostClaims::default();
+        for (owner_id, owned) in &*objects {
+            for (object_id, stored) in owned {
+                let identity = (owner_id.clone(), object_id.clone());
+                claims.objects.insert(identity.clone());
+                claims
+                    .domains
+                    .insert(stored.object.spec.domain.clone(), identity);
+            }
+        }
+        claims
     }
 }
 
@@ -489,6 +518,15 @@ mod tests {
         );
         assert_eq!(store.list(&bob).len(), 1);
         assert!(store.get(&bob, &"proxy-a".parse().expect("id")).is_none());
+        let claims = store.claims();
+        assert_eq!(claims.objects.len(), 3);
+        assert_eq!(
+            claims
+                .domains
+                .get("a.example.test")
+                .map(|(owner, object)| (owner.as_str(), object.as_str())),
+            Some(("alice", "proxy-a"))
+        );
         drop(store);
 
         let reopened = ProxyHostStore::open(&path).expect("reopen");

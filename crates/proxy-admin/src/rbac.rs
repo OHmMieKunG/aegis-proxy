@@ -37,6 +37,8 @@ pub enum Action {
     RollbackConfig,
     /// Read revision metadata and redacted content.
     ReadRevisions,
+    /// Read typed Proxy Hosts within authenticated owner scope.
+    ReadProxyHosts,
     /// Read effective routes.
     ReadRoutes,
     /// Read upstream health state.
@@ -139,6 +141,7 @@ impl Role {
                     | Action::PreviewConfig
                     | Action::CreateCandidate
                     | Action::ReadRevisions
+                    | Action::ReadProxyHosts
                     | Action::ReadRoutes
                     | Action::ReadUpstreams
                     | Action::Drain
@@ -150,6 +153,7 @@ impl Role {
                 Action::ReadStatus
                     | Action::ReadConfig
                     | Action::ReadRevisions
+                    | Action::ReadProxyHosts
                     | Action::ReadRoutes
                     | Action::ReadUpstreams
                     | Action::ReadCertificates
@@ -160,6 +164,7 @@ impl Role {
                 Action::ReadStatus
                     | Action::ReadConfig
                     | Action::ReadRevisions
+                    | Action::ReadProxyHosts
                     | Action::ReadRoutes
                     | Action::ReadUpstreams
                     | Action::ReadCertificates
@@ -172,7 +177,7 @@ impl Role {
 mod tests {
     use super::{Action, Role, TokenScopeError, TokenScopes};
 
-    const ACTIONS: [Action; 17] = [
+    const ACTIONS: [Action; 18] = [
         Action::ReadStatus,
         Action::ReadConfig,
         Action::ValidateConfig,
@@ -181,6 +186,7 @@ mod tests {
         Action::ActivateConfig,
         Action::RollbackConfig,
         Action::ReadRevisions,
+        Action::ReadProxyHosts,
         Action::ReadRoutes,
         Action::ReadUpstreams,
         Action::Drain,
@@ -195,9 +201,9 @@ mod tests {
     #[test]
     fn role_matrix_is_deny_by_default() {
         let expected = [
-            (Role::Viewer, 6),
-            (Role::Auditor, 7),
-            (Role::Operator, 11),
+            (Role::Viewer, 7),
+            (Role::Auditor, 8),
+            (Role::Operator, 12),
             (Role::Admin, ACTIONS.len()),
         ];
         for (role, count) in expected {
@@ -211,6 +217,7 @@ mod tests {
             );
         }
         assert!(!Role::Viewer.allows(Action::ValidateConfig));
+        assert!(Role::Viewer.allows(Action::ReadProxyHosts));
         assert!(!Role::Auditor.allows(Action::CreateCandidate));
         assert!(!Role::Operator.allows(Action::ActivateConfig));
         assert!(!Role::Operator.allows(Action::ReadAudit));
