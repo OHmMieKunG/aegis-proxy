@@ -35,5 +35,9 @@ AegisProxy has not published a supported release.
   writes an immutable candidate, then persists generation-one desired state without activation.
 - Added audited Proxy Host update/delete with exact object-generation and complete-store epoch CAS,
   immutable non-active candidates, distinct action scopes, and CLI/OpenAPI contracts.
+- Added Admin-only typed Proxy Host candidate activation. It recompiles complete current desired
+  state, verifies the immutable candidate hash, serializes mutations, and delegates publication to
+  the existing atomic activation coordinator; stale, orphaned, repeated, or unauthorized requests
+  fail without runtime change.
 
 See [`STATUS.md`](STATUS.md) and [`docs/history/`](docs/history/README.md).

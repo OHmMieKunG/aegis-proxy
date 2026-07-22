@@ -70,7 +70,11 @@ Create requires exact active-revision and complete desired-state optimistic conc
 the canonical immutable candidate before generation-one object state, then returns both metadata
 records. Update replaces the exact owner/object identity; delete removes it. Both additionally
 require the current object generation, return candidate metadata, and never change active revision.
-Typed activation, access-policy objects, and certificate-policy objects remain unavailable.
+The Admin-only `proxy-host activate --expect REV CANDIDATE` command activates a candidate only after
+the server recompiles all stored Proxy Hosts and verifies exact canonical content. It uses the
+normal atomic activation coordinator and does not change desired objects. Stale, orphaned,
+already-active, or unauthorized candidates fail closed. Typed rollback, access-policy objects, and
+certificate-policy objects remain unavailable.
 
 Typed Proxy Host desired state has a separate internal schema-v1 JSON store. It is bounded to 4,096
 objects and 2 MiB, uses private directory/file permissions, stable owner/object ordering, globally

@@ -47,6 +47,9 @@ handle. Owner-scoped list/get require exact `read_proxy_hosts` action; cross-own
 found and expose no object contents. Create requires exact `create_proxy_host` action and owner
 equality; update/delete use separate exact scopes and owner namespace. Stored contract has no
 plaintext credential field.
+Typed activation accepts only an opaque revision ID and metadata-only desired-state snapshot. It
+recompiles and hashes the already validated configuration without resolving secret references;
+errors and audit records use fixed codes, not configuration or secret contents.
 
 Never put secret values in TOML, command arguments, logs, traces, audit records, screenshots,
 tickets, backups without encryption, or repository fixtures. See

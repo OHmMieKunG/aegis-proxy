@@ -6,9 +6,11 @@ The socket parent is mode `0700`; the socket is mode `0660`. A configured
 `admin.allowed_uids` list further restricts peer credentials. No TCP, plaintext
 remote, public bind, browser session, or web UI exists in v1.
 
-A strict Proxy Host object can be listed, read, validated, previewed, or created through private
-typed endpoints. Create/update/delete persist desired state and an immutable candidate but never
-activate it. Typed activation and remaining high-level objects are planned for Phase 15; GUI work
+A strict Proxy Host object can be listed, read, validated, previewed, created, updated, deleted, and
+its verified complete candidate activated through private typed endpoints. Create/update/delete
+persist desired state and an immutable candidate but never activate it. Admin-only activation
+recompiles current desired state, verifies candidate content, and uses the existing atomic
+coordinator. Typed rollback and remaining high-level objects are planned for Phase 15; GUI work
 remains Phase 16. All must use this same server-side authorization, audit, concurrency, secret,
 revision, and activation boundary.
 
@@ -49,6 +51,7 @@ rust-proxy proxy-host get --socket SOCKET OBJECT_ID
 rust-proxy proxy-host create --socket SOCKET --expect REV proxy-host.json
 rust-proxy proxy-host update --socket SOCKET --expect REV --generation N OBJECT_ID proxy-host.json
 rust-proxy proxy-host delete --socket SOCKET --expect REV --generation N OBJECT_ID
+rust-proxy proxy-host activate --socket SOCKET --expect REV CANDIDATE_ID
 rust-proxy proxy-host validate --socket SOCKET proxy-host.json
 rust-proxy proxy-host preview --socket SOCKET proxy-host.json
 rust-proxy backup create --socket SOCKET --expect REV --output /backup/aegis.age
@@ -75,6 +78,10 @@ authorization, validation, or concurrency cannot modify desired or active state;
 failure may leave only an immutable non-active candidate for retention cleanup.
 Update/delete use distinct `update-proxy-host`/`delete-proxy-host` scopes and additionally require
 exact `--generation`. A stale generation returns conflict before candidate or object persistence.
+Activation requires Admin role and the distinct `activate-proxy-host` scope for bearer tokens.
+Exact active revision, current complete desired-state compilation, immutable candidate hash, and
+unchanged desired-state epoch must all match. The request serializes with other audited mutations,
+then invokes the normal atomic coordinator. Operator tokens cannot activate typed candidates.
 
 ## Recovery and review
 

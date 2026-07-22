@@ -28,6 +28,8 @@
   creation, desired-state epoch CAS, non-activation, and validation evidence.
 - [Phase 15 Proxy Host update/delete](reviews/phase-15-proxy-host-update-delete.md): dual CAS,
   owner-scoped mutation, immutable candidates, and non-activation evidence.
+- [Phase 15 Proxy Host activation](reviews/phase-15-proxy-host-activation.md): complete desired-state
+  verification, serialized audit boundary, atomic activation reuse, and rejection evidence.
 
 ## Operators
 

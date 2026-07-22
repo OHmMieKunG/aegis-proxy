@@ -14,8 +14,12 @@ Verified capabilities include HTTP/1.1 and HTTP/2, WebSocket, gRPC, HTTPS termin
 TLS, raw TCP, TLS passthrough, strict TOML, deterministic routing, bounded balancing and health,
 transactional reload/rollback, ACME, fixed-stage middleware, private administration,
 metrics/tracing/audit, file/A/AAAA discovery, and external-load-balancer fleet checks.
+Phase 15 additionally provides owner-scoped typed Proxy Host validation, preview, CRUD candidate
+creation, and Admin-only verified candidate activation; the broader typed control plane is not yet
+complete.
 
-Major gaps include web GUI and first-run experience, high-level Proxy Host API, native OIDC,
+Major gaps include web GUI and first-run experience, complete high-level domain/API coverage,
+typed desired-state rollback, native OIDC,
 Docker/Kubernetes providers, PROXY protocol, client mTLS, HTTP/3, gRPC-Web, automated restore,
 release workflow, and production evidence. See [`STATUS.md`](STATUS.md) for exact status and
 [`PLAN.md`](PLAN.md) for phases 14–21.

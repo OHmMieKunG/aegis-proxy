@@ -11,9 +11,9 @@ activation.
 Current API supports low-level validation, redacted preview, candidates, activation, revisions,
 rollback, routes/upstreams/providers/certificates/status, token management, certificate renewal
 requests, backup creation, and restore validation. It also exposes owner-scoped typed Proxy Host
-list/get, non-persistent validation/preview, and audited create/update/delete of desired state plus
-a non-active immutable candidate. Restore does not extract state. No TCP/public admin listener or
-web GUI exists.
+list/get, non-persistent validation/preview, audited create/update/delete of desired state plus a
+non-active immutable candidate, and verified Admin-only candidate activation. Restore does not
+extract state. No TCP/public admin listener or web GUI exists.
 
 Phase 15 now includes a library-only strict Proxy Host object and side-effect-free compiler. Caller
 RBAC supplies immutable owner, object, domain, policy, listener, certificate, and upstream-template
@@ -68,6 +68,16 @@ revision coordinator and is not performed by this endpoint.
 `X-Aegis-Object-Generation` in addition to active-revision `If-Match`. Update enforces path/body
 identity and owner equality; delete resolves only within authenticated owner. Stale generation or
 store epoch returns fixed conflict without desired/runtime mutation.
+
+`POST /v1/proxy-hosts/candidates/{id}/activate` is the only typed activation boundary. It requires
+Admin role plus exact `activate_proxy_host` scope for tokens and exact active-revision `If-Match`.
+While the durable mutation audit is open, a single bounded permit serializes administrative
+mutations. The handler snapshots every stored Proxy Host, recompiles the complete desired set
+against the active configuration, compares canonical content hashes with the immutable revision,
+then invokes the existing activation coordinator. Missing, stale, orphaned, already-active, or
+unauthorized candidates fail without publication. The compiler itself still has no activation or
+persistence capability. Operator activation stays disabled until candidates carry safe ownership
+and approval metadata.
 
 Machine contract: [`config/schema/admin-openapi.yaml`](../../config/schema/admin-openapi.yaml).
 The checked contract requires nonempty canonical scopes when creating tokens and returns only token

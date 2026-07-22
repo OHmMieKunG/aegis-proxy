@@ -82,7 +82,8 @@ available gate passes.
 [`docs/reviews/phase-15-baseline.md`](docs/reviews/phase-15-baseline.md). Initial strict `v1` object
 envelope, Proxy Host contract, and deterministic canonical compiler exist. Compiler evidence:
 [`docs/reviews/phase-15-proxy-host-compiler.md`](docs/reviews/phase-15-proxy-host-compiler.md).
-Private owner-aware validation, preview, list, get, and audited create/update/delete endpoints are available.
+Private owner-aware validation, preview, list, get, audited create/update/delete, and verified
+candidate activation endpoints are available.
 Reads use durable typed desired state; validation and preview neither persist typed objects nor
 activate candidates. Create persists one owned object plus an immutable candidate but never
 activates it. Update/delete apply the same non-activation rule.
@@ -110,8 +111,12 @@ then epoch-checked desired-state persistence. It never activates runtime state.
 Update/delete additionally require exact object generation, replace or remove one object from the
 complete desired set, create an immutable candidate, then use the same epoch CAS. They never
 activate runtime state.
+Admin-only typed activation recompiles the complete stored desired set against the active manual
+configuration, requires exact active-revision CAS, verifies immutable candidate content, rejects
+stale/orphan/repeated candidates, and delegates to the existing atomic activation coordinator.
+All administrative mutations are serialized while their durable audit transaction is open.
 
-**Remaining units:** add typed candidate activation/rollback endpoints; access-policy and
+**Remaining units:** add typed rollback with desired-state history; access-policy and
 certificate objects; remaining domain objects; remaining OpenAPI and CLI contracts;
 migration/compatibility policy and tests; full authorization/security review.
 

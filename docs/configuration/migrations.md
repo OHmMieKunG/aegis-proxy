@@ -35,6 +35,8 @@ JSON). Existing tokens do not gain it automatically. Replace or issue a token ex
 automation needs create; list/get remain independently grantable.
 Update and delete likewise add distinct `update-proxy-host` and `delete-proxy-host` CLI scopes
 (`update_proxy_host` and `delete_proxy_host` in JSON). Existing tokens gain neither.
+Typed activation adds `activate-proxy-host` (`activate_proxy_host` in JSON). It is Admin-only;
+existing tokens gain no scope automatically and operator tokens cannot request it.
 
 The checked OpenAPI contract is [`../schema/admin-openapi.yaml`](../../config/schema/admin-openapi.yaml).
 No migration exposes token plaintext or stored password hashes.
