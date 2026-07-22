@@ -23,8 +23,10 @@ Current Proxy Host compiler receives only access-policy and certificate identifi
 validated configuration. It has no secret resolver, environment access, network client, persistence
 handle, or runtime handle. Candidate and context `Debug` output summarizes IDs/counts and omits full
 configuration secret references. Typed candidate preview uses the existing complete redaction pass;
-its `Debug` output omits the configuration. Public endpoint error/redaction mapping and remaining
-stored-credential object contracts are still Phase 15 work.
+its `Debug` output omits the configuration. Typed field differences use a closed value enum and
+compare only preview summaries; raw configuration and secret fields cannot enter the diff contract.
+Public endpoint error/redaction mapping and remaining stored-credential object contracts are still
+Phase 15 work.
 
 Never put secret values in TOML, command arguments, logs, traces, audit records, screenshots,
 tickets, backups without encryption, or repository fixtures. See

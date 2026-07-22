@@ -12,6 +12,8 @@
   compilation boundary and validation evidence.
 - [Phase 15 candidate preview](reviews/phase-15-candidate-preview.md): safe typed preview boundary
   and validation evidence.
+- [Phase 15 typed diff](reviews/phase-15-typed-diff.md): deterministic bounded field-level change
+  contract and validation evidence.
 
 ## Operators
 

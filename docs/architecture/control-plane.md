@@ -8,9 +8,8 @@ tokens authenticate requests. Fixed roles authorize actions. Mutations require e
 
 Current API supports validation, redacted preview, candidates, activation, revisions, rollback,
 routes/upstreams/providers/certificates/status, token management, certificate renewal requests,
-backup creation, and restore validation. It is low-level and TOML/revision oriented. Preview does
-not produce a field-level diff. Restore does not extract state. No TCP/public admin listener or web
-GUI exists.
+backup creation, and restore validation. It is low-level and TOML/revision oriented. Restore does
+not extract state. No TCP/public admin listener or web GUI exists.
 
 Phase 15 now includes a library-only strict Proxy Host object and side-effect-free compiler. Caller
 RBAC supplies immutable owner, object, domain, policy, listener, certificate, and upstream-template
@@ -22,8 +21,10 @@ this compiler yet.
 Compiled Proxy Hosts can now produce a deterministic typed preview containing desired fields,
 generated resource IDs, canonical candidate hash, route fingerprints, and hot-reload/restart class.
 Preview revalidates active and candidate configuration, returns only a redacted configuration clone,
-and has no runtime, persistence, audit, filesystem, environment, or network handle. Field-level diff
-and public typed endpoints remain incomplete.
+and has no runtime, persistence, audit, filesystem, environment, or network handle. A separate pure
+typed diff compares owner/object-matched preview summaries using a fixed eight-field vocabulary and
+stable order. It never accepts raw JSON or configuration values and cannot persist or activate.
+Public typed endpoints remain incomplete.
 
 Machine contract: [`config/schema/admin-openapi.yaml`](../../config/schema/admin-openapi.yaml).
 

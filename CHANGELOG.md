@@ -15,5 +15,7 @@ AegisProxy has not published a supported release.
   candidates, with fail-closed ownership, policy, domain, identifier, and certificate checks.
 - Added deterministic typed Proxy Host candidate previews with mandatory semantic validation,
   secret-reference redaction, generated-resource summaries, fingerprints, and restart classification.
+- Added bounded deterministic Proxy Host field differences with typed values, stable ordering,
+  identity checks, and explicit generated-resource add/remove operations.
 
 See [`STATUS.md`](STATUS.md) and [`docs/history/`](docs/history/README.md).

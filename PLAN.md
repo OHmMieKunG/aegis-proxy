@@ -87,10 +87,11 @@ No high-level mutation endpoint exists.
 **Completed units:** strict object envelope; stable object IDs and ownership metadata; seven-field
 Proxy Host contract; opaque access-policy reference; side-effect-free Proxy Host compiler into the
 existing canonical configuration model; semantic validation and candidate/revision isolation tests;
-safe deterministic typed candidate preview with mandatory redaction and restart classification.
+safe deterministic typed candidate preview with mandatory redaction and restart classification;
+bounded ordered typed field-level diff with owner/object identity checks.
 
-**Remaining units:** typed field-level diff; complete ownership and RBAC enforcement; API-token
-scopes; typed mutation/activation endpoints; remaining domain objects; OpenAPI and CLI contracts;
+**Remaining units:** complete ownership and RBAC enforcement; API-token scopes; typed
+mutation/activation endpoints; remaining domain objects; OpenAPI and CLI contracts;
 migration/compatibility policy and tests; full authorization/security review.
 
 **Objective:** provide versioned high-level objects usable by GUI and advanced automation.

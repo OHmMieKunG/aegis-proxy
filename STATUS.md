@@ -2,7 +2,8 @@
 
 Verification date: 2026-07-22
 Branch: `work/autonomous-roadmap`
-Verification basis: Phase 14 plus Phase 15 compiler `fa7913f` and preview service `d3de105`
+Verification basis: Phase 14 plus Phase 15 compiler `fa7913f`, preview service `d3de105`, and typed
+diff `2617f0e`
 Working tree at Phase 14 start: clean at `10aae8c`
 
 ## Release status
@@ -35,12 +36,13 @@ evidence.
 - ACME requires explicit low-level issuer/challenge policy; common automatic HTTPS is Phase 17.
 - SSE uses generic streaming and skips compression but lacks a focused protocol test.
 - Administration is typed but TOML/revision oriented; high-level domain APIs are Phase 15.
-- Phase 15 has a strict library-only `v1` envelope, deterministic Proxy Host compiler, and safe
-  side-effect-free typed preview service. Existing primitives validate ownership, references,
-  domains, conflicts, listener/certificate policy, generated configuration, redaction, fingerprints,
-  and restart classification. No high-level endpoint, object persistence service, typed field-level
-  diff, or complete scope matrix exists yet.
-- Preview returns redacted config, fingerprints, and activation class; field-level diff is absent.
+- Phase 15 has a strict library-only `v1` envelope, deterministic Proxy Host compiler, safe
+  side-effect-free typed preview, and bounded field-level diff. Existing primitives validate
+  ownership, references, domains, conflicts, listener/certificate policy, generated configuration,
+  redaction, fingerprints, restart classification, and owner/object identity during diff. No
+  high-level endpoint, object persistence service, or complete scope matrix exists yet.
+- Preview returns redacted config, fingerprints, and activation class; a separate pure function
+  produces the ordered typed diff. Neither can persist or activate candidates.
 - Restore validates archives but does not extract or activate them.
 - Fleet operation uses external orchestration; no cluster or consensus exists.
 - Fuzzing has dated smoke evidence, not long campaigns. Reload benchmark is narrow and dated.
@@ -78,7 +80,7 @@ is split by domain, and no production Rust module exceeds 1,200 measured lines. 
 | `cargo fmt --all -- --check` | passed |
 | `cargo check --workspace --all-targets --all-features` | passed; transitive warning below |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | passed |
-| `cargo test --workspace --all-features` | passed: 278 passed, 2 intentionally ignored |
+| `cargo test --workspace --all-features` | passed: 281 passed, 2 intentionally ignored |
 | `cargo test --workspace --doc` | passed; no doctests defined |
 | valid configuration corpus | seven accepted |
 | invalid configuration corpus | three rejected as expected |

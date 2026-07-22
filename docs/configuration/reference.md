@@ -32,6 +32,12 @@ and hot-reload/restart classification, plus a configuration clone where every se
 replaced with `<redacted-secret-reference>`. Preview does not persist or activate anything. No CLI or
 administrative endpoint exposes this high-level preview yet.
 
+Library consumers may compare an optional current preview summary with a candidate summary. The
+result is an ordered, bounded typed diff over the seven Proxy Host fields plus generated resources.
+Creation uses explicit additions; updates use replacements; disabling removes generated resources.
+Version, object, or owner mismatches fail closed. The diff contains opaque access-policy references,
+never policy contents or raw configuration, and performs no persistence or activation.
+
 ## Routing rules
 
 - Host values are lowercase canonical ASCII DNS labels. Operators must supply valid IDNA A-labels (`xn--...`); Unicode U-labels are rejected. A wildcard covers one leftmost label only.
