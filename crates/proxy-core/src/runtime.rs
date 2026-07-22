@@ -727,7 +727,9 @@ impl ActivationCoordinator {
     }
 }
 
-fn hot_reload_compatible(current: &Config, candidate: &Config) -> bool {
+/// Return whether two validated configurations can swap without rebinding listeners.
+#[must_use]
+pub fn hot_reload_compatible(current: &Config, candidate: &Config) -> bool {
     current.runtime.state_dir == candidate.runtime.state_dir
         && current.limits == candidate.limits
         && current.observability == candidate.observability

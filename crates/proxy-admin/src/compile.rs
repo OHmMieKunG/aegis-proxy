@@ -352,7 +352,7 @@ fn compile_endpoint(
     Ok(endpoint)
 }
 
-fn namespace(owner: &ObjectId, object: &ObjectId) -> String {
+pub(super) fn namespace(owner: &ObjectId, object: &ObjectId) -> String {
     let mut digest = Sha256::new();
     digest.update(owner.as_str().as_bytes());
     digest.update([0]);

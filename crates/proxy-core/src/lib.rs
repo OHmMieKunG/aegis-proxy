@@ -94,6 +94,7 @@ use route::{PathError, canonical_host, canonicalize_request_path, request_host};
 use runtime::RuntimeSnapshot;
 pub use runtime::{
     ActivationCoordinator, ActivationError, ActivationResult, NodeIdentity, RuntimeHandle,
+    hot_reload_compatible,
 };
 use tcp::{TcpListenerContext, accept_loop as tcp_accept_loop};
 

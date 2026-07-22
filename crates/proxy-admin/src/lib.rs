@@ -7,6 +7,7 @@ mod audit;
 mod auth;
 mod backup;
 mod compile;
+mod preview;
 mod rbac;
 mod server;
 
@@ -20,6 +21,10 @@ pub use backup::{BackupError, BackupSummary, create_backup, validate_backup};
 pub use compile::{
     AccessPolicyMetadata, CompileContext, ManagedHttpsPolicy, ProxyHostCandidate,
     ProxyHostCompileError, compile_proxy_host,
+};
+pub use preview::{
+    CandidateActivation, GeneratedProxyHostPreview, ProxyHostCandidatePreview,
+    ProxyHostPreviewError, ProxyHostPreviewSummary, preview_proxy_host_candidate,
 };
 pub use rbac::{Action, Role};
 pub use server::{AdminServerError, serve};
