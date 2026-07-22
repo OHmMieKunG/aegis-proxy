@@ -3,11 +3,11 @@
 Updated: 2026-07-22
 
 - Current branch: `work/autonomous-roadmap`
-- Current completed-unit commit: `b813116`
+- Current completed-unit commit: `e2e0055`
 - Current phase: Phase 15, in progress
-- Completed unit: bounded durable typed Proxy Host desired-state store
-- Implementation commit: `5c8898b`
-- Documentation commit: `b813116`
+- Completed unit: owner-scoped typed Proxy Host reads and stored conflict claims
+- Implementation commit: `d1514dd`
+- Documentation commit: `e2e0055`
 - Working tree before this handoff: clean
 
 ## Validation status
@@ -19,20 +19,23 @@ Pebble integration. Admin OpenAPI intentionally changed for typed endpoints and 
 
 ## Remaining Phase 15 work
 
-Integrate typed persistence through audited owner-scoped API/CLI; typed candidate, activation, and
-rollback endpoints; access-policy/certificate and remaining domain objects; remaining contracts;
-migration/compatibility policy; full authorization/security review.
+Aggregate typed desired-state compilation; audited generation-CAS mutations; typed candidate,
+activation, and rollback endpoints; access-policy/certificate and remaining domain objects;
+remaining contracts; migration/compatibility policy; full authorization/security review.
 
 ## Exact next task
 
-Wire `ProxyHostStore` into server initialization and owner-scoped list/get/create. Create must
-authorize before deserialization, compile and semantically validate, durably record audit intent,
-require exact active revision, create canonical configuration revision, then persist typed desired
-state without activation. Add strict OpenAPI/CLI and failure-order tests.
+Implement a deterministic aggregate Proxy Host compiler that takes all stored desired state plus one
+proposed change and emits one canonical semantically validated candidate. It must preserve every
+stored object, reject collisions with manual configuration and other owners, strip only verified
+managed resources, and expose no persistence or activation handle. Add tests proving pending objects
+cannot disappear before any create mutation endpoint is added.
 
 ## Known risks
 
-- Store exists but no endpoint opens it; high-level mutation/update semantics remain absent.
+- Store is open for owner-scoped list/get; high-level mutation/update semantics remain absent.
+- Single-object compilation from active state can omit another persisted pending object, so mutation
+  remains unsafe until aggregate compilation exists.
 - Access-policy and managed-HTTPS endpoint preparation fails closed until typed ownership metadata
   exists.
 - Public error mapping must not leak policy or object existence across ownership boundaries.
