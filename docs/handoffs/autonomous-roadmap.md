@@ -8,6 +8,7 @@ Updated: 2026-07-22
 - Completed unit: deterministic aggregate Proxy Host desired-state compiler
 - Implementation commit: `35d7d38`
 - Documentation commit: `f735d0f`
+- Security correction: `106f2fa` (mutation bearer scopes), documented by `c1e2eb8`
 - Working tree before this handoff: clean
 
 ## Validation status
@@ -36,6 +37,8 @@ outcome without leaking object/policy existence.
 - Store is open for owner-scoped list/get; high-level mutation/update semantics remain absent.
 - Cross-store transaction ordering between audit, immutable revision, and typed desired state needs
   explicit fail-closed compensation before mutation is exposed.
+- Mutation authorization now uses exact bearer scope; regression proves denied candidate creation
+  leaves revision storage unchanged.
 - Access-policy and managed-HTTPS endpoint preparation fails closed until typed ownership metadata
   exists.
 - Public error mapping must not leak policy or object existence across ownership boundaries.
