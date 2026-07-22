@@ -503,6 +503,12 @@ struct ProxyHostCreateResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct ProxyHostDeleteResponse {
+    deleted: StoredProxyHost,
+    candidate: CandidateResponse,
+}
+
+#[derive(Debug, Serialize)]
 struct ActivationResponse {
     active: String,
     previous: Option<String>,
@@ -649,7 +655,12 @@ pub async fn serve(
         .route("/v1/config/validate", post(validate_config))
         .route("/v1/config/preview", post(preview_config))
         .route("/v1/proxy-hosts", get(proxy_hosts).post(create_proxy_host))
-        .route("/v1/proxy-hosts/{id}", get(proxy_host))
+        .route(
+            "/v1/proxy-hosts/{id}",
+            get(proxy_host)
+                .put(update_proxy_host)
+                .delete(delete_proxy_host),
+        )
         .route("/v1/proxy-hosts/validate", post(validate_proxy_host))
         .route("/v1/proxy-hosts/preview", post(preview_proxy_host))
         .route("/v1/config/candidates", post(create_candidate))

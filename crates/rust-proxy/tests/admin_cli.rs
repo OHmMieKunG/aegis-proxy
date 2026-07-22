@@ -529,6 +529,137 @@ upstream_group = "app"
         let created_list_json: serde_json::Value =
             serde_json::from_slice(&created_list.stdout).expect("created list JSON");
         assert_eq!(created_list_json.as_array().map(Vec::len), Some(2));
+        let mut updated_proxy_host = proxy_host.clone();
+        updated_proxy_host["spec"]["domain"] = serde_json::json!("updated.example.test");
+        updated_proxy_host["spec"]["enabled"] = serde_json::json!(false);
+        let updated_proxy_host_path = daemon.root.join("updated-proxy-host.json");
+        fs::write(
+            &updated_proxy_host_path,
+            serde_json::to_vec_pretty(&updated_proxy_host).expect("updated Proxy Host JSON"),
+        )
+        .expect("updated Proxy Host file");
+        let revisions_after_create = fs::read_dir(state.join("config/revisions"))
+            .expect("revision directory")
+            .count();
+        for operation in ["update", "delete"] {
+            let mut command = Command::new(binary());
+            command.args([
+                "proxy-host",
+                operation,
+                "--socket",
+                socket,
+                "--token-ref",
+                &token_ref,
+                "--expect",
+                &current,
+                "--generation",
+                "1",
+                "proxy-cli",
+            ]);
+            if operation == "update" {
+                command.arg(&updated_proxy_host_path);
+            }
+            let denied = command.output().expect("denied Proxy Host mutation");
+            assert_eq!(denied.status.code(), Some(5));
+        }
+        assert_eq!(
+            fs::read_dir(state.join("config/revisions"))
+                .expect("revision directory")
+                .count(),
+            revisions_after_create
+        );
+        let stale_update = Command::new(binary())
+            .args([
+                "proxy-host",
+                "update",
+                "--socket",
+                socket,
+                "--expect",
+                &current,
+                "--generation",
+                "2",
+                "proxy-cli",
+            ])
+            .arg(&updated_proxy_host_path)
+            .output()
+            .expect("stale Proxy Host update");
+        assert_eq!(stale_update.status.code(), Some(4));
+        let denied_owner_update = Command::new(binary())
+            .args([
+                "proxy-host",
+                "update",
+                "--socket",
+                socket,
+                "--expect",
+                &current,
+                "--generation",
+                "1",
+                "proxy-cli",
+            ])
+            .arg(&cross_owner_path)
+            .output()
+            .expect("cross-owner Proxy Host update");
+        assert_eq!(denied_owner_update.status.code(), Some(5));
+        assert_eq!(
+            fs::read_dir(state.join("config/revisions"))
+                .expect("revision directory")
+                .count(),
+            revisions_after_create
+        );
+        let update = Command::new(binary())
+            .args([
+                "proxy-host",
+                "update",
+                "--socket",
+                socket,
+                "--expect",
+                &current,
+                "--generation",
+                "1",
+                "proxy-cli",
+            ])
+            .arg(&updated_proxy_host_path)
+            .output()
+            .expect("Proxy Host update");
+        assert!(update.status.success(), "{:?}", update.stderr);
+        let update_json: serde_json::Value =
+            serde_json::from_slice(&update.stdout).expect("Proxy Host update JSON");
+        assert_eq!(update_json["object"]["generation"], 2);
+        assert_eq!(update_json["object"]["object"], updated_proxy_host);
+        assert_eq!(active_revision(&state), current);
+        let stale_delete = run(&[
+            "proxy-host",
+            "delete",
+            "--socket",
+            socket,
+            "--expect",
+            &current,
+            "--generation",
+            "1",
+            "proxy-cli",
+        ]);
+        assert_eq!(stale_delete.status.code(), Some(4));
+        let delete = run(&[
+            "proxy-host",
+            "delete",
+            "--socket",
+            socket,
+            "--expect",
+            &current,
+            "--generation",
+            "2",
+            "proxy-cli",
+        ]);
+        assert!(delete.status.success(), "{:?}", delete.stderr);
+        let delete_json: serde_json::Value =
+            serde_json::from_slice(&delete.stdout).expect("Proxy Host delete JSON");
+        assert_eq!(delete_json["deleted"]["generation"], 2);
+        assert_eq!(active_revision(&state), current);
+        let deleted_list = run(&["proxy-host", "list", "--socket", socket]);
+        assert!(deleted_list.status.success(), "{:?}", deleted_list.stderr);
+        let deleted_list_json: serde_json::Value =
+            serde_json::from_slice(&deleted_list.stdout).expect("deleted list JSON");
+        assert_eq!(deleted_list_json.as_array().map(Vec::len), Some(1));
         let malformed_path = daemon.root.join("malformed-proxy-host.json");
         fs::write(&malformed_path, b"{").expect("malformed file");
         let authorization_first = run(&[
@@ -602,6 +733,9 @@ upstream_group = "app"
         assert!(audit.contains("\"outcome\":\"failed\""));
         assert!(audit.contains("\"outcome\":\"denied\""));
         assert!(audit.contains("\"action\":\"node_drain\""));
+        assert!(audit.contains("\"action\":\"proxy_host_create\""));
+        assert!(audit.contains("\"action\":\"proxy_host_update\""));
+        assert!(audit.contains("\"action\":\"proxy_host_delete\""));
         assert!(
             audit
                 .lines()

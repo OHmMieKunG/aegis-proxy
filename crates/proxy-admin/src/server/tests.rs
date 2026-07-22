@@ -232,8 +232,15 @@ fn mutation_preconditions_are_exact_and_single_valued() {
     let mut json_headers = HeaderMap::new();
     json_headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     assert!(require_json(&json_headers).is_ok());
+    json_headers.insert("x-aegis-object-generation", HeaderValue::from_static("42"));
+    assert_eq!(
+        expected_object_generation(&json_headers).expect("generation"),
+        42
+    );
     json_headers.append(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     assert!(require_json(&json_headers).is_err());
+    json_headers.append("x-aegis-object-generation", HeaderValue::from_static("42"));
+    assert!(expected_object_generation(&json_headers).is_err());
 
     headers.append(CONTENT_TYPE, HeaderValue::from_static("application/toml"));
     assert!(require_toml(&headers).is_err());

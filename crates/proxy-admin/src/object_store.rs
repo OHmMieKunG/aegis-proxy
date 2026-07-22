@@ -200,6 +200,25 @@ impl ProxyHostStore {
         object: ApiObject<ProxyHostSpec>,
         expected_generation: u64,
     ) -> Result<StoredProxyHost, ProxyHostStoreError> {
+        self.update_inner(object, expected_generation, None)
+    }
+
+    /// Replace only when object generation and complete desired-state epoch both match.
+    pub fn update_if_epoch(
+        &self,
+        object: ApiObject<ProxyHostSpec>,
+        expected_generation: u64,
+        expected_epoch: u64,
+    ) -> Result<StoredProxyHost, ProxyHostStoreError> {
+        self.update_inner(object, expected_generation, Some(expected_epoch))
+    }
+
+    fn update_inner(
+        &self,
+        object: ApiObject<ProxyHostSpec>,
+        expected_generation: u64,
+        expected_epoch: Option<u64>,
+    ) -> Result<StoredProxyHost, ProxyHostStoreError> {
         validate_object(&object)?;
         let owner_id = object.metadata.owner_id.clone();
         let object_id = object.metadata.id.clone();
@@ -207,7 +226,7 @@ impl ProxyHostStore {
             .objects
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let next_epoch = self.next_epoch(None)?;
+        let next_epoch = self.next_epoch(expected_epoch)?;
         let previous = objects
             .get(&owner_id)
             .and_then(|owned| owned.get(&object_id))
@@ -245,11 +264,37 @@ impl ProxyHostStore {
         object_id: &ObjectId,
         expected_generation: u64,
     ) -> Result<StoredProxyHost, ProxyHostStoreError> {
+        self.delete_inner(owner_id, object_id, expected_generation, None)
+    }
+
+    /// Delete only when object generation and complete desired-state epoch both match.
+    pub fn delete_if_epoch(
+        &self,
+        owner_id: &ObjectId,
+        object_id: &ObjectId,
+        expected_generation: u64,
+        expected_epoch: u64,
+    ) -> Result<StoredProxyHost, ProxyHostStoreError> {
+        self.delete_inner(
+            owner_id,
+            object_id,
+            expected_generation,
+            Some(expected_epoch),
+        )
+    }
+
+    fn delete_inner(
+        &self,
+        owner_id: &ObjectId,
+        object_id: &ObjectId,
+        expected_generation: u64,
+        expected_epoch: Option<u64>,
+    ) -> Result<StoredProxyHost, ProxyHostStoreError> {
         let mut objects = self
             .objects
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let next_epoch = self.next_epoch(None)?;
+        let next_epoch = self.next_epoch(expected_epoch)?;
         let previous = objects
             .get(owner_id)
             .and_then(|owned| owned.get(object_id))
@@ -649,17 +694,26 @@ mod tests {
             .expect("create");
         let mut updated = object("proxy-a", "alice", "updated.example.test");
         updated.spec.enabled = false;
-        let stored = store.update(updated, 1).expect("update");
+        assert!(matches!(
+            store.update_if_epoch(updated.clone(), 1, 0),
+            Err(ProxyHostStoreError::Conflict)
+        ));
+        let stored = store.update_if_epoch(updated, 1, 1).expect("update");
         assert_eq!(stored.generation, 2);
+        assert_eq!(store.snapshot().epoch(), 2);
         assert!(matches!(
             store.update(stored.object.clone(), 1),
+            Err(ProxyHostStoreError::Conflict)
+        ));
+        assert!(matches!(
+            store.delete_if_epoch(&owner, &id, 2, 1),
             Err(ProxyHostStoreError::Conflict)
         ));
 
         fs::remove_file(&path).expect("remove backing file");
         fs::create_dir(&path).expect("block replacement");
         assert!(matches!(
-            store.delete(&owner, &id, 2),
+            store.delete_if_epoch(&owner, &id, 2, 2),
             Err(ProxyHostStoreError::Io(_))
         ));
         assert_eq!(

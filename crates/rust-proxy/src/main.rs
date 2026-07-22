@@ -229,6 +229,27 @@ enum ProxyHostCommand {
         expect: String,
         file: PathBuf,
     },
+    /// Replace owned desired state and create a non-active immutable candidate.
+    Update {
+        #[command(flatten)]
+        admin: AdminConnection,
+        #[arg(long)]
+        expect: String,
+        #[arg(long)]
+        generation: u64,
+        id: String,
+        file: PathBuf,
+    },
+    /// Delete owned desired state and create a non-active immutable candidate.
+    Delete {
+        #[command(flatten)]
+        admin: AdminConnection,
+        #[arg(long)]
+        expect: String,
+        #[arg(long)]
+        generation: u64,
+        id: String,
+    },
     /// Compile and semantically validate one owned Proxy Host without persistence.
     Validate {
         #[command(flatten)]
@@ -263,6 +284,8 @@ enum CliScope {
     ReadRevisions,
     ReadProxyHosts,
     CreateProxyHost,
+    UpdateProxyHost,
+    DeleteProxyHost,
     ReadRoutes,
     ReadUpstreams,
     Drain,
@@ -287,6 +310,8 @@ impl CliScope {
             Self::ReadRevisions => "read_revisions",
             Self::ReadProxyHosts => "read_proxy_hosts",
             Self::CreateProxyHost => "create_proxy_host",
+            Self::UpdateProxyHost => "update_proxy_host",
+            Self::DeleteProxyHost => "delete_proxy_host",
             Self::ReadRoutes => "read_routes",
             Self::ReadUpstreams => "read_upstreams",
             Self::Drain => "drain",
@@ -636,6 +661,18 @@ async fn admin_request(
     content_type: Option<&'static str>,
     body: Vec<u8>,
 ) -> Result<admin_client::AdminResponse, BoxError> {
+    admin_request_with_generation(admin, method, path, if_match, None, content_type, body).await
+}
+
+async fn admin_request_with_generation(
+    admin: &AdminConnection,
+    method: Method,
+    path: &str,
+    if_match: Option<String>,
+    object_generation: Option<u64>,
+    content_type: Option<&'static str>,
+    body: Vec<u8>,
+) -> Result<admin_client::AdminResponse, BoxError> {
     let bearer = load_admin_token(admin.token_ref.clone()).await?;
     admin_client::request(
         &admin.socket,
@@ -643,6 +680,7 @@ async fn admin_request(
             method,
             path: path.to_owned(),
             if_match,
+            object_generation,
             content_type,
             bearer,
             body,
@@ -785,6 +823,42 @@ async fn run_proxy_host_command(command: ProxyHostCommand) -> Result<(), BoxErro
                 Some(expect),
                 Some("application/json"),
                 body,
+            )
+            .await?
+        }
+        ProxyHostCommand::Update {
+            admin,
+            expect,
+            generation,
+            id,
+            file,
+        } => {
+            let body = read_bounded(file, aegisproxy_config::MAX_CONFIG_BYTES).await?;
+            admin_request_with_generation(
+                &admin,
+                Method::PUT,
+                &format!("/v1/proxy-hosts/{id}"),
+                Some(expect),
+                Some(generation),
+                Some("application/json"),
+                body,
+            )
+            .await?
+        }
+        ProxyHostCommand::Delete {
+            admin,
+            expect,
+            generation,
+            id,
+        } => {
+            admin_request_with_generation(
+                &admin,
+                Method::DELETE,
+                &format!("/v1/proxy-hosts/{id}"),
+                Some(expect),
+                Some(generation),
+                None,
+                Vec::new(),
             )
             .await?
         }

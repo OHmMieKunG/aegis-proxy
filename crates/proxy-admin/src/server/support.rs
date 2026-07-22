@@ -64,6 +64,22 @@ pub(super) fn expected_revision(headers: &HeaderMap) -> Result<String, ApiError>
     Ok(revision.to_owned())
 }
 
+pub(super) fn expected_object_generation(headers: &HeaderMap) -> Result<u64, ApiError> {
+    let values: Vec<_> = headers
+        .get_all("x-aegis-object-generation")
+        .iter()
+        .collect();
+    let [value] = values.as_slice() else {
+        return Err(ApiError::InvalidRequest);
+    };
+    let text = value.to_str().map_err(|_| ApiError::InvalidRequest)?;
+    let generation = text.parse::<u64>().map_err(|_| ApiError::InvalidRequest)?;
+    if generation == 0 || generation.to_string() != text {
+        return Err(ApiError::InvalidRequest);
+    }
+    Ok(generation)
+}
+
 pub(super) async fn load_candidate(body: axum::body::Bytes) -> Result<Config, ApiError> {
     tokio::task::spawn_blocking(move || aegisproxy_config::load_bytes(&body))
         .await

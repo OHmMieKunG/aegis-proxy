@@ -278,6 +278,66 @@ pub(super) async fn proxy_host(
     Ok(response)
 }
 
+async fn create_proxy_host_candidate_revision(
+    state: &AppState,
+    principal: &Principal,
+    audit: &MutationAudit,
+    expected_revision: &str,
+    current_objects: Vec<ApiObject<ProxyHostSpec>>,
+    desired_objects: Vec<ApiObject<ProxyHostSpec>>,
+) -> Result<RevisionMetadata, ApiError> {
+    let active = state.control.runtime().config();
+    let candidate = match tokio::task::spawn_blocking(move || {
+        crate::proxy_host::prepare_proxy_host_set(&current_objects, &desired_objects, &active)
+    })
+    .await
+    {
+        Ok(Ok(candidate)) => candidate,
+        Ok(Err(_)) => {
+            return Err(
+                audited_failure(audit, "invalid_proxy_host", ApiError::InvalidRequest).await,
+            );
+        }
+        Err(_) => return Err(audited_failure(audit, "compile_failed", ApiError::Internal).await),
+    };
+    if state.control.runtime().revision().as_ref() != expected_revision {
+        return Err(audited_failure(audit, "revision_conflict", ApiError::Conflict).await);
+    }
+    let revisions = state.control.revisions();
+    let config = candidate.config().clone();
+    let source = format!(
+        "admin:{}:{}:proxy-host",
+        principal.actor_type, principal.actor_id
+    );
+    let metadata =
+        match tokio::task::spawn_blocking(move || revisions.create_candidate(&config, &source))
+            .await
+        {
+            Ok(Ok(metadata)) => metadata,
+            Ok(Err(RevisionError::InvalidConfig(_))) => {
+                return Err(
+                    audited_failure(audit, "invalid_candidate", ApiError::InvalidRequest).await,
+                );
+            }
+            Ok(Err(_)) | Err(_) => {
+                return Err(
+                    audited_failure(audit, "revision_store_failed", ApiError::Unavailable).await,
+                );
+            }
+        };
+    if state.control.runtime().revision().as_ref() != expected_revision {
+        audit
+            .record(
+                AuditOutcome::Failed,
+                Some(metadata.id.clone()),
+                Some("revision_conflict"),
+            )
+            .await?;
+        return Err(ApiError::Conflict);
+    }
+    Ok(metadata)
+}
+
 pub(super) async fn create_proxy_host(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
@@ -334,58 +394,15 @@ pub(super) async fn create_proxy_host(
         .collect::<Vec<_>>();
     let mut desired_objects = current_objects.clone();
     desired_objects.push(object.clone());
-    let active = state.control.runtime().config();
-    let candidate = match tokio::task::spawn_blocking(move || {
-        crate::proxy_host::prepare_proxy_host_set(&current_objects, &desired_objects, &active)
-    })
-    .await
-    {
-        Ok(Ok(candidate)) => candidate,
-        Ok(Err(_)) => {
-            return Err(
-                audited_failure(&audit, "invalid_proxy_host", ApiError::InvalidRequest).await,
-            );
-        }
-        Err(_) => return Err(audited_failure(&audit, "compile_failed", ApiError::Internal).await),
-    };
-    if state.control.runtime().revision().as_ref() != expected {
-        return Err(audited_failure(&audit, "revision_conflict", ApiError::Conflict).await);
-    }
-    let revisions = state.control.revisions();
-    let config = candidate.config().clone();
-    let source = format!(
-        "admin:{}:{}:proxy-host",
-        principal.actor_type, principal.actor_id
-    );
-    let metadata =
-        match tokio::task::spawn_blocking(move || revisions.create_candidate(&config, &source))
-            .await
-        {
-            Ok(Ok(metadata)) => metadata,
-            Ok(Err(RevisionError::InvalidConfig(_))) => {
-                return Err(
-                    audited_failure(&audit, "invalid_candidate", ApiError::InvalidRequest).await,
-                );
-            }
-            Ok(Err(_)) | Err(_) => {
-                return Err(audited_failure(
-                    &audit,
-                    "revision_store_failed",
-                    ApiError::Unavailable,
-                )
-                .await);
-            }
-        };
-    if state.control.runtime().revision().as_ref() != expected {
-        audit
-            .record(
-                AuditOutcome::Failed,
-                Some(metadata.id.clone()),
-                Some("revision_conflict"),
-            )
-            .await?;
-        return Err(ApiError::Conflict);
-    }
+    let metadata = create_proxy_host_candidate_revision(
+        &state,
+        &principal,
+        &audit,
+        &expected,
+        current_objects,
+        desired_objects,
+    )
+    .await?;
     let store = Arc::clone(&state.proxy_hosts);
     let epoch = snapshot.epoch();
     let stored =
@@ -432,6 +449,265 @@ pub(super) async fn create_proxy_host(
         .headers_mut()
         .insert(ETAG, etag(&generation).ok_or(ApiError::Internal)?);
     Ok(response)
+}
+
+pub(super) async fn update_proxy_host(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+    principal: Principal,
+    body: axum::body::Bytes,
+) -> Result<Response, ApiError> {
+    let current_revision = state.control.runtime().revision().to_string();
+    let audit = begin_mutation(
+        &state,
+        &principal,
+        &request_id,
+        Some(current_revision.clone()),
+        MutationSpec {
+            permission: Action::UpdateProxyHost,
+            action: "proxy_host_update",
+            resource_id: &id,
+            new_revision: None,
+        },
+    )
+    .await?;
+    let expected_revision = match expected_revision(&headers) {
+        Ok(expected) => expected,
+        Err(error) => return Err(audited_failure(&audit, "invalid_if_match", error).await),
+    };
+    let expected_generation = match expected_object_generation(&headers) {
+        Ok(expected) => expected,
+        Err(error) => {
+            return Err(audited_failure(&audit, "invalid_generation", error).await);
+        }
+    };
+    if current_revision != expected_revision
+        || state.control.runtime().revision().as_ref() != expected_revision
+    {
+        return Err(audited_failure(&audit, "revision_conflict", ApiError::Conflict).await);
+    }
+    if require_json(&headers).is_err() {
+        return Err(
+            audited_failure(&audit, "invalid_content_type", ApiError::InvalidRequest).await,
+        );
+    }
+    let object = match serde_json::from_slice::<ApiObject<ProxyHostSpec>>(&body) {
+        Ok(object) => object,
+        Err(_) => {
+            return Err(audited_failure(&audit, "invalid_json", ApiError::InvalidRequest).await);
+        }
+    };
+    let object_id = match id.parse::<ObjectId>() {
+        Ok(object_id) if object_id == object.metadata.id => object_id,
+        _ => {
+            return Err(
+                audited_failure(&audit, "invalid_object_id", ApiError::InvalidRequest).await,
+            );
+        }
+    };
+    let owner = match principal.owner_id.as_ref() {
+        Some(owner) if owner == &object.metadata.owner_id => owner.clone(),
+        _ => return Err(audited_failure(&audit, "owner_denied", ApiError::Forbidden).await),
+    };
+    let store = Arc::clone(&state.proxy_hosts);
+    let snapshot = match tokio::task::spawn_blocking(move || store.snapshot()).await {
+        Ok(snapshot) => snapshot,
+        Err(_) => {
+            return Err(audited_failure(&audit, "object_store_failed", ApiError::Internal).await);
+        }
+    };
+    let current_objects = snapshot
+        .objects()
+        .iter()
+        .map(|stored| stored.object.clone())
+        .collect::<Vec<_>>();
+    let Some(index) = snapshot.objects().iter().position(|stored| {
+        stored.object.metadata.owner_id == owner && stored.object.metadata.id == object_id
+    }) else {
+        return Err(audited_failure(&audit, "object_not_found", ApiError::NotFound).await);
+    };
+    if snapshot.objects()[index].generation != expected_generation {
+        return Err(audited_failure(&audit, "object_conflict", ApiError::ObjectConflict).await);
+    }
+    let mut desired_objects = current_objects.clone();
+    desired_objects[index] = object.clone();
+    let metadata = create_proxy_host_candidate_revision(
+        &state,
+        &principal,
+        &audit,
+        &expected_revision,
+        current_objects,
+        desired_objects,
+    )
+    .await?;
+    let store = Arc::clone(&state.proxy_hosts);
+    let epoch = snapshot.epoch();
+    let stored = match tokio::task::spawn_blocking(move || {
+        store.update_if_epoch(object, expected_generation, epoch)
+    })
+    .await
+    {
+        Ok(Ok(stored)) => stored,
+        Ok(Err(ProxyHostStoreError::Conflict)) => {
+            audit
+                .record(
+                    AuditOutcome::Failed,
+                    Some(metadata.id.clone()),
+                    Some("object_conflict"),
+                )
+                .await?;
+            return Err(ApiError::ObjectConflict);
+        }
+        Ok(Err(_)) | Err(_) => {
+            audit
+                .record(
+                    AuditOutcome::Failed,
+                    Some(metadata.id.clone()),
+                    Some("object_store_failed"),
+                )
+                .await?;
+            return Err(ApiError::Unavailable);
+        }
+    };
+    audit
+        .record(AuditOutcome::Success, Some(metadata.id.clone()), None)
+        .await?;
+    let generation = stored.generation.to_string();
+    let mut response = axum::Json(ProxyHostCreateResponse {
+        object: stored,
+        candidate: CandidateResponse {
+            id: metadata.id,
+            hash: metadata.hash,
+            sequence: metadata.sequence,
+        },
+    })
+    .into_response();
+    response
+        .headers_mut()
+        .insert(ETAG, etag(&generation).ok_or(ApiError::Internal)?);
+    Ok(response)
+}
+
+pub(super) async fn delete_proxy_host(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+    principal: Principal,
+) -> Result<Response, ApiError> {
+    let current_revision = state.control.runtime().revision().to_string();
+    let audit = begin_mutation(
+        &state,
+        &principal,
+        &request_id,
+        Some(current_revision.clone()),
+        MutationSpec {
+            permission: Action::DeleteProxyHost,
+            action: "proxy_host_delete",
+            resource_id: &id,
+            new_revision: None,
+        },
+    )
+    .await?;
+    let expected_revision = match expected_revision(&headers) {
+        Ok(expected) => expected,
+        Err(error) => return Err(audited_failure(&audit, "invalid_if_match", error).await),
+    };
+    let expected_generation = match expected_object_generation(&headers) {
+        Ok(expected) => expected,
+        Err(error) => {
+            return Err(audited_failure(&audit, "invalid_generation", error).await);
+        }
+    };
+    if current_revision != expected_revision
+        || state.control.runtime().revision().as_ref() != expected_revision
+    {
+        return Err(audited_failure(&audit, "revision_conflict", ApiError::Conflict).await);
+    }
+    let object_id = match id.parse::<ObjectId>() {
+        Ok(object_id) => object_id,
+        Err(_) => {
+            return Err(audited_failure(&audit, "object_not_found", ApiError::NotFound).await);
+        }
+    };
+    let owner = match principal.owner_id.as_ref() {
+        Some(owner) => owner.clone(),
+        None => return Err(audited_failure(&audit, "owner_denied", ApiError::Forbidden).await),
+    };
+    let store = Arc::clone(&state.proxy_hosts);
+    let snapshot = match tokio::task::spawn_blocking(move || store.snapshot()).await {
+        Ok(snapshot) => snapshot,
+        Err(_) => {
+            return Err(audited_failure(&audit, "object_store_failed", ApiError::Internal).await);
+        }
+    };
+    let Some((index, target)) = snapshot.objects().iter().enumerate().find(|(_, stored)| {
+        stored.object.metadata.owner_id == owner && stored.object.metadata.id == object_id
+    }) else {
+        return Err(audited_failure(&audit, "object_not_found", ApiError::NotFound).await);
+    };
+    if target.generation != expected_generation {
+        return Err(audited_failure(&audit, "object_conflict", ApiError::ObjectConflict).await);
+    }
+    let current_objects = snapshot
+        .objects()
+        .iter()
+        .map(|stored| stored.object.clone())
+        .collect::<Vec<_>>();
+    let mut desired_objects = current_objects.clone();
+    desired_objects.remove(index);
+    let metadata = create_proxy_host_candidate_revision(
+        &state,
+        &principal,
+        &audit,
+        &expected_revision,
+        current_objects,
+        desired_objects,
+    )
+    .await?;
+    let store = Arc::clone(&state.proxy_hosts);
+    let epoch = snapshot.epoch();
+    let deleted = match tokio::task::spawn_blocking(move || {
+        store.delete_if_epoch(&owner, &object_id, expected_generation, epoch)
+    })
+    .await
+    {
+        Ok(Ok(deleted)) => deleted,
+        Ok(Err(ProxyHostStoreError::Conflict)) => {
+            audit
+                .record(
+                    AuditOutcome::Failed,
+                    Some(metadata.id.clone()),
+                    Some("object_conflict"),
+                )
+                .await?;
+            return Err(ApiError::ObjectConflict);
+        }
+        Ok(Err(_)) | Err(_) => {
+            audit
+                .record(
+                    AuditOutcome::Failed,
+                    Some(metadata.id.clone()),
+                    Some("object_store_failed"),
+                )
+                .await?;
+            return Err(ApiError::Unavailable);
+        }
+    };
+    audit
+        .record(AuditOutcome::Success, Some(metadata.id.clone()), None)
+        .await?;
+    Ok(axum::Json(ProxyHostDeleteResponse {
+        deleted,
+        candidate: CandidateResponse {
+            id: metadata.id,
+            hash: metadata.hash,
+            sequence: metadata.sequence,
+        },
+    })
+    .into_response())
 }
 
 pub(super) async fn preview_proxy_host(

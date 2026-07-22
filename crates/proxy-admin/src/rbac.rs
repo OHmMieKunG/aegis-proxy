@@ -41,6 +41,10 @@ pub enum Action {
     ReadProxyHosts,
     /// Create an owned typed Proxy Host and immutable candidate.
     CreateProxyHost,
+    /// Update an owned typed Proxy Host and immutable candidate.
+    UpdateProxyHost,
+    /// Delete an owned typed Proxy Host and create an immutable candidate.
+    DeleteProxyHost,
     /// Read effective routes.
     ReadRoutes,
     /// Read upstream health state.
@@ -145,6 +149,8 @@ impl Role {
                     | Action::ReadRevisions
                     | Action::ReadProxyHosts
                     | Action::CreateProxyHost
+                    | Action::UpdateProxyHost
+                    | Action::DeleteProxyHost
                     | Action::ReadRoutes
                     | Action::ReadUpstreams
                     | Action::Drain
@@ -180,7 +186,7 @@ impl Role {
 mod tests {
     use super::{Action, Role, TokenScopeError, TokenScopes};
 
-    const ACTIONS: [Action; 19] = [
+    const ACTIONS: [Action; 21] = [
         Action::ReadStatus,
         Action::ReadConfig,
         Action::ValidateConfig,
@@ -191,6 +197,8 @@ mod tests {
         Action::ReadRevisions,
         Action::ReadProxyHosts,
         Action::CreateProxyHost,
+        Action::UpdateProxyHost,
+        Action::DeleteProxyHost,
         Action::ReadRoutes,
         Action::ReadUpstreams,
         Action::Drain,
@@ -207,7 +215,7 @@ mod tests {
         let expected = [
             (Role::Viewer, 7),
             (Role::Auditor, 8),
-            (Role::Operator, 13),
+            (Role::Operator, 15),
             (Role::Admin, ACTIONS.len()),
         ];
         for (role, count) in expected {

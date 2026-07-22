@@ -17,6 +17,7 @@ pub(crate) struct AdminRequest {
     pub(crate) method: Method,
     pub(crate) path: String,
     pub(crate) if_match: Option<String>,
+    pub(crate) object_generation: Option<u64>,
     pub(crate) content_type: Option<&'static str>,
     pub(crate) bearer: Option<Zeroizing<String>>,
     pub(crate) body: Vec<u8>,
@@ -29,6 +30,7 @@ impl fmt::Debug for AdminRequest {
             .field("method", &self.method)
             .field("path", &self.path)
             .field("if_match", &self.if_match)
+            .field("object_generation", &self.object_generation)
             .field("content_type", &self.content_type)
             .field("bearer", &self.bearer.as_ref().map(|_| "[REDACTED]"))
             .field("body_bytes", &self.body.len())
@@ -59,6 +61,9 @@ pub(crate) async fn request(
         .header(HOST, "localhost");
     if let Some(revision) = request.if_match {
         builder = builder.header("if-match", format!("\"{revision}\""));
+    }
+    if let Some(generation) = request.object_generation {
+        builder = builder.header("x-aegis-object-generation", generation);
     }
     if let Some(content_type) = request.content_type {
         builder = builder.header("content-type", content_type);
