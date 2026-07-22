@@ -428,6 +428,10 @@ impl ManagedIds {
     }
 }
 
+pub(super) fn managed_upstream_group_id(object: &ApiObject<ProxyHostSpec>) -> String {
+    ManagedIds::new(object).group
+}
+
 fn canonical_objects(
     objects: &[ApiObject<ProxyHostSpec>],
 ) -> Result<Vec<ApiObject<ProxyHostSpec>>, ProxyHostCompileError> {

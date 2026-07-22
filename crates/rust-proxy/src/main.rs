@@ -250,6 +250,14 @@ enum ProxyHostCommand {
         generation: u64,
         id: String,
     },
+    /// Verify and atomically activate a complete typed candidate.
+    Activate {
+        #[command(flatten)]
+        admin: AdminConnection,
+        #[arg(long)]
+        expect: String,
+        candidate: String,
+    },
     /// Compile and semantically validate one owned Proxy Host without persistence.
     Validate {
         #[command(flatten)]
@@ -286,6 +294,7 @@ enum CliScope {
     CreateProxyHost,
     UpdateProxyHost,
     DeleteProxyHost,
+    ActivateProxyHost,
     ReadRoutes,
     ReadUpstreams,
     Drain,
@@ -312,6 +321,7 @@ impl CliScope {
             Self::CreateProxyHost => "create_proxy_host",
             Self::UpdateProxyHost => "update_proxy_host",
             Self::DeleteProxyHost => "delete_proxy_host",
+            Self::ActivateProxyHost => "activate_proxy_host",
             Self::ReadRoutes => "read_routes",
             Self::ReadUpstreams => "read_upstreams",
             Self::Drain => "drain",
@@ -857,6 +867,21 @@ async fn run_proxy_host_command(command: ProxyHostCommand) -> Result<(), BoxErro
                 &format!("/v1/proxy-hosts/{id}"),
                 Some(expect),
                 Some(generation),
+                None,
+                Vec::new(),
+            )
+            .await?
+        }
+        ProxyHostCommand::Activate {
+            admin,
+            expect,
+            candidate,
+        } => {
+            admin_request(
+                &admin,
+                Method::POST,
+                &format!("/v1/proxy-hosts/candidates/{candidate}/activate"),
+                Some(expect),
                 None,
                 Vec::new(),
             )

@@ -297,7 +297,7 @@ upstream_group = "app"
             assert!(!metrics.contains(canary));
         }
 
-        let current = active_revision(&state);
+        let mut current = active_revision(&state);
         let proxy_host_path = daemon.root.join("proxy-host.json");
         let proxy_host = serde_json::json!({
             "api_version": "v1",
@@ -531,7 +531,6 @@ upstream_group = "app"
         assert_eq!(created_list_json.as_array().map(Vec::len), Some(2));
         let mut updated_proxy_host = proxy_host.clone();
         updated_proxy_host["spec"]["domain"] = serde_json::json!("updated.example.test");
-        updated_proxy_host["spec"]["enabled"] = serde_json::json!(false);
         let updated_proxy_host_path = daemon.root.join("updated-proxy-host.json");
         fs::write(
             &updated_proxy_host_path,
@@ -626,6 +625,58 @@ upstream_group = "app"
             serde_json::from_slice(&update.stdout).expect("Proxy Host update JSON");
         assert_eq!(update_json["object"]["generation"], 2);
         assert_eq!(update_json["object"]["object"], updated_proxy_host);
+        assert_eq!(active_revision(&state), current);
+        let updated_candidate_id = update_json["candidate"]["id"]
+            .as_str()
+            .expect("updated candidate ID");
+        let stale_candidate = run(&[
+            "proxy-host",
+            "activate",
+            "--socket",
+            socket,
+            "--expect",
+            &current,
+            candidate_id,
+        ]);
+        assert_eq!(stale_candidate.status.code(), Some(4));
+        assert_eq!(active_revision(&state), current);
+        let denied_activation = Command::new(binary())
+            .args([
+                "proxy-host",
+                "activate",
+                "--socket",
+                socket,
+                "--token-ref",
+                &token_ref,
+                "--expect",
+                &current,
+                updated_candidate_id,
+            ])
+            .output()
+            .expect("denied typed activation");
+        assert_eq!(denied_activation.status.code(), Some(5));
+        let activation = run(&[
+            "proxy-host",
+            "activate",
+            "--socket",
+            socket,
+            "--expect",
+            &current,
+            updated_candidate_id,
+        ]);
+        assert!(activation.status.success(), "{:?}", activation.stderr);
+        current = active_revision(&state);
+        assert_eq!(current, updated_candidate_id);
+        let repeated_activation = run(&[
+            "proxy-host",
+            "activate",
+            "--socket",
+            socket,
+            "--expect",
+            &current,
+            updated_candidate_id,
+        ]);
+        assert_eq!(repeated_activation.status.code(), Some(4));
         assert_eq!(active_revision(&state), current);
         let stale_delete = run(&[
             "proxy-host",
@@ -736,6 +787,7 @@ upstream_group = "app"
         assert!(audit.contains("\"action\":\"proxy_host_create\""));
         assert!(audit.contains("\"action\":\"proxy_host_update\""));
         assert!(audit.contains("\"action\":\"proxy_host_delete\""));
+        assert!(audit.contains("\"action\":\"proxy_host_activate\""));
         assert!(
             audit
                 .lines()

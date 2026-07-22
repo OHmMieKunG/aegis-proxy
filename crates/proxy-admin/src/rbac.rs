@@ -45,6 +45,8 @@ pub enum Action {
     UpdateProxyHost,
     /// Delete an owned typed Proxy Host and create an immutable candidate.
     DeleteProxyHost,
+    /// Activate a verified complete typed Proxy Host candidate.
+    ActivateProxyHost,
     /// Read effective routes.
     ReadRoutes,
     /// Read upstream health state.
@@ -186,7 +188,7 @@ impl Role {
 mod tests {
     use super::{Action, Role, TokenScopeError, TokenScopes};
 
-    const ACTIONS: [Action; 21] = [
+    const ACTIONS: [Action; 22] = [
         Action::ReadStatus,
         Action::ReadConfig,
         Action::ValidateConfig,
@@ -199,6 +201,7 @@ mod tests {
         Action::CreateProxyHost,
         Action::UpdateProxyHost,
         Action::DeleteProxyHost,
+        Action::ActivateProxyHost,
         Action::ReadRoutes,
         Action::ReadUpstreams,
         Action::Drain,

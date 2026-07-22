@@ -169,6 +169,16 @@ paths:
             application/json:
               schema: {$ref: "#/components/schemas/PreparedProxyHost"}
         default: {$ref: "#/components/responses/Error"}
+  /v1/proxy-hosts/candidates/{id}/activate:
+    post:
+      operationId: activateProxyHostCandidate
+      parameters:
+        - {$ref: "#/components/parameters/RevisionId"}
+        - {$ref: "#/components/parameters/IfMatch"}
+      responses:
+        "200":
+          description: Verified complete desired-state candidate atomically activated
+        default: {$ref: "#/components/responses/Error"}
   /v1/config/candidates:
     post:
       operationId: createCandidate
@@ -282,7 +292,7 @@ paths:
                 scopes:
                   type: array
                   minItems: 1
-                  maxItems: 21
+                  maxItems: 22
                   uniqueItems: true
                   items:
                     $ref: "#/components/schemas/TokenScope"
@@ -527,7 +537,7 @@ components:
             changes: {type: array, minItems: 7, maxItems: 8, items: {type: object}}
     TokenScope:
       type: string
-      enum: [read_status, read_config, validate_config, preview_config, create_candidate, activate_config, rollback_config, read_revisions, read_proxy_hosts, create_proxy_host, update_proxy_host, delete_proxy_host, read_routes, read_upstreams, drain, read_certificates, renew_certificate, read_audit, create_backup, validate_restore, manage_identities]
+      enum: [read_status, read_config, validate_config, preview_config, create_candidate, activate_config, rollback_config, read_revisions, read_proxy_hosts, create_proxy_host, update_proxy_host, delete_proxy_host, activate_proxy_host, read_routes, read_upstreams, drain, read_certificates, renew_certificate, read_audit, create_backup, validate_restore, manage_identities]
     TokenMetadata:
       type: object
       additionalProperties: false
@@ -541,7 +551,7 @@ components:
             - {type: "null"}
         scopes:
           type: array
-          maxItems: 21
+          maxItems: 22
           uniqueItems: true
           items: {$ref: "#/components/schemas/TokenScope"}
         expires_unix_secs: {type: integer, minimum: 1}

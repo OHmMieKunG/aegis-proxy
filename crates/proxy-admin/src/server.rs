@@ -14,7 +14,7 @@ use std::{
 
 use aegisproxy_config::{
     BalancingAlgorithm, Config,
-    revision::{RevisionError, RevisionMetadata},
+    revision::{RevisionError, RevisionMetadata, content_hash},
 };
 use aegisproxy_core::{ActivationError, ManagedControl, RouteIndex, RuntimeHandle};
 use aegisproxy_secrets::SecretRef;
@@ -37,7 +37,10 @@ use axum::{
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tokio::{net::UnixListener, sync::Semaphore};
+use tokio::{
+    net::UnixListener,
+    sync::{OwnedSemaphorePermit, Semaphore},
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -82,6 +85,7 @@ struct AppState {
     allowed_uids: Arc<[u32]>,
     auth_permits: Arc<Semaphore>,
     request_permits: Arc<Semaphore>,
+    mutation_permits: Arc<Semaphore>,
     rate_limiter: Arc<RateLimiter>,
     started: Instant,
     timeout: Duration,
@@ -280,6 +284,7 @@ enum ApiError {
     NotFound,
     Conflict,
     ObjectConflict,
+    CandidateConflict,
     Unavailable,
     Internal,
 }
@@ -307,6 +312,7 @@ impl ApiError {
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             Self::Conflict => (StatusCode::CONFLICT, "revision_conflict"),
             Self::ObjectConflict => (StatusCode::CONFLICT, "object_conflict"),
+            Self::CandidateConflict => (StatusCode::CONFLICT, "candidate_conflict"),
             Self::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
             Self::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
         };
@@ -320,6 +326,7 @@ impl ApiError {
             Self::NotFound => "resource was not found",
             Self::Conflict => "active revision changed",
             Self::ObjectConflict => "object state changed",
+            Self::CandidateConflict => "candidate does not match current desired state",
             Self::Unavailable => "administrative dependency is unavailable",
             Self::Internal => "administrative request failed",
         };
@@ -567,6 +574,7 @@ struct MutationAudit {
     resource_id: String,
     request_id: String,
     old_revision: Option<String>,
+    _mutation_permit: Option<OwnedSemaphorePermit>,
 }
 
 #[derive(Debug)]
@@ -631,6 +639,7 @@ pub async fn serve(
         allowed_uids: Arc::from(config.admin.allowed_uids.clone()),
         auth_permits: Arc::new(Semaphore::new(config.admin.max_auth_in_flight)),
         request_permits: Arc::new(Semaphore::new(config.admin.max_in_flight)),
+        mutation_permits: Arc::new(Semaphore::new(1)),
         rate_limiter: Arc::new(RateLimiter::new(
             config.admin.requests_per_second,
             config.admin.burst,
@@ -663,6 +672,10 @@ pub async fn serve(
         )
         .route("/v1/proxy-hosts/validate", post(validate_proxy_host))
         .route("/v1/proxy-hosts/preview", post(preview_proxy_host))
+        .route(
+            "/v1/proxy-hosts/candidates/{id}/activate",
+            post(activate_proxy_host_candidate),
+        )
         .route("/v1/config/candidates", post(create_candidate))
         .route(
             "/v1/config/candidates/{id}/activate",

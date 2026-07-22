@@ -94,7 +94,7 @@ pub(super) async fn begin_mutation(
     old_revision: Option<String>,
     spec: MutationSpec<'_>,
 ) -> Result<MutationAudit, ApiError> {
-    let audit = MutationAudit {
+    let mut audit = MutationAudit {
         log: state.audit.clone().ok_or(ApiError::Unavailable)?,
         runtime: state.control.runtime(),
         node_id: state.control.runtime().node_id().to_string(),
@@ -104,6 +104,7 @@ pub(super) async fn begin_mutation(
         resource_id: spec.resource_id.to_owned(),
         request_id: request_id.0.clone(),
         old_revision,
+        _mutation_permit: None,
     };
     if authorize(principal, spec.permission).is_err() {
         audit
@@ -115,6 +116,12 @@ pub(super) async fn begin_mutation(
             .await?;
         return Err(ApiError::Forbidden);
     }
+    audit._mutation_permit = Some(
+        Arc::clone(&state.mutation_permits)
+            .acquire_owned()
+            .await
+            .map_err(|_| ApiError::Unavailable)?,
+    );
     audit
         .record(AuditOutcome::Intent, spec.new_revision, None)
         .await?;

@@ -710,6 +710,136 @@ pub(super) async fn delete_proxy_host(
     .into_response())
 }
 
+pub(super) async fn activate_proxy_host_candidate(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+    principal: Principal,
+) -> Result<Response, ApiError> {
+    let current_revision = state.control.runtime().revision().to_string();
+    let audit = begin_mutation(
+        &state,
+        &principal,
+        &request_id,
+        Some(current_revision.clone()),
+        MutationSpec {
+            permission: Action::ActivateProxyHost,
+            action: "proxy_host_activate",
+            resource_id: &id,
+            new_revision: Some(id.clone()),
+        },
+    )
+    .await?;
+    let expected_revision = match expected_revision(&headers) {
+        Ok(expected) => expected,
+        Err(error) => return Err(audited_failure(&audit, "invalid_if_match", error).await),
+    };
+    if current_revision != expected_revision
+        || state.control.runtime().revision().as_ref() != expected_revision
+    {
+        return Err(audited_failure(&audit, "revision_conflict", ApiError::Conflict).await);
+    }
+    if id == current_revision {
+        return Err(
+            audited_failure(&audit, "candidate_conflict", ApiError::CandidateConflict).await,
+        );
+    }
+    if principal.owner_id.is_none() {
+        return Err(audited_failure(&audit, "owner_denied", ApiError::Forbidden).await);
+    }
+    let store = Arc::clone(&state.proxy_hosts);
+    let snapshot = match tokio::task::spawn_blocking(move || store.snapshot()).await {
+        Ok(snapshot) => snapshot,
+        Err(_) => {
+            return Err(audited_failure(&audit, "object_store_failed", ApiError::Internal).await);
+        }
+    };
+    let objects = snapshot
+        .objects()
+        .iter()
+        .map(|stored| stored.object.clone())
+        .collect::<Vec<_>>();
+    let active = state.control.runtime().config();
+    let expected_hash = match tokio::task::spawn_blocking(move || {
+        let candidate = crate::proxy_host::prepare_proxy_host_set(&objects, &objects, &active)
+            .map_err(|_| {
+                RevisionError::InvalidStored("typed candidate preparation failed".into())
+            })?;
+        content_hash(candidate.config())
+    })
+    .await
+    {
+        Ok(Ok(hash)) => hash,
+        Ok(Err(_)) => {
+            return Err(
+                audited_failure(&audit, "invalid_proxy_host", ApiError::InvalidRequest).await,
+            );
+        }
+        Err(_) => return Err(audited_failure(&audit, "compile_failed", ApiError::Internal).await),
+    };
+    let revisions = state.control.revisions();
+    let candidate_id = id.clone();
+    let candidate_hash = match tokio::task::spawn_blocking(move || {
+        let candidate = revisions.load(&candidate_id)?;
+        content_hash(&candidate)
+    })
+    .await
+    {
+        Ok(Ok(hash)) => hash,
+        Ok(Err(RevisionError::InvalidStored(_))) => {
+            return Err(audited_failure(&audit, "candidate_not_found", ApiError::NotFound).await);
+        }
+        Ok(Err(RevisionError::Io(error))) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(audited_failure(&audit, "candidate_not_found", ApiError::NotFound).await);
+        }
+        Ok(Err(_)) | Err(_) => {
+            return Err(
+                audited_failure(&audit, "revision_store_failed", ApiError::Unavailable).await,
+            );
+        }
+    };
+    if candidate_hash != expected_hash {
+        return Err(
+            audited_failure(&audit, "candidate_conflict", ApiError::CandidateConflict).await,
+        );
+    }
+    let store = Arc::clone(&state.proxy_hosts);
+    let current_epoch = match tokio::task::spawn_blocking(move || store.snapshot().epoch()).await {
+        Ok(epoch) => epoch,
+        Err(_) => {
+            return Err(audited_failure(&audit, "object_store_failed", ApiError::Internal).await);
+        }
+    };
+    if current_epoch != snapshot.epoch() {
+        return Err(audited_failure(&audit, "object_conflict", ApiError::ObjectConflict).await);
+    }
+    let result = match state
+        .control
+        .coordinator()
+        .activate(&id, Some(&expected_revision))
+        .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            let (code, error) = activation_error(error);
+            return Err(audited_failure(&audit, code, error).await);
+        }
+    };
+    audit
+        .record(AuditOutcome::Success, Some(result.active.clone()), None)
+        .await?;
+    let mut response = axum::Json(ActivationResponse {
+        active: result.active.clone(),
+        previous: result.previous,
+    })
+    .into_response();
+    response
+        .headers_mut()
+        .insert(ETAG, etag(&result.active).ok_or(ApiError::Internal)?);
+    Ok(response)
+}
+
 pub(super) async fn preview_proxy_host(
     State(state): State<AppState>,
     PreviewProxyHostPrincipal(principal): PreviewProxyHostPrincipal,

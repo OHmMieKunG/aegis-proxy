@@ -1,6 +1,6 @@
 //! Owner-scoped preparation of typed Proxy Host validation and preview results.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use aegisproxy_config::Config;
 use serde::Serialize;
@@ -113,7 +113,7 @@ pub(crate) fn prepare_proxy_host_set(
     active: &Config,
 ) -> Result<ProxyHostSetCandidate, ProxyHostPreparationError> {
     let http_listener_id = single_http_listener(active)?;
-    let upstream_template_id = single_http_upstream_template(active)?;
+    let upstream_template_id = single_http_upstream_template_for_set(active, current)?;
     let access_policies = BTreeMap::new();
     let managed_https = BTreeMap::new();
     compile_proxy_hosts(
@@ -158,6 +158,31 @@ fn single_http_listener(config: &Config) -> Result<&str, ProxyHostPreparationErr
 fn single_http_upstream_template(config: &Config) -> Result<&str, ProxyHostPreparationError> {
     let mut groups = config.upstream_groups.iter().filter(|group| {
         !group.endpoints.is_empty()
+            && group
+                .endpoints
+                .iter()
+                .all(|endpoint| matches!(endpoint.url.scheme(), "http" | "https"))
+    });
+    let group = groups
+        .next()
+        .ok_or(ProxyHostPreparationError::UpstreamTemplateUnavailable)?;
+    if groups.next().is_some() {
+        return Err(ProxyHostPreparationError::UpstreamTemplateUnavailable);
+    }
+    Ok(&group.id)
+}
+
+fn single_http_upstream_template_for_set<'a>(
+    config: &'a Config,
+    current: &[ApiObject<ProxyHostSpec>],
+) -> Result<&'a str, ProxyHostPreparationError> {
+    let managed = current
+        .iter()
+        .map(crate::compile::managed_upstream_group_id)
+        .collect::<BTreeSet<_>>();
+    let mut groups = config.upstream_groups.iter().filter(|group| {
+        !managed.contains(&group.id)
+            && !group.endpoints.is_empty()
             && group
                 .endpoints
                 .iter()
@@ -257,6 +282,22 @@ mod tests {
         assert_eq!(
             prepare_proxy_host(&value, &active, &owner).expect_err("policy metadata absent"),
             ProxyHostPreparationError::ManagedHttpsUnavailable
+        );
+    }
+
+    #[test]
+    fn recompiles_after_managed_candidate_activation() {
+        let base =
+            aegisproxy_config::load_bytes(include_bytes!("../../../config/examples/minimal.toml"))
+                .expect("active config");
+        let current = vec![object("uid-1000")];
+        let activated = prepare_proxy_host_set(&[], &current, &base).expect("initial candidate");
+        let removed = prepare_proxy_host_set(&current, &[], activated.config())
+            .expect("candidate after activation");
+
+        assert_eq!(
+            serde_json::to_vec(removed.config()).expect("removed candidate"),
+            serde_json::to_vec(&base).expect("base candidate")
         );
     }
 }
