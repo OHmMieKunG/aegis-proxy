@@ -7,7 +7,9 @@ paths, shell expansion, commands, scripts, arbitrary URLs, and runtime plugins a
 Resolved bytes are size-limited, permission-checked where supported, zeroized where practical, and
 redacted in formatting. Private keys and ACME account credentials are age-encrypted at rest.
 
-API tokens return plaintext once at creation; only Argon2 hashes and safe metadata persist.
+API tokens return plaintext once at creation; only Argon2 hashes and safe metadata persist. New
+tokens require explicit bounded action scopes. Effective permission is the intersection of role and
+scope, while legacy records without scopes authorize no action until replaced.
 Certificate, provider, audit, authentication, backup, and age identities are never returned as
 plaintext through API or preview. Keys necessarily exist in process memory while used; encryption
 at rest does not protect a compromised process.

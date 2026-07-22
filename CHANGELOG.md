@@ -17,5 +17,7 @@ AegisProxy has not published a supported release.
   secret-reference redaction, generated-resource summaries, fingerprints, and restart classification.
 - Added bounded deterministic Proxy Host field differences with typed values, stable ordering,
   identity checks, and explicit generated-resource add/remove operations.
+- Required explicit API-token action scopes, enforced as role-and-scope intersection; legacy
+  unscoped records load deny-all and token metadata remains hash-free.
 
 See [`STATUS.md`](STATUS.md) and [`docs/history/`](docs/history/README.md).

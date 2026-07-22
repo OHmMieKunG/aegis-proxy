@@ -2,8 +2,8 @@
 
 Verification date: 2026-07-22
 Branch: `work/autonomous-roadmap`
-Verification basis: Phase 14 plus Phase 15 compiler `fa7913f`, preview service `d3de105`, and typed
-diff `2617f0e`
+Verification basis: Phase 14 plus Phase 15 compiler `fa7913f`, preview service `d3de105`, typed diff
+`2617f0e`, and API-token scopes `81bd500`
 Working tree at Phase 14 start: clean at `10aae8c`
 
 ## Release status
@@ -25,8 +25,8 @@ evidence.
   state, bounded renewal, and prior working-certificate retention.
 - Fixed-stage middleware, Basic auth, ForwardAuth, IP policy, rate limiting, CORS, headers,
   rewrites, compression, maintenance, and static errors.
-- Private Unix API/CLI, fixed RBAC, hash-only API tokens, concurrency checks, audit, backup creation,
-  restore validation, status, metrics, and node drain.
+- Private Unix API/CLI, fixed RBAC, explicitly scoped hash-only API tokens, concurrency checks,
+  audit, backup creation, restore validation, status, metrics, and node drain.
 - JSON logs, OpenMetrics, optional OTLP tracing, request correlation, HMAC-chained audit.
 - Bounded file and DNS A/AAAA providers; external-load-balancer fleet checks.
 - Eight fuzz targets and broad unit/integration/security regression coverage.
@@ -39,8 +39,9 @@ evidence.
 - Phase 15 has a strict library-only `v1` envelope, deterministic Proxy Host compiler, safe
   side-effect-free typed preview, and bounded field-level diff. Existing primitives validate
   ownership, references, domains, conflicts, listener/certificate policy, generated configuration,
-  redaction, fingerprints, restart classification, and owner/object identity during diff. No
-  high-level endpoint, object persistence service, or complete scope matrix exists yet.
+  redaction, fingerprints, restart classification, and owner/object identity during diff. Existing
+  low-level API tokens use a complete 17-action role-and-scope intersection. No high-level endpoint,
+  object persistence service, or typed-object ownership matrix exists yet.
 - Preview returns redacted config, fingerprints, and activation class; a separate pure function
   produces the ordered typed diff. Neither can persist or activate candidates.
 - Restore validates archives but does not extract or activate them.
@@ -50,7 +51,7 @@ evidence.
 ## Absent or deferred
 
 - Web GUI, first-run wizard, GUI CRUD, browser sessions, progressive disclosure, UI tests.
-- Native OIDC/OAuth2, API-token scopes, renewal history, unified secret rotation.
+- Native OIDC/OAuth2, renewal history, unified secret rotation.
 - Docker, Kubernetes, Consul, SRV discovery, provider approval/conflict workflow.
 - PROXY v1/v2, client mTLS, sticky sessions, least-connections, backup upstreams, gRPC-Web,
   HTTP/3, UDP proxying.
@@ -80,13 +81,14 @@ is split by domain, and no production Rust module exceeds 1,200 measured lines. 
 | `cargo fmt --all -- --check` | passed |
 | `cargo check --workspace --all-targets --all-features` | passed; transitive warning below |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | passed |
-| `cargo test --workspace --all-features` | passed: 281 passed, 2 intentionally ignored |
+| `cargo test --workspace --all-features` | passed: 284 passed, 2 intentionally ignored |
 | `cargo test --workspace --doc` | passed; no doctests defined |
 | valid configuration corpus | seven accepted |
 | invalid configuration corpus | three rejected as expected |
 | changed documentation link targets | passed; every added/changed relative target exists |
 | `cargo tree -e features` | passed; 2,439 output lines |
-| Phase 15 manifest/schema/OpenAPI comparison against `2d533a8` | passed; no differences |
+| Phase 15 manifest/config-schema comparison against `2d533a8` | passed; no differences |
+| Admin OpenAPI | intentionally changed for required token scopes and hash-free metadata |
 
 ## Unavailable or incomplete checks
 

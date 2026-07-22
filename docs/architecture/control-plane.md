@@ -3,8 +3,10 @@
 ## Current implementation
 
 Administration uses HTTP/1 over a private Unix socket. Peer credentials and optional hash-only API
-tokens authenticate requests. Fixed roles authorize actions. Mutations require exact quoted
-`If-Match`, durable HMAC-chained audit intent, validated candidate state, and atomic activation.
+tokens authenticate requests. Fixed roles authorize actions; tokens additionally require each
+explicit action scope, so effective permission is role intersection scope. Mutations require exact
+quoted `If-Match`, durable HMAC-chained audit intent, validated candidate state, and atomic
+activation.
 
 Current API supports validation, redacted preview, candidates, activation, revisions, rollback,
 routes/upstreams/providers/certificates/status, token management, certificate renewal requests,
@@ -27,6 +29,8 @@ stable order. It never accepts raw JSON or configuration values and cannot persi
 Public typed endpoints remain incomplete.
 
 Machine contract: [`config/schema/admin-openapi.yaml`](../../config/schema/admin-openapi.yaml).
+The checked contract requires nonempty canonical scopes when creating tokens and returns only token
+ID, role, scopes, expiry, and revocation metadata after the one-time plaintext response.
 
 ## Target model
 

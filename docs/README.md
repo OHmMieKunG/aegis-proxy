@@ -14,6 +14,8 @@
   and validation evidence.
 - [Phase 15 typed diff](reviews/phase-15-typed-diff.md): deterministic bounded field-level change
   contract and validation evidence.
+- [Phase 15 API-token scopes](reviews/phase-15-api-token-scopes.md): role-intersection authorization,
+  migration behavior, and validation evidence.
 
 ## Operators
 
@@ -21,6 +23,7 @@
 - [Deployment](operations/deployment.md)
 - [Configuration reference](configuration/reference.md)
 - [Configuration examples](configuration/examples.md)
+- [Migrations](configuration/migrations.md)
 - [Configuration lifecycle](operations/configuration-lifecycle.md)
 - [Private administration](operations/admin.md)
 - [ACME](operations/acme.md)

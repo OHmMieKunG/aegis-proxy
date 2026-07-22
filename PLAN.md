@@ -88,10 +88,11 @@ No high-level mutation endpoint exists.
 Proxy Host contract; opaque access-policy reference; side-effect-free Proxy Host compiler into the
 existing canonical configuration model; semantic validation and candidate/revision isolation tests;
 safe deterministic typed candidate preview with mandatory redaction and restart classification;
-bounded ordered typed field-level diff with owner/object identity checks.
+bounded ordered typed field-level diff with owner/object identity checks; explicit deny-by-default
+API-token scopes enforced as the intersection of role and scope.
 
-**Remaining units:** complete ownership and RBAC enforcement; API-token scopes; typed
-mutation/activation endpoints; remaining domain objects; OpenAPI and CLI contracts;
+**Remaining units:** complete typed-object ownership and RBAC enforcement; typed
+mutation/activation endpoints; remaining domain objects; remaining OpenAPI and CLI contracts;
 migration/compatibility policy and tests; full authorization/security review.
 
 **Objective:** provide versioned high-level objects usable by GUI and advanced automation.
