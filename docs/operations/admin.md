@@ -7,9 +7,9 @@ The socket parent is mode `0700`; the socket is mode `0660`. A configured
 remote, public bind, browser session, or web UI exists in v1.
 
 A strict Proxy Host object can be listed, read, validated, previewed, or created through private
-typed endpoints. Create persists desired state and an immutable candidate but never activates it.
-Update, delete, typed activation, and remaining high-level objects are planned for Phase 15; GUI
-work remains Phase 16. All must use this same server-side authorization, audit, concurrency, secret,
+typed endpoints. Create/update/delete persist desired state and an immutable candidate but never
+activate it. Typed activation and remaining high-level objects are planned for Phase 15; GUI work
+remains Phase 16. All must use this same server-side authorization, audit, concurrency, secret,
 revision, and activation boundary.
 
 Local socket peers are authenticated by kernel credentials and receive the
@@ -47,6 +47,8 @@ rust-proxy token revoke --socket SOCKET --expect REV TOKEN_ID
 rust-proxy proxy-host list --socket SOCKET
 rust-proxy proxy-host get --socket SOCKET OBJECT_ID
 rust-proxy proxy-host create --socket SOCKET --expect REV proxy-host.json
+rust-proxy proxy-host update --socket SOCKET --expect REV --generation N OBJECT_ID proxy-host.json
+rust-proxy proxy-host delete --socket SOCKET --expect REV --generation N OBJECT_ID
 rust-proxy proxy-host validate --socket SOCKET proxy-host.json
 rust-proxy proxy-host preview --socket SOCKET proxy-host.json
 rust-proxy backup create --socket SOCKET --expect REV --output /backup/aegis.age
@@ -71,6 +73,8 @@ audit intent, complete-state compilation, and an unchanged object-store epoch. I
 immutable candidate before generation-one desired state and returns without activation. Failed
 authorization, validation, or concurrency cannot modify desired or active state; a late store
 failure may leave only an immutable non-active candidate for retention cleanup.
+Update/delete use distinct `update-proxy-host`/`delete-proxy-host` scopes and additionally require
+exact `--generation`. A stale generation returns conflict before candidate or object persistence.
 
 ## Recovery and review
 

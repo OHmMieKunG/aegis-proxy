@@ -63,7 +63,8 @@ must compile and semantically validate before writing, then use existing audited
 activation services. Subsequent commit `d1514dd` opens this store for owner-scoped list/get and
 uses metadata-only claims during validation/preview. Subsequent commit `f204012` adds a stable
 complete-state snapshot and process-local epoch CAS; `068f408` uses it for audited create after
-candidate persistence and never activates runtime.
+candidate persistence and never activates runtime. Commit `7e8b47d` combines epoch and durable
+object-generation CAS for audited update/delete.
 
 ## Tests
 

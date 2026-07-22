@@ -11,8 +11,9 @@ activation.
 Current API supports low-level validation, redacted preview, candidates, activation, revisions,
 rollback, routes/upstreams/providers/certificates/status, token management, certificate renewal
 requests, backup creation, and restore validation. It also exposes owner-scoped typed Proxy Host
-list/get, non-persistent validation/preview, and audited creation of desired state plus a non-active
-immutable candidate. Restore does not extract state. No TCP/public admin listener or web GUI exists.
+list/get, non-persistent validation/preview, and audited create/update/delete of desired state plus
+a non-active immutable candidate. Restore does not extract state. No TCP/public admin listener or
+web GUI exists.
 
 Phase 15 now includes a library-only strict Proxy Host object and side-effect-free compiler. Caller
 RBAC supplies immutable owner, object, domain, policy, listener, certificate, and upstream-template
@@ -43,9 +44,9 @@ in-memory mutation is restored if persistence fails. Store has no compiler conte
 revision service, activation coordinator, runtime handle, or network access. Administration opens
 it at `<state_dir>/admin/proxy-hosts.json`; `GET /v1/proxy-hosts` and
 `GET /v1/proxy-hosts/{id}` return only authenticated owner's records under `read_proxy_hosts`.
-Single-object responses carry generation ETags. Typed create is the sole endpoint that mutates this
-store: it consumes a complete stable snapshot, compiles and validates the post-create set, creates
-an immutable revision, then uses snapshot epoch as a store CAS. It cannot activate runtime.
+Single-object responses carry generation ETags. Typed create/update/delete consume a complete stable
+snapshot, compile and validate post-mutation state, create an immutable revision, then use snapshot
+epoch as a store CAS. Update/delete also require exact object generation. None activates runtime.
 
 `compile_proxy_hosts` is the non-persistent aggregate boundary needed before mutation. Caller passes
 current stored objects separately from complete desired objects. Only current identities reserve
@@ -62,6 +63,11 @@ complete-state compilation, semantic validation, and revision persistence all su
 epoch-checked object write. Failure can leave an immutable non-active orphan candidate, but never a
 durable object without its candidate. Activation remains available only through the established
 revision coordinator and is not performed by this endpoint.
+
+`PUT` and `DELETE /v1/proxy-hosts/{id}` follow the same ordering. They require
+`X-Aegis-Object-Generation` in addition to active-revision `If-Match`. Update enforces path/body
+identity and owner equality; delete resolves only within authenticated owner. Stale generation or
+store epoch returns fixed conflict without desired/runtime mutation.
 
 Machine contract: [`config/schema/admin-openapi.yaml`](../../config/schema/admin-openapi.yaml).
 The checked contract requires nonempty canonical scopes when creating tokens and returns only token

@@ -33,6 +33,8 @@ rust-proxy token create --socket SOCKET --expect REV --role operator \
 Typed Proxy Host creation adds distinct `create-proxy-host` CLI scope (`create_proxy_host` in
 JSON). Existing tokens do not gain it automatically. Replace or issue a token explicitly when
 automation needs create; list/get remain independently grantable.
+Update and delete likewise add distinct `update-proxy-host` and `delete-proxy-host` CLI scopes
+(`update_proxy_host` and `delete_proxy_host` in JSON). Existing tokens gain neither.
 
 The checked OpenAPI contract is [`../schema/admin-openapi.yaml`](../../config/schema/admin-openapi.yaml).
 No migration exposes token plaintext or stored password hashes.

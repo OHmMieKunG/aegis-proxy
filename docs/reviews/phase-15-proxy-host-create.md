@@ -159,3 +159,6 @@ creation remain fail-closed. Single-process epoch is not a cluster coordination 
 Typed create satisfies authorization-first, ownership, complete-state compilation, semantic
 validation, immutable candidate, audit, epoch CAS, secret isolation, and non-activation gates.
 Phase 15 remains in progress and production assessment remains NO-GO.
+
+Subsequent commit `7e8b47d` applies same immutable-candidate ordering and store-epoch CAS to
+separately scoped update/delete, with an additional exact object-generation precondition.

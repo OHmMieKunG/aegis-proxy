@@ -44,5 +44,6 @@ Strict envelope and Proxy Host contract landed before deterministic compiler in 
 Compiler, preview, diff, token-scope, and private owned endpoint evidence is indexed in
 [`docs/README.md`](../README.md). Durable typed storage and owner-scoped list/get now exist. Phase 15
 also has aggregate desired-state compilation and audited owner-scoped create with a non-active
-immutable candidate. Phase 15 remains in progress; update/delete/activation, complete
+immutable candidate plus generation/epoch-CAS update/delete. Phase 15 remains in progress;
+typed activation/rollback, complete
 ownership/RBAC metadata, remaining objects, and compatibility policy remain open.

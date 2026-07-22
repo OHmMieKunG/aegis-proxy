@@ -32,7 +32,7 @@ its `Debug` output omits the configuration. Typed field differences use a closed
 compare only preview summaries; raw configuration and secret fields cannot enter the diff contract.
 Aggregate compilation accepts typed objects and metadata-only policy/certificate maps, returns only
 typed desired state plus canonical configuration, and exposes counts—not configuration—in `Debug`.
-Private typed validation/preview/create endpoints apply authorization before JSON deserialization,
+Private typed validation/preview/create/update/delete endpoints apply authorization before JSON deserialization,
 require exact principal ownership, and reuse this redaction boundary. They return fixed error
 envelopes and cannot expose or resolve secrets. Validation/preview cannot persist or activate.
 Create may persist only the secret-free seven-field object and a canonical immutable candidate; it
@@ -45,7 +45,8 @@ mode `0700`, file is mode `0600`, symlink and broad-permission inputs fail close
 count are bounded, and `Debug` exposes only object count. It has no secret resolver or activation
 handle. Owner-scoped list/get require exact `read_proxy_hosts` action; cross-owner reads return not
 found and expose no object contents. Create requires exact `create_proxy_host` action and owner
-equality; stored contract has no plaintext credential field.
+equality; update/delete use separate exact scopes and owner namespace. Stored contract has no
+plaintext credential field.
 
 Never put secret values in TOML, command arguments, logs, traces, audit records, screenshots,
 tickets, backups without encryption, or repository fixtures. See

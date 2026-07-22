@@ -85,3 +85,5 @@ Proxy Host validation/preview endpoints. Subsequent commit `d1514dd` adds the ei
 
 Subsequent commit `068f408` adds nineteenth action `create_proxy_host`. Existing tokens do not gain
 it; typed create requires exact role-and-scope intersection and audit intent before deserialization.
+Subsequent commit `7e8b47d` adds `update_proxy_host` and `delete_proxy_host`, bringing checked action
+vocabulary to 21 without broadening existing tokens.

@@ -54,6 +54,8 @@ candidate but does not activate it. CLI equivalents are:
 rust-proxy proxy-host list --socket SOCKET
 rust-proxy proxy-host get --socket SOCKET OBJECT_ID
 rust-proxy proxy-host create --socket SOCKET --expect ACTIVE_REV proxy-host.json
+rust-proxy proxy-host update --socket SOCKET --expect ACTIVE_REV --generation N OBJECT_ID proxy-host.json
+rust-proxy proxy-host delete --socket SOCKET --expect ACTIVE_REV --generation N OBJECT_ID
 rust-proxy proxy-host validate --socket SOCKET proxy-host.json
 rust-proxy proxy-host preview --socket SOCKET proxy-host.json
 ```
@@ -66,8 +68,9 @@ restrictions apply to endpoints, not lower-level compiler contract.
 
 Create requires exact active-revision and complete desired-state optimistic concurrency. It writes
 the canonical immutable candidate before generation-one object state, then returns both metadata
-records. It never changes active revision. Update, delete, typed activation, access-policy objects,
-and certificate-policy objects remain unavailable.
+records. Update replaces the exact owner/object identity; delete removes it. Both additionally
+require the current object generation, return candidate metadata, and never change active revision.
+Typed activation, access-policy objects, and certificate-policy objects remain unavailable.
 
 Typed Proxy Host desired state has a separate internal schema-v1 JSON store. It is bounded to 4,096
 objects and 2 MiB, uses private directory/file permissions, stable owner/object ordering, globally

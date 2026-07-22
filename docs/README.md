@@ -26,6 +26,8 @@
   complete desired-state compilation, managed namespace verification, and pending-state evidence.
 - [Phase 15 Proxy Host create](reviews/phase-15-proxy-host-create.md): audited immutable-candidate
   creation, desired-state epoch CAS, non-activation, and validation evidence.
+- [Phase 15 Proxy Host update/delete](reviews/phase-15-proxy-host-update-delete.md): dual CAS,
+  owner-scoped mutation, immutable candidates, and non-activation evidence.
 
 ## Operators
 

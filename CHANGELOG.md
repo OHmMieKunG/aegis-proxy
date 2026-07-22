@@ -33,5 +33,7 @@ AegisProxy has not published a supported release.
   cannot persist a candidate compiled from stale object state.
 - Added audited owner-scoped Proxy Host creation that compiles and validates complete desired state,
   writes an immutable candidate, then persists generation-one desired state without activation.
+- Added audited Proxy Host update/delete with exact object-generation and complete-store epoch CAS,
+  immutable non-active candidates, distinct action scopes, and CLI/OpenAPI contracts.
 
 See [`STATUS.md`](STATUS.md) and [`docs/history/`](docs/history/README.md).
