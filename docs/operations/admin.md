@@ -6,10 +6,10 @@ The socket parent is mode `0700`; the socket is mode `0660`. A configured
 `admin.allowed_uids` list further restricts peer credentials. No TCP, plaintext
 remote, public bind, browser session, or web UI exists in v1.
 
-A strict Proxy Host object can be validated or previewed through private read-only endpoints, but no
-high-level mutation endpoint uses it. Remaining high-level API and GUI work is planned for Phases
-15–16 and must use this same server-side authorization, audit, concurrency, secret, and activation
-boundary.
+A strict Proxy Host object can be listed, read, validated, or previewed through private read-only
+endpoints, but no high-level mutation endpoint exists. Remaining high-level API and GUI work is
+planned for Phases 15–16 and must use this same server-side authorization, audit, concurrency,
+secret, and activation boundary.
 
 Local socket peers are authenticated by kernel credentials and receive the
 fixed `admin` role. Automation may additionally send a bearer API token. Token
@@ -43,6 +43,8 @@ rust-proxy config rollback --socket SOCKET REV --expect CURRENT
 rust-proxy token create --socket SOCKET --expect REV --role operator --scope read-status
 rust-proxy token list --socket SOCKET --token-ref file:///run/secrets/admin-token
 rust-proxy token revoke --socket SOCKET --expect REV TOKEN_ID
+rust-proxy proxy-host list --socket SOCKET
+rust-proxy proxy-host get --socket SOCKET OBJECT_ID
 rust-proxy proxy-host validate --socket SOCKET proxy-host.json
 rust-proxy proxy-host preview --socket SOCKET proxy-host.json
 rust-proxy backup create --socket SOCKET --expect REV --output /backup/aegis.age
@@ -57,7 +59,9 @@ input/configuration, `4` revision conflict, `5` authentication/authorization,
 
 For local socket authentication, `metadata.owner_id` in `proxy-host.json` is `uid-<uid>`. Bearer
 requests use owner persisted with token. Validation requires `validate-config`; preview requires
-`preview-config`. Both compile and semantically validate a redacted candidate without writing state,
+`preview-config`; list/get require `read-proxy-hosts`. Reads never cross authenticated owner and get
+returns object generation as an ETag. Validation/preview compile and semantically validate a
+redacted candidate without writing state,
 creating a revision, or activating runtime configuration. Current endpoint policy rejects
 access-policy references and managed HTTPS until typed ownership metadata is implemented.
 

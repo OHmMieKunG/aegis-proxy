@@ -82,8 +82,9 @@ available gate passes.
 [`docs/reviews/phase-15-baseline.md`](docs/reviews/phase-15-baseline.md). Initial strict `v1` object
 envelope, Proxy Host contract, and deterministic canonical compiler exist. Compiler evidence:
 [`docs/reviews/phase-15-proxy-host-compiler.md`](docs/reviews/phase-15-proxy-host-compiler.md).
-No high-level mutation endpoint exists. Private owner-aware validation and preview endpoints are
-available, but they neither persist typed objects nor activate candidates.
+No high-level mutation endpoint exists. Private owner-aware validation, preview, list, and get
+endpoints are available. Reads use durable typed desired state; validation and preview neither
+persist typed objects nor activate candidates.
 
 **Completed units:** strict object envelope; stable object IDs and ownership metadata; seven-field
 Proxy Host contract; opaque access-policy reference; side-effect-free Proxy Host compiler into the
@@ -95,12 +96,14 @@ with new tokens; private owner-aware Proxy Host validation and redacted preview 
 coverage and authorization-before-deserialization.
 Bounded durable Proxy Host desired-state storage now provides strict schema/version loading,
 owner-indexed reads, deterministic serialization, object-local generation CAS, private permissions,
-and rollback of in-memory mutation when atomic persistence fails.
+and rollback of in-memory mutation when atomic persistence fails. Administration opens this store,
+exposes owner-scoped stable list/get operations with object-generation ETags under the exact
+`read_proxy_hosts` scope, and includes stored identity/domain claims in validation and preview.
 
-**Remaining units:** integrate typed persistence through audited ownership/RBAC endpoints; typed
-candidate/revision/activation endpoints; access-policy and certificate objects; remaining domain
-objects; remaining OpenAPI and CLI contracts; migration/compatibility policy and tests; full
-authorization/security review.
+**Remaining units:** aggregate all typed desired state into one canonical candidate; add audited
+generation-CAS mutation and typed candidate/revision/activation endpoints; access-policy and
+certificate objects; remaining domain objects; remaining OpenAPI and CLI contracts;
+migration/compatibility policy and tests; full authorization/security review.
 
 **Objective:** provide versioned high-level objects usable by GUI and advanced automation.
 

@@ -18,7 +18,8 @@ metadata. It adds no high-level Proxy Host endpoint, database, public listener, 
 
 ## Contract and persistence
 
-- `Action` is the single serialized 17-action vocabulary used by RBAC and scopes.
+- At this unit's commit, `Action` was the single serialized 17-action vocabulary used by RBAC and
+  scopes; later typed reads add `read_proxy_hosts` as the eighteenth value.
 - `TokenScopes` sorts actions canonically and rejects empty, duplicate, or role-exceeding issuance.
 - Persisted nonempty scopes must already be strictly ordered, unique, and role-valid.
 - Token metadata contains ID, role, scopes, expiry, and revocation only at this unit's commit.
@@ -71,4 +72,5 @@ with explicit replacement documented in
 [`configuration/migrations.md`](../configuration/migrations.md).
 
 Subsequent commit `00cfa32` adds owner metadata to newly issued tokens and owner-aware read-only
-Proxy Host validation/preview endpoints. Typed object persistence and mutation remain absent.
+Proxy Host validation/preview endpoints. Subsequent commit `d1514dd` adds the eighteenth action,
+`read_proxy_hosts`, for owner-scoped desired-state reads. Typed mutation remains absent.

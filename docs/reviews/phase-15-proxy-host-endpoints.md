@@ -137,15 +137,16 @@ stable ownership. OpenAPI and CLI intentionally add endpoints and fields.
 
 ## 20. Known limitations
 
-Only creation previews exist because no typed object store exists. Endpoint rejects managed HTTPS,
-access policies, ambiguous listener/template selection, and every mutation. Error responses do not
-yet expose typed field-level validation codes.
+Only creation previews exist. Subsequent store/read integration uses persisted identity/domain
+claims during preparation but still rejects managed HTTPS, access policies, ambiguous
+listener/template selection, and every mutation. Error responses do not yet expose typed
+field-level validation codes.
 
 ## 21. Remaining Phase 15 work
 
-Typed object persistence; mutation/revision/activation endpoints; certificate and access-policy
-ownership; complete ownership/RBAC matrix; remaining objects and contracts; migration and
-compatibility tests; full security review.
+Aggregate desired-state compilation; mutation/revision/activation endpoints; certificate and
+access-policy ownership; complete ownership/RBAC matrix; remaining objects and contracts;
+migration and compatibility tests; full security review.
 
 ## 22. Completion decision
 

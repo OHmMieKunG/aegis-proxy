@@ -3,8 +3,8 @@
 Verification date: 2026-07-22
 Branch: `work/autonomous-roadmap`
 Verification basis: Phase 14 plus Phase 15 compiler `fa7913f`, preview service `d3de105`, typed diff
-`2617f0e`, API-token scopes `81bd500`, owned Proxy Host endpoints `00cfa32`, and typed object store
-`5c8898b`
+`2617f0e`, API-token scopes `81bd500`, owned Proxy Host endpoints `00cfa32`, typed object store
+`5c8898b`, and owner-scoped typed reads `d1514dd`
 Working tree at Phase 14 start: clean at `10aae8c`
 
 ## Release status
@@ -41,10 +41,12 @@ evidence.
   side-effect-free typed preview, and bounded field-level diff. Existing primitives validate
   ownership, references, domains, conflicts, listener/certificate policy, generated configuration,
   redaction, fingerprints, restart classification, and owner/object identity during diff. Existing
-  low-level API tokens use a complete 17-action role-and-scope intersection. Private typed Proxy
+  low-level API tokens use a complete 18-action role-and-scope intersection. Private typed Proxy
   Host validation and preview endpoints authenticate and authorize before JSON deserialization,
-  enforce principal ownership, and cannot persist or activate. A separate bounded private typed
-  object store supports owner-indexed state and generation CAS, but endpoints do not use it yet.
+  enforce principal ownership, reject persisted identity/domain conflicts, and cannot persist or
+  activate. The bounded private typed object store is opened at administration startup and exposes
+  owner-scoped stable list/get operations under the exact `read_proxy_hosts` action; it supports
+  generation CAS internally but has no mutation endpoint yet.
   Typed mutation, certificate/access-policy ownership metadata, and a complete ownership matrix do
   not exist yet.
 - Preview returns redacted config, fingerprints, and activation class; a separate pure function
@@ -93,7 +95,7 @@ is split by domain, and no production Rust module exceeds 1,200 measured lines. 
 | changed documentation link targets | passed; every added/changed relative target exists |
 | `cargo tree -e features` | passed; 2,439 output lines |
 | Phase 15 manifest/config-schema comparison against `2d533a8` | passed; no differences |
-| Admin OpenAPI | parsed with Python/PyYAML; intentionally changed for owned typed preview and token owner metadata |
+| Admin OpenAPI | parsed with Python/PyYAML; intentionally changed for owned typed preview/reads and token ownership/scopes |
 
 ## Unavailable or incomplete checks
 

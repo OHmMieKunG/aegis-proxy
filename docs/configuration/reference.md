@@ -38,10 +38,13 @@ Creation uses explicit additions; updates use replacements; disabling removes ge
 Version, object, or owner mismatches fail closed. The diff contains opaque access-policy references,
 never policy contents or raw configuration, and performs no persistence or activation.
 
-The private typed endpoints are `POST /v1/proxy-hosts/validate` and
-`POST /v1/proxy-hosts/preview`. Their CLI equivalents accept a strict JSON object:
+Private typed endpoints include owner-scoped `GET /v1/proxy-hosts` and
+`GET /v1/proxy-hosts/{id}`, plus `POST /v1/proxy-hosts/validate` and
+`POST /v1/proxy-hosts/preview`. CLI equivalents are:
 
 ```text
+rust-proxy proxy-host list --socket SOCKET
+rust-proxy proxy-host get --socket SOCKET OBJECT_ID
 rust-proxy proxy-host validate --socket SOCKET proxy-host.json
 rust-proxy proxy-host preview --socket SOCKET proxy-host.json
 ```
@@ -56,7 +59,9 @@ Typed Proxy Host desired state has a separate internal schema-v1 JSON store. It 
 objects and 2 MiB, uses private directory/file permissions, stable owner/object ordering, globally
 unique domains, and object-local generations beginning at one. Create rejects existing identity or
 domain; update/delete require exact generation. File replacement is durable and atomic within its
-directory. This store is not active configuration and current endpoints do not write it.
+directory. Administration opens it at `<state_dir>/admin/proxy-hosts.json`; list/get are owner
+scoped, stable, and require `read_proxy_hosts`. Validation/preview reject its claimed IDs/domains.
+This store is not active configuration and current endpoints do not write it.
 
 ## Routing rules
 

@@ -60,7 +60,8 @@ change active proxy behavior.
 
 The store validates contract shape, not active-configuration semantics. Future mutation handlers
 must compile and semantically validate before writing, then use existing audited revision and
-activation services. Current validation/preview endpoints do not open this store.
+activation services. Subsequent commit `d1514dd` opens this store for owner-scoped list/get and
+uses metadata-only claims during validation/preview; it still exposes no mutation.
 
 ## Tests
 
@@ -97,9 +98,10 @@ process and existing state-directory ownership provide the intended writer model
 
 ## Remaining Phase 15 work
 
-Wire store into authenticated owner-scoped reads and audited CAS mutations; compile and create a
-canonical configuration revision before explicit activation; add update diffs and delete behavior;
-then implement remaining typed objects, ownership matrix, contracts, migrations, and security review.
+Compile all stored desired state plus a proposed mutation into one canonical candidate before adding
+audited CAS mutations; create a canonical configuration revision before explicit activation; add
+update diffs and delete behavior; then implement remaining typed objects, ownership matrix,
+contracts, migrations, and security review.
 
 ## Completion decision
 

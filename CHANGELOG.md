@@ -23,5 +23,7 @@ AegisProxy has not published a supported release.
   authorization precedes typed deserialization and these endpoints cannot persist or activate.
 - Added bounded private Proxy Host desired-state storage with strict schema loading, deterministic
   owner indexing, generation compare-and-swap, atomic replacement, and write-failure rollback.
+- Added owner-scoped Proxy Host list/get API and CLI operations with exact token scope, generation
+  ETags, and stored identity/domain conflict checks for typed validation and preview.
 
 See [`STATUS.md`](STATUS.md) and [`docs/history/`](docs/history/README.md).

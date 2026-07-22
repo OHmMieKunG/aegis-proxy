@@ -20,6 +20,8 @@
   validation/preview boundary, CLI contract, and validation evidence.
 - [Phase 15 Proxy Host store](reviews/phase-15-proxy-host-store.md): bounded durable desired-state
   contract, generation concurrency, and failure evidence.
+- [Phase 15 Proxy Host reads](reviews/phase-15-proxy-host-reads.md): exact read scope, owner-scoped
+  API/CLI, stored conflict claims, and validation evidence.
 
 ## Operators
 
