@@ -7,6 +7,7 @@ mod audit;
 mod auth;
 mod backup;
 mod compile;
+mod diff;
 mod preview;
 mod rbac;
 mod server;
@@ -21,6 +22,10 @@ pub use backup::{BackupError, BackupSummary, create_backup, validate_backup};
 pub use compile::{
     AccessPolicyMetadata, CompileContext, ManagedHttpsPolicy, ProxyHostCandidate,
     ProxyHostCompileError, compile_proxy_host,
+};
+pub use diff::{
+    DiffOperation, ProxyHostDiff, ProxyHostDiffError, ProxyHostDiffValue, ProxyHostField,
+    ProxyHostFieldChange, diff_proxy_host_previews,
 };
 pub use preview::{
     CandidateActivation, GeneratedProxyHostPreview, ProxyHostCandidatePreview,
