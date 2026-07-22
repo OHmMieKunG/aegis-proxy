@@ -14,6 +14,7 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{ApiObject, ObjectId, ProxyHostSpec};
@@ -21,6 +22,7 @@ use crate::{ApiObject, ObjectId, ProxyHostSpec};
 const STORE_SCHEMA_VERSION: u32 = 1;
 pub(crate) const MAX_PROXY_HOSTS: usize = 4_096;
 const MAX_STORE_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_CANDIDATE_SNAPSHOTS: usize = 1_000;
 
 /// One persisted Proxy Host desired-state generation.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -46,6 +48,37 @@ pub struct ProxyHostClaims {
 pub struct ProxyHostSnapshot {
     epoch: u64,
     objects: Vec<StoredProxyHost>,
+}
+
+/// Immutable typed desired state bound to one configuration revision.
+#[derive(Clone, Eq, PartialEq)]
+pub struct BoundProxyHostCandidate {
+    binding_hash: String,
+    objects: Vec<ApiObject<ProxyHostSpec>>,
+}
+
+impl fmt::Debug for BoundProxyHostCandidate {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BoundProxyHostCandidate")
+            .field("binding_hash", &self.binding_hash)
+            .field("object_count", &self.objects.len())
+            .finish()
+    }
+}
+
+impl BoundProxyHostCandidate {
+    /// Return the canonical desired-state binding hash.
+    #[must_use]
+    pub fn binding_hash(&self) -> &str {
+        &self.binding_hash
+    }
+
+    /// Return stable owner/object-ordered desired state.
+    #[must_use]
+    pub fn objects(&self) -> &[ApiObject<ProxyHostSpec>] {
+        &self.objects
+    }
 }
 
 impl fmt::Debug for ProxyHostSnapshot {
@@ -96,11 +129,27 @@ struct ProxyHostFile {
     objects: Vec<StoredProxyHost>,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProxyHostCandidateFile {
+    schema_version: u32,
+    revision_id: String,
+    binding_hash: String,
+    objects: Vec<ApiObject<ProxyHostSpec>>,
+}
+
+#[derive(Serialize)]
+struct ProxyHostBinding<'a> {
+    schema_version: u32,
+    objects: &'a [ApiObject<ProxyHostSpec>],
+}
+
 type ObjectIndex = BTreeMap<ObjectId, BTreeMap<ObjectId, StoredProxyHost>>;
 
 /// Single-process, owner-indexed typed Proxy Host store.
 pub struct ProxyHostStore {
     path: PathBuf,
+    candidate_dir: PathBuf,
     objects: Mutex<ObjectIndex>,
     epoch: AtomicU64,
 }
@@ -127,9 +176,14 @@ impl ProxyHostStore {
     /// Open and strictly validate a private typed-object file.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, ProxyHostStoreError> {
         let path = path.as_ref().to_path_buf();
+        let candidate_dir = path
+            .parent()
+            .ok_or(ProxyHostStoreError::Invalid)?
+            .join("proxy-host-candidates");
         let objects = load_file(&path)?;
         Ok(Self {
             path,
+            candidate_dir,
             objects: Mutex::new(index_objects(objects)?),
             epoch: AtomicU64::new(0),
         })
@@ -374,6 +428,109 @@ impl ProxyHostStore {
         }
     }
 
+    /// Return the canonical typed desired-state hash used by revision metadata.
+    pub fn binding_hash(
+        objects: &[ApiObject<ProxyHostSpec>],
+    ) -> Result<String, ProxyHostStoreError> {
+        let objects = canonical_objects(objects)?;
+        let bytes = serde_json::to_vec(&ProxyHostBinding {
+            schema_version: STORE_SCHEMA_VERSION,
+            objects: &objects,
+        })
+        .map_err(|_| ProxyHostStoreError::Invalid)?;
+        if bytes.len() as u64 > MAX_STORE_BYTES {
+            return Err(ProxyHostStoreError::Limit);
+        }
+        Ok(format!("{:x}", Sha256::digest(bytes)))
+    }
+
+    /// Persist one immutable typed desired-state snapshot for a revision.
+    pub fn bind_candidate(
+        &self,
+        revision_id: &str,
+        expected_hash: &str,
+        objects: &[ApiObject<ProxyHostSpec>],
+    ) -> Result<BoundProxyHostCandidate, ProxyHostStoreError> {
+        validate_revision_id(revision_id)?;
+        let objects = canonical_objects(objects)?;
+        let binding_hash = Self::binding_hash(&objects)?;
+        if binding_hash != expected_hash {
+            return Err(ProxyHostStoreError::Invalid);
+        }
+        create_private_directory(&self.candidate_dir)?;
+        let path = self.candidate_path(revision_id);
+        if path.exists() {
+            let existing = self.load_candidate(revision_id, expected_hash)?;
+            if existing.objects == objects {
+                return Ok(existing);
+            }
+            return Err(ProxyHostStoreError::Conflict);
+        }
+        if directory_entry_count(&self.candidate_dir)? >= MAX_CANDIDATE_SNAPSHOTS {
+            return Err(ProxyHostStoreError::Limit);
+        }
+        let bytes = serde_json::to_vec_pretty(&ProxyHostCandidateFile {
+            schema_version: STORE_SCHEMA_VERSION,
+            revision_id: revision_id.to_owned(),
+            binding_hash: binding_hash.clone(),
+            objects: objects.clone(),
+        })
+        .map_err(|_| ProxyHostStoreError::Invalid)?;
+        if bytes.len() as u64 > MAX_STORE_BYTES {
+            return Err(ProxyHostStoreError::Limit);
+        }
+        write_private_file(&path, &bytes)?;
+        File::open(&self.candidate_dir)?.sync_all()?;
+        Ok(BoundProxyHostCandidate {
+            binding_hash,
+            objects,
+        })
+    }
+
+    /// Load and verify a revision-bound typed desired-state snapshot.
+    pub fn load_candidate(
+        &self,
+        revision_id: &str,
+        expected_hash: &str,
+    ) -> Result<BoundProxyHostCandidate, ProxyHostStoreError> {
+        validate_revision_id(revision_id)?;
+        let path = self.candidate_path(revision_id);
+        let metadata = fs::symlink_metadata(&path)?;
+        if !metadata.is_file()
+            || metadata.file_type().is_symlink()
+            || metadata.len() > MAX_STORE_BYTES
+        {
+            return Err(ProxyHostStoreError::Invalid);
+        }
+        reject_insecure_file_permissions(&metadata)?;
+        let mut bytes = Vec::new();
+        File::open(path)?
+            .take(MAX_STORE_BYTES.saturating_add(1))
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_STORE_BYTES {
+            return Err(ProxyHostStoreError::Limit);
+        }
+        let file: ProxyHostCandidateFile =
+            serde_json::from_slice(&bytes).map_err(|_| ProxyHostStoreError::Invalid)?;
+        let objects = canonical_objects(&file.objects)?;
+        let binding_hash = Self::binding_hash(&objects)?;
+        if file.schema_version != STORE_SCHEMA_VERSION
+            || file.revision_id != revision_id
+            || file.binding_hash != expected_hash
+            || binding_hash != expected_hash
+        {
+            return Err(ProxyHostStoreError::Invalid);
+        }
+        Ok(BoundProxyHostCandidate {
+            binding_hash,
+            objects,
+        })
+    }
+
+    fn candidate_path(&self, revision_id: &str) -> PathBuf {
+        self.candidate_dir.join(format!("{revision_id}.json"))
+    }
+
     fn next_epoch(&self, expected: Option<u64>) -> Result<u64, ProxyHostStoreError> {
         let current = self.epoch.load(Ordering::Acquire);
         if expected.is_some_and(|expected| expected != current) {
@@ -381,6 +538,49 @@ impl ProxyHostStore {
         }
         current.checked_add(1).ok_or(ProxyHostStoreError::Limit)
     }
+}
+
+fn canonical_objects(
+    objects: &[ApiObject<ProxyHostSpec>],
+) -> Result<Vec<ApiObject<ProxyHostSpec>>, ProxyHostStoreError> {
+    if objects.len() > MAX_PROXY_HOSTS {
+        return Err(ProxyHostStoreError::Limit);
+    }
+    let mut objects = objects.to_vec();
+    objects.sort_by(|left, right| {
+        (&left.metadata.owner_id, &left.metadata.id)
+            .cmp(&(&right.metadata.owner_id, &right.metadata.id))
+    });
+    let mut identities = BTreeSet::new();
+    let mut domains = BTreeSet::new();
+    for object in &objects {
+        validate_object(object)?;
+        if !identities.insert((&object.metadata.owner_id, &object.metadata.id))
+            || !domains.insert(&object.spec.domain)
+        {
+            return Err(ProxyHostStoreError::Conflict);
+        }
+    }
+    Ok(objects)
+}
+
+fn validate_revision_id(id: &str) -> Result<(), ProxyHostStoreError> {
+    if id.len() != 85
+        || id.as_bytes().get(20) != Some(&b'-')
+        || !id[..20].bytes().all(|byte| byte.is_ascii_digit())
+        || !id[21..]
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(ProxyHostStoreError::Invalid);
+    }
+    Ok(())
+}
+
+fn directory_entry_count(path: &Path) -> Result<usize, ProxyHostStoreError> {
+    Ok(fs::read_dir(path)?
+        .take(MAX_CANDIDATE_SNAPSHOTS + 1)
+        .count())
 }
 
 fn object_count(objects: &ObjectIndex) -> usize {
@@ -769,6 +969,69 @@ mod tests {
                 Err(ProxyHostStoreError::Invalid)
             ));
         }
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn candidate_binding_is_stable_private_and_tamper_evident() {
+        let (path, root) = temporary_store("candidate-binding");
+        let store = ProxyHostStore::open(&path).expect("store");
+        let revision = format!("{:020}-{}", 1, "ab".repeat(32));
+        let first = object("proxy-b", "bob", "b.example.test");
+        let second = object("proxy-a", "alice", "a.example.test");
+        let objects = vec![first.clone(), second.clone()];
+        let reversed = vec![second, first];
+        let binding_hash = ProxyHostStore::binding_hash(&objects).expect("binding hash");
+        assert_eq!(
+            binding_hash,
+            ProxyHostStore::binding_hash(&reversed).expect("stable hash")
+        );
+        let bound = store
+            .bind_candidate(&revision, &binding_hash, &objects)
+            .expect("bind candidate");
+        assert_eq!(bound.binding_hash(), binding_hash);
+        assert_eq!(bound.objects()[0].metadata.owner_id.as_str(), "alice");
+        assert_eq!(
+            store
+                .bind_candidate(&revision, &binding_hash, &reversed)
+                .expect("idempotent binding"),
+            bound
+        );
+        drop(store);
+
+        let reopened = ProxyHostStore::open(&path).expect("reopen");
+        assert_eq!(
+            reopened
+                .load_candidate(&revision, &binding_hash)
+                .expect("load binding"),
+            bound
+        );
+        assert!(matches!(
+            reopened.load_candidate(&revision, &"cd".repeat(32)),
+            Err(ProxyHostStoreError::Invalid)
+        ));
+        assert!(matches!(
+            reopened.load_candidate("../candidate", &binding_hash),
+            Err(ProxyHostStoreError::Invalid)
+        ));
+
+        let candidate_path = root
+            .join("admin/proxy-host-candidates")
+            .join(format!("{revision}.json"));
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&candidate_path).expect("candidate bytes"))
+                .expect("candidate JSON");
+        value["objects"][0]["spec"]["enabled"] = serde_json::json!(false);
+        fs::write(
+            &candidate_path,
+            serde_json::to_vec(&value).expect("tampered JSON"),
+        )
+        .expect("tamper candidate");
+        assert!(matches!(
+            reopened.load_candidate(&revision, &binding_hash),
+            Err(ProxyHostStoreError::Invalid)
+        ));
+
         fs::remove_dir_all(root).expect("cleanup");
     }
 }

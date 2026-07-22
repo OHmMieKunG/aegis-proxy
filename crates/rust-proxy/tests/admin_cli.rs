@@ -523,6 +523,34 @@ upstream_group = "app"
                 .join(format!("{candidate_id}.toml"))
                 .is_file()
         );
+        let candidate_metadata: serde_json::Value = serde_json::from_slice(
+            &fs::read(
+                state
+                    .join("config/metadata")
+                    .join(format!("{candidate_id}.json")),
+            )
+            .expect("candidate metadata"),
+        )
+        .expect("candidate metadata JSON");
+        let binding_hash = candidate_metadata["binding_hash"]
+            .as_str()
+            .expect("typed binding hash");
+        assert_eq!(binding_hash.len(), 64);
+        let candidate_binding: serde_json::Value = serde_json::from_slice(
+            &fs::read(
+                state
+                    .join("admin/proxy-host-candidates")
+                    .join(format!("{candidate_id}.json")),
+            )
+            .expect("candidate binding"),
+        )
+        .expect("candidate binding JSON");
+        assert_eq!(candidate_binding["revision_id"], candidate_id);
+        assert_eq!(candidate_binding["binding_hash"], binding_hash);
+        assert_eq!(
+            candidate_binding["objects"].as_array().map(Vec::len),
+            Some(3)
+        );
         assert_eq!(active_revision(&state), current);
         let created_list = run(&["proxy-host", "list", "--socket", socket]);
         assert!(created_list.status.success(), "{:?}", created_list.stderr);
@@ -629,6 +657,21 @@ upstream_group = "app"
         let updated_candidate_id = update_json["candidate"]["id"]
             .as_str()
             .expect("updated candidate ID");
+        let updated_binding_path = state
+            .join("admin/proxy-host-candidates")
+            .join(format!("{updated_candidate_id}.json"));
+        let updated_binding_bytes = fs::read(&updated_binding_path).expect("updated binding bytes");
+        let updated_binding: serde_json::Value =
+            serde_json::from_slice(&updated_binding_bytes).expect("updated candidate binding JSON");
+        assert!(
+            updated_binding["objects"]
+                .as_array()
+                .is_some_and(|objects| {
+                    objects
+                        .iter()
+                        .any(|object| object["spec"]["domain"] == "updated.example.test")
+                })
+        );
         let stale_candidate = run(&[
             "proxy-host",
             "activate",
@@ -640,6 +683,25 @@ upstream_group = "app"
         ]);
         assert_eq!(stale_candidate.status.code(), Some(4));
         assert_eq!(active_revision(&state), current);
+        let mut tampered_binding = updated_binding.clone();
+        tampered_binding["binding_hash"] = serde_json::json!("00".repeat(32));
+        fs::write(
+            &updated_binding_path,
+            serde_json::to_vec(&tampered_binding).expect("tampered binding JSON"),
+        )
+        .expect("tamper binding");
+        let tampered_activation = run(&[
+            "proxy-host",
+            "activate",
+            "--socket",
+            socket,
+            "--expect",
+            &current,
+            updated_candidate_id,
+        ]);
+        assert_eq!(tampered_activation.status.code(), Some(6));
+        assert_eq!(active_revision(&state), current);
+        fs::write(&updated_binding_path, &updated_binding_bytes).expect("restore binding");
         let denied_activation = Command::new(binary())
             .args([
                 "proxy-host",

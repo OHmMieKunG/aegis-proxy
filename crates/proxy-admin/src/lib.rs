@@ -31,7 +31,8 @@ pub use diff::{
     ProxyHostFieldChange, diff_proxy_host_previews,
 };
 pub use object_store::{
-    ProxyHostClaims, ProxyHostSnapshot, ProxyHostStore, ProxyHostStoreError, StoredProxyHost,
+    BoundProxyHostCandidate, ProxyHostClaims, ProxyHostSnapshot, ProxyHostStore,
+    ProxyHostStoreError, StoredProxyHost,
 };
 pub use preview::{
     CandidateActivation, GeneratedProxyHostPreview, ProxyHostCandidatePreview,

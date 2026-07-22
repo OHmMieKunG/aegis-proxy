@@ -53,6 +53,9 @@ pub struct RevisionMetadata {
     pub created_unix_secs: u64,
     /// Bounded operator or provider source label.
     pub source: String,
+    /// Optional lowercase SHA-256 binding to typed control-plane desired state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding_hash: Option<String>,
 }
 
 /// Integrity-bound reference to an immutable revision.
@@ -193,7 +196,17 @@ impl RevisionStore {
         config: &Config,
         source: &str,
     ) -> Result<RevisionMetadata, RevisionError> {
-        self.persist_candidate(config, source, true)
+        self.persist_candidate(config, source, None, true)
+    }
+
+    /// Persist a validated candidate bound to immutable typed desired state.
+    pub fn create_bound_candidate(
+        &self,
+        config: &Config,
+        source: &str,
+        binding_hash: &str,
+    ) -> Result<RevisionMetadata, RevisionError> {
+        self.persist_candidate(config, source, Some(binding_hash), true)
     }
 
     /// Persist a new forward revision even when content matches a retained revision.
@@ -202,13 +215,14 @@ impl RevisionStore {
         config: &Config,
         source: &str,
     ) -> Result<RevisionMetadata, RevisionError> {
-        self.persist_candidate(config, source, false)
+        self.persist_candidate(config, source, None, false)
     }
 
     fn persist_candidate(
         &self,
         config: &Config,
         source: &str,
+        binding_hash: Option<&str>,
         deduplicate: bool,
     ) -> Result<RevisionMetadata, RevisionError> {
         let _guard = self
@@ -216,12 +230,17 @@ impl RevisionStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         validate_source(source)?;
+        if let Some(binding_hash) = binding_hash {
+            validate_hash(binding_hash, "candidate binding")?;
+        }
         let canonical = canonical_config(config)?;
         let hash = hex_sha256(&canonical);
         let revisions = self.list()?;
         if let (true, Some(existing)) = (
             deduplicate,
-            revisions.iter().find(|revision| revision.hash == hash),
+            revisions.iter().find(|revision| {
+                revision.hash == hash && revision.binding_hash.as_deref() == binding_hash
+            }),
         ) {
             return Ok(existing.clone());
         }
@@ -250,6 +269,7 @@ impl RevisionStore {
                 })?
                 .as_secs(),
             source: source.to_owned(),
+            binding_hash: binding_hash.map(str::to_owned),
         };
         write_new_synced(
             &self.config_dir.join("revisions").join(format!("{id}.toml")),
@@ -269,7 +289,7 @@ impl RevisionStore {
     /// Load and integrity-check one immutable revision.
     pub fn load(&self, id: &str) -> Result<Config, RevisionError> {
         validate_revision_id(id)?;
-        let metadata = self.load_metadata(id)?;
+        let metadata = self.metadata(id)?;
         let bytes = read_bounded(
             &self.config_dir.join("revisions").join(format!("{id}.toml")),
             MAX_CONFIG_BYTES,
@@ -305,7 +325,7 @@ impl RevisionStore {
             if validate_revision_id(id).is_err() {
                 continue;
             }
-            revisions.push(self.load_metadata(id)?);
+            revisions.push(self.metadata(id)?);
             if revisions.len() > MAX_REVISIONS {
                 return Err(RevisionError::Limit);
             }
@@ -426,7 +446,8 @@ impl RevisionStore {
         self.active()
     }
 
-    fn load_metadata(&self, id: &str) -> Result<RevisionMetadata, RevisionError> {
+    /// Load and integrity-check one immutable revision's metadata.
+    pub fn metadata(&self, id: &str) -> Result<RevisionMetadata, RevisionError> {
         let bytes = read_bounded(
             &self.config_dir.join("metadata").join(format!("{id}.json")),
             MAX_METADATA_BYTES,
@@ -434,11 +455,11 @@ impl RevisionStore {
         let metadata: RevisionMetadata = serde_json::from_slice(&bytes)
             .map_err(|error| RevisionError::InvalidStored(error.to_string()))?;
         if metadata.id != id
-            || metadata.hash.len() != 64
-            || !metadata
-                .hash
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            || validate_hash(&metadata.hash, "revision content").is_err()
+            || metadata
+                .binding_hash
+                .as_deref()
+                .is_some_and(|hash| validate_hash(hash, "candidate binding").is_err())
             || id != format!("{:020}-{}", metadata.sequence, metadata.hash)
         {
             return Err(RevisionError::InvalidStored(
@@ -451,7 +472,7 @@ impl RevisionStore {
 
     fn revision_target(&self, id: &str) -> Result<RevisionTarget, RevisionError> {
         validate_revision_id(id)?;
-        let metadata = self.load_metadata(id)?;
+        let metadata = self.metadata(id)?;
         self.load(id)?;
         Ok(RevisionTarget {
             id: metadata.id,
@@ -602,6 +623,19 @@ fn validate_source(source: &str) -> Result<(), RevisionError> {
         return Err(RevisionError::InvalidStored(
             "revision source is empty, oversized, or contains control characters".into(),
         ));
+    }
+    Ok(())
+}
+
+fn validate_hash(hash: &str, kind: &str) -> Result<(), RevisionError> {
+    if hash.len() != 64
+        || !hash
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(RevisionError::InvalidStored(format!(
+            "{kind} hash is invalid"
+        )));
     }
     Ok(())
 }
@@ -859,6 +893,61 @@ mod tests {
             store.load(&metadata.id),
             Err(RevisionError::InvalidStored(_))
         ));
+        drop(store);
+        fs::remove_dir_all(state).expect("cleanup");
+    }
+
+    #[test]
+    fn typed_binding_is_validated_and_part_of_deduplication() {
+        let state = temporary_state();
+        let store = RevisionStore::open(&state).expect("store");
+        let first_hash = "11".repeat(32);
+        let second_hash = "22".repeat(32);
+        let first = store
+            .create_bound_candidate(&config(), "typed", &first_hash)
+            .expect("first bound candidate");
+        assert_eq!(first.binding_hash.as_deref(), Some(first_hash.as_str()));
+        assert_eq!(store.metadata(&first.id).expect("metadata"), first);
+        assert_eq!(
+            store
+                .create_bound_candidate(&config(), "typed-again", &first_hash)
+                .expect("deduplicated bound candidate"),
+            first
+        );
+
+        let second = store
+            .create_bound_candidate(&config(), "typed", &second_hash)
+            .expect("distinct binding");
+        assert_ne!(second.id, first.id);
+        assert_eq!(second.hash, first.hash);
+        assert_eq!(second.binding_hash.as_deref(), Some(second_hash.as_str()));
+        assert!(
+            store
+                .create_bound_candidate(&config(), "typed", "not-a-hash")
+                .is_err()
+        );
+        let unbound = store
+            .create_candidate(&config(), "unbound")
+            .expect("unbound candidate");
+        assert!(unbound.binding_hash.is_none());
+
+        let metadata_path = state
+            .join("config/metadata")
+            .join(format!("{}.json", second.id));
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&metadata_path).expect("metadata bytes"))
+                .expect("metadata JSON");
+        value["binding_hash"] = serde_json::json!("invalid");
+        fs::write(
+            &metadata_path,
+            serde_json::to_vec(&value).expect("tampered metadata"),
+        )
+        .expect("tamper metadata");
+        assert!(matches!(
+            store.metadata(&second.id),
+            Err(RevisionError::InvalidStored(_))
+        ));
+
         drop(store);
         fs::remove_dir_all(state).expect("cleanup");
     }

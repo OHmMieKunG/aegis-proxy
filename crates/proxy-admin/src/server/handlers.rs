@@ -287,8 +287,9 @@ async fn create_proxy_host_candidate_revision(
     desired_objects: Vec<ApiObject<ProxyHostSpec>>,
 ) -> Result<RevisionMetadata, ApiError> {
     let active = state.control.runtime().config();
-    let candidate = match tokio::task::spawn_blocking(move || {
+    let (config, desired_objects) = match tokio::task::spawn_blocking(move || {
         crate::proxy_host::prepare_proxy_host_set(&current_objects, &desired_objects, &active)
+            .map(|candidate| (candidate.config().clone(), candidate.objects().to_vec()))
     })
     .await
     {
@@ -304,27 +305,51 @@ async fn create_proxy_host_candidate_revision(
         return Err(audited_failure(audit, "revision_conflict", ApiError::Conflict).await);
     }
     let revisions = state.control.revisions();
-    let config = candidate.config().clone();
+    let binding_hash = match ProxyHostStore::binding_hash(&desired_objects) {
+        Ok(hash) => hash,
+        Err(_) => {
+            return Err(
+                audited_failure(audit, "invalid_proxy_host", ApiError::InvalidRequest).await,
+            );
+        }
+    };
     let source = format!(
         "admin:{}:{}:proxy-host",
         principal.actor_type, principal.actor_id
     );
-    let metadata =
-        match tokio::task::spawn_blocking(move || revisions.create_candidate(&config, &source))
-            .await
-        {
-            Ok(Ok(metadata)) => metadata,
-            Ok(Err(RevisionError::InvalidConfig(_))) => {
-                return Err(
-                    audited_failure(audit, "invalid_candidate", ApiError::InvalidRequest).await,
-                );
-            }
-            Ok(Err(_)) | Err(_) => {
-                return Err(
-                    audited_failure(audit, "revision_store_failed", ApiError::Unavailable).await,
-                );
-            }
-        };
+    let revision_binding = binding_hash.clone();
+    let metadata = match tokio::task::spawn_blocking(move || {
+        revisions.create_bound_candidate(&config, &source, &revision_binding)
+    })
+    .await
+    {
+        Ok(Ok(metadata)) => metadata,
+        Ok(Err(RevisionError::InvalidConfig(_))) => {
+            return Err(
+                audited_failure(audit, "invalid_candidate", ApiError::InvalidRequest).await,
+            );
+        }
+        Ok(Err(_)) | Err(_) => {
+            return Err(
+                audited_failure(audit, "revision_store_failed", ApiError::Unavailable).await,
+            );
+        }
+    };
+    let store = Arc::clone(&state.proxy_hosts);
+    let candidate_id = metadata.id.clone();
+    let snapshot_binding = binding_hash;
+    match tokio::task::spawn_blocking(move || {
+        store.bind_candidate(&candidate_id, &snapshot_binding, &desired_objects)
+    })
+    .await
+    {
+        Ok(Ok(_)) => {}
+        Ok(Err(_)) | Err(_) => {
+            return Err(
+                audited_failure(audit, "candidate_binding_failed", ApiError::Unavailable).await,
+            );
+        }
+    }
     if state.control.runtime().revision().as_ref() != expected_revision {
         audit
             .record(
@@ -761,16 +786,16 @@ pub(super) async fn activate_proxy_host_candidate(
         .map(|stored| stored.object.clone())
         .collect::<Vec<_>>();
     let active = state.control.runtime().config();
-    let expected_hash = match tokio::task::spawn_blocking(move || {
+    let (expected_hash, objects) = match tokio::task::spawn_blocking(move || {
         let candidate = crate::proxy_host::prepare_proxy_host_set(&objects, &objects, &active)
             .map_err(|_| {
                 RevisionError::InvalidStored("typed candidate preparation failed".into())
             })?;
-        content_hash(candidate.config())
+        Ok::<_, RevisionError>((content_hash(candidate.config())?, objects))
     })
     .await
     {
-        Ok(Ok(hash)) => hash,
+        Ok(Ok(result)) => result,
         Ok(Err(_)) => {
             return Err(
                 audited_failure(&audit, "invalid_proxy_host", ApiError::InvalidRequest).await,
@@ -780,13 +805,19 @@ pub(super) async fn activate_proxy_host_candidate(
     };
     let revisions = state.control.revisions();
     let candidate_id = id.clone();
-    let candidate_hash = match tokio::task::spawn_blocking(move || {
+    let (candidate_hash, binding_hash) = match tokio::task::spawn_blocking(move || {
         let candidate = revisions.load(&candidate_id)?;
-        content_hash(&candidate)
+        let metadata = revisions.metadata(&candidate_id)?;
+        Ok::<_, RevisionError>((content_hash(&candidate)?, metadata.binding_hash))
     })
     .await
     {
-        Ok(Ok(hash)) => hash,
+        Ok(Ok((hash, Some(binding_hash)))) => (hash, binding_hash),
+        Ok(Ok((_, None))) => {
+            return Err(
+                audited_failure(&audit, "candidate_conflict", ApiError::CandidateConflict).await,
+            );
+        }
         Ok(Err(RevisionError::InvalidStored(_))) => {
             return Err(audited_failure(&audit, "candidate_not_found", ApiError::NotFound).await);
         }
@@ -800,6 +831,37 @@ pub(super) async fn activate_proxy_host_candidate(
         }
     };
     if candidate_hash != expected_hash {
+        return Err(
+            audited_failure(&audit, "candidate_conflict", ApiError::CandidateConflict).await,
+        );
+    }
+    let store = Arc::clone(&state.proxy_hosts);
+    let bound_id = id.clone();
+    let bound =
+        match tokio::task::spawn_blocking(move || store.load_candidate(&bound_id, &binding_hash))
+            .await
+        {
+            Ok(Ok(bound)) => bound,
+            Ok(Err(ProxyHostStoreError::Io(error)))
+                if error.kind() == std::io::ErrorKind::NotFound =>
+            {
+                return Err(audited_failure(
+                    &audit,
+                    "candidate_conflict",
+                    ApiError::CandidateConflict,
+                )
+                .await);
+            }
+            Ok(Err(_)) | Err(_) => {
+                return Err(audited_failure(
+                    &audit,
+                    "candidate_binding_failed",
+                    ApiError::Unavailable,
+                )
+                .await);
+            }
+        };
+    if bound.objects() != objects {
         return Err(
             audited_failure(&audit, "candidate_conflict", ApiError::CandidateConflict).await,
         );
