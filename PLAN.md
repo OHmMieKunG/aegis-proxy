@@ -41,6 +41,9 @@ defaults. Advanced concepts use progressive disclosure.
 
 ## Phase 14 — Behavior-preserving modularization
 
+**Status:** complete on 2026-07-22. Evidence:
+[`docs/reviews/phase-14-completion.md`](docs/reviews/phase-14-completion.md).
+
 **Objective:** reduce ownership and review risk in oversized modules without behavior change.
 
 **Scope:** extract inline tests first; split `crates/proxy-core/src/lib.rs`,
@@ -314,5 +317,5 @@ immutable scope and residual risk. Until then, production assessment remains NO-
 
 ## Immediate phase
 
-Phase 14. Later work must not enter early unless strictly required to preserve or test current
-behavior.
+Phase 15. Later work must not enter early unless strictly required to implement or test its typed
+control-plane contracts.

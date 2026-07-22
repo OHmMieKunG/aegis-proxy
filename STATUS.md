@@ -2,8 +2,8 @@
 
 Verification date: 2026-07-22
 Branch: `dev`
-Commit: `aadac76a1618bdf9926ec37705b657fe64cdd430`
-Working tree at verification start: clean and equal to `origin/dev`
+Verification basis: Phase 14 implementation through `8f41180`, plus pending completion documents
+Working tree at Phase 14 start: clean at `10aae8c`
 
 ## Release status
 
@@ -52,10 +52,10 @@ evidence.
 
 ## Immediate phase
 
-[Phase 14 behavior-preserving modularization](PLAN.md#phase-14--behavior-preserving-modularization).
-Large modules include `crates/proxy-core/src/lib.rs` (5,415 lines),
-`crates/proxy-config/src/lib.rs` (4,749), and `crates/proxy-admin/src/server.rs` (2,159). Phase 14
-must preserve behavior.
+[Phase 15 stable typed control plane](PLAN.md#phase-15--stable-typed-control-plane). Phase 14
+completed behavior-preserving modularization: inline tests are focused files, production ownership
+is split by domain, and no production Rust module exceeds 1,200 measured lines. See the
+[completion evidence](docs/reviews/phase-14-completion.md).
 
 ## Release blockers
 
@@ -71,14 +71,15 @@ must preserve behavior.
 | Command | Result |
 |---|---|
 | `cargo fmt --all -- --check` | passed |
-| `cargo check --workspace --all-targets` | passed; transitive warning below |
+| `cargo check --workspace --all-targets --all-features` | passed; transitive warning below |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | passed |
 | `cargo test --workspace --all-features` | passed: 268 passed, 2 intentionally ignored |
 | `cargo test --workspace --doc` | passed; no doctests defined |
 | valid configuration corpus | seven accepted |
 | invalid configuration corpus | three rejected as expected |
-| local Markdown link scan | 97 files, zero broken relative targets after rebaseline |
-| `cargo tree -e features` | passed; 2,441 output lines including two lock-wait messages |
+| changed documentation link targets | passed; every added/changed relative target exists |
+| `cargo tree -e features` | passed; 2,439 output lines |
+| Phase 14 manifest/schema/OpenAPI comparison against `10aae8c` | passed; no differences |
 
 ## Unavailable or incomplete checks
 
@@ -88,7 +89,8 @@ must preserve behavior.
 - `systemd-analyze verify`: sandbox blocked its credential sockets with `Operation not permitted`;
   unit validation did not complete.
 - `cargo fuzz`: Cargo reports `no such command`; dated smoke evidence is not current execution.
-- `markdownlint` and `lychee`: commands not found. Repository-local relative-link scan passed.
+- `markdownlint` and `lychee`: shell reports `command not found`; changed targets were checked
+  directly, but a repository-wide automated Markdown scan was not rerun.
 - Pebble, long fuzz/soak, AppArmor enforcement, independent review, SBOM, signing, and container
   scan were not run during this verification.
 

@@ -44,6 +44,7 @@
 - [Contributing](../CONTRIBUTING.md)
 - [Agent guide](../AGENTS.md)
 - [Testing](development/testing.md)
+- [Workspace ownership](development/workspace.md)
 - [Soak plan](development/soak-testing.md)
 - [Benchmarks](benchmarks/README.md)
 - [Fuzzing](../fuzz/README.md)
