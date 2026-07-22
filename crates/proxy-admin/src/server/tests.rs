@@ -57,6 +57,8 @@ fn checked_openapi_contains_every_private_route() {
         "/v1/config/active:",
         "/v1/config/validate:",
         "/v1/config/preview:",
+        "/v1/proxy-hosts/validate:",
+        "/v1/proxy-hosts/preview:",
         "/v1/config/candidates:",
         "/v1/config/candidates/{id}/activate:",
         "/v1/config/revisions:",
@@ -128,6 +130,7 @@ fn principal_rate_limit_enforces_burst_refill_and_key_bound() {
         actor_type: "unix_peer",
         actor_id: "1000".into(),
         role: Role::Admin,
+        owner_id: Some("uid-1000".parse().expect("owner")),
         token_scopes: None,
     };
     assert!(limiter.check_at(&first, start).is_ok());
@@ -143,6 +146,7 @@ fn principal_rate_limit_enforces_burst_refill_and_key_bound() {
         actor_type: "api_token",
         actor_id: "second".into(),
         role: Role::Viewer,
+        owner_id: Some("alice".parse().expect("owner")),
         token_scopes: Some(
             TokenScopes::new(Role::Viewer, vec![Action::ReadStatus]).expect("viewer scope"),
         ),
@@ -156,6 +160,7 @@ fn token_authorization_requires_role_and_explicit_scope() {
         actor_type: "api_token",
         actor_id: "scoped".into(),
         role: Role::Admin,
+        owner_id: Some("alice".parse().expect("owner")),
         token_scopes: Some(
             TokenScopes::new(Role::Admin, vec![Action::ReadStatus]).expect("admin scope"),
         ),
@@ -167,6 +172,7 @@ fn token_authorization_requires_role_and_explicit_scope() {
         actor_type: "api_token",
         actor_id: "legacy".into(),
         role: Role::Admin,
+        owner_id: None,
         token_scopes: Some(TokenScopes::default()),
     };
     assert!(authorize(&legacy, Action::ReadStatus).is_err());
@@ -175,6 +181,7 @@ fn token_authorization_requires_role_and_explicit_scope() {
         actor_type: "unix_peer",
         actor_id: "1000".into(),
         role: Role::Admin,
+        owner_id: Some("uid-1000".parse().expect("owner")),
         token_scopes: None,
     };
     assert!(authorize(&peer, Action::ActivateConfig).is_ok());

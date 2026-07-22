@@ -9,6 +9,7 @@ mod backup;
 mod compile;
 mod diff;
 mod preview;
+mod proxy_host;
 mod rbac;
 mod server;
 
@@ -31,5 +32,6 @@ pub use preview::{
     CandidateActivation, GeneratedProxyHostPreview, ProxyHostCandidatePreview,
     ProxyHostPreviewError, ProxyHostPreviewSummary, preview_proxy_host_candidate,
 };
+pub use proxy_host::{PreparedProxyHost, ProxyHostPreparationError, prepare_proxy_host};
 pub use rbac::{Action, Role, TokenScopeError, TokenScopes};
 pub use server::{AdminServerError, serve};

@@ -40,7 +40,11 @@ use thiserror::Error;
 use tokio::{net::UnixListener, sync::Semaphore};
 use tokio_util::sync::CancellationToken;
 
-use crate::{Action, AuditEvent, AuditLog, AuditOutcome, Role, TokenScopes, TokenStore};
+use crate::{
+    Action, ApiObject, AuditEvent, AuditLog, AuditOutcome, ObjectId, PreparedProxyHost,
+    ProxyHostPreparationError, ProxyHostPreviewSummary, ProxyHostSpec, Role, TokenScopes,
+    TokenStore,
+};
 use handlers::*;
 use support::*;
 
@@ -104,6 +108,7 @@ struct Principal {
     actor_type: &'static str,
     actor_id: String,
     role: Role,
+    owner_id: Option<ObjectId>,
     token_scopes: Option<TokenScopes>,
 }
 
@@ -126,10 +131,14 @@ impl FromRequestParts<AppState> for Principal {
                 return Err(ApiError::Unauthorized);
             }
             let Some(authorization) = authorization else {
+                let owner_id = format!("uid-{uid}")
+                    .parse()
+                    .map_err(|_| ApiError::Internal)?;
                 let principal = Self {
                     actor_type: "unix_peer",
                     actor_id: uid.to_string(),
                     role: Role::Admin,
+                    owner_id: Some(owner_id),
                     token_scopes: None,
                 };
                 state.rate_limiter.check(&principal)?;
@@ -157,11 +166,44 @@ impl FromRequestParts<AppState> for Principal {
                 actor_type: "api_token",
                 actor_id: metadata.id,
                 role: metadata.role,
+                owner_id: metadata.owner_id,
                 token_scopes: Some(metadata.scopes),
             };
             state.rate_limiter.check(&principal)?;
             Ok(principal)
         }
+    }
+}
+
+#[derive(Debug)]
+struct ValidateProxyHostPrincipal(Principal);
+
+impl FromRequestParts<AppState> for ValidateProxyHostPrincipal {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let principal = Principal::from_request_parts(parts, state).await?;
+        authorize(&principal, Action::ValidateConfig)?;
+        Ok(Self(principal))
+    }
+}
+
+#[derive(Debug)]
+struct PreviewProxyHostPrincipal(Principal);
+
+impl FromRequestParts<AppState> for PreviewProxyHostPrincipal {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let principal = Principal::from_request_parts(parts, state).await?;
+        authorize(&principal, Action::PreviewConfig)?;
+        Ok(Self(principal))
     }
 }
 
@@ -435,6 +477,12 @@ struct PreviewResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct ProxyHostValidationResponse {
+    valid: bool,
+    summary: ProxyHostPreviewSummary,
+}
+
+#[derive(Debug, Serialize)]
 struct CandidateResponse {
     id: String,
     hash: String,
@@ -580,6 +628,8 @@ pub async fn serve(
         .route("/v1/config/active", get(active_config))
         .route("/v1/config/validate", post(validate_config))
         .route("/v1/config/preview", post(preview_config))
+        .route("/v1/proxy-hosts/validate", post(validate_proxy_host))
+        .route("/v1/proxy-hosts/preview", post(preview_proxy_host))
         .route("/v1/config/candidates", post(create_candidate))
         .route(
             "/v1/config/candidates/{id}/activate",

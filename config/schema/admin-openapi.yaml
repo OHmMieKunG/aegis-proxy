@@ -3,8 +3,8 @@ info:
   title: AegisProxy private administration API
   version: 1.0.0
   description: >-
-    Current low-level Unix-socket-only v1 contract. This document is not served by the daemon.
-    Planned high-level user-facing objects are not part of this contract.
+    Current private Unix-socket-only v1 contract. This document is not served by the daemon.
+    Typed Proxy Host validation and preview are non-persistent and non-active.
 servers:
   - url: http://localhost
     description: HTTP over the configured private Unix socket
@@ -83,6 +83,28 @@ paths:
       requestBody: {$ref: "#/components/requestBodies/TomlConfig"}
       responses:
         "200": {description: Redacted preview, fingerprints, and activation class; not a field-level diff}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/proxy-hosts/validate:
+    post:
+      operationId: validateProxyHost
+      requestBody: {$ref: "#/components/requestBodies/ProxyHostObject"}
+      responses:
+        "200":
+          description: Owned Proxy Host compiles and passes semantic validation without persistence
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ProxyHostValidation"}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/proxy-hosts/preview:
+    post:
+      operationId: previewProxyHost
+      requestBody: {$ref: "#/components/requestBodies/ProxyHostObject"}
+      responses:
+        "200":
+          description: Redacted non-active candidate preview and typed creation diff
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/PreparedProxyHost"}
         default: {$ref: "#/components/responses/Error"}
   /v1/config/candidates:
     post:
@@ -291,6 +313,11 @@ components:
       content:
         application/toml:
           schema: {type: string, format: binary, maxLength: 2097152}
+    ProxyHostObject:
+      required: true
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/ProxyHostObject"}
   responses:
     Error:
       description: Stable redacted error
@@ -299,16 +326,117 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorEnvelope"
   schemas:
+    ObjectId:
+      type: string
+      pattern: '^[a-z][a-z0-9_-]{0,63}$'
+    ProxyHostObject:
+      type: object
+      additionalProperties: false
+      required: [api_version, metadata, spec]
+      properties:
+        api_version: {const: v1}
+        metadata:
+          type: object
+          additionalProperties: false
+          required: [id, owner_id]
+          properties:
+            id: {$ref: "#/components/schemas/ObjectId"}
+            owner_id: {$ref: "#/components/schemas/ObjectId"}
+        spec:
+          type: object
+          additionalProperties: false
+          required: [domain, forward_host, forward_port, forward_protocol, automatic_https, access_policy_ref, enabled]
+          properties:
+            domain: {type: string, minLength: 1, maxLength: 253}
+            forward_host: {type: string, minLength: 1, maxLength: 253}
+            forward_port: {type: integer, minimum: 1, maximum: 65535}
+            forward_protocol: {type: string, enum: [http, https]}
+            automatic_https: {type: string, enum: [disabled, managed]}
+            access_policy_ref:
+              oneOf:
+                - {$ref: "#/components/schemas/ObjectId"}
+                - {type: "null"}
+            enabled: {type: boolean}
+    GeneratedProxyHost:
+      type: object
+      additionalProperties: false
+      required: [route_id, listener_id, upstream_group_id, endpoint_id]
+      properties:
+        route_id: {type: string}
+        listener_id: {type: string}
+        upstream_group_id: {type: string}
+        endpoint_id: {type: string}
+    ProxyHostSummary:
+      type: object
+      additionalProperties: false
+      required: [api_version, object_id, owner_id, domain, forward_host, forward_port, forward_protocol, automatic_https, access_policy_ref, enabled, generated, candidate_hash, active_route_fingerprint, candidate_route_fingerprint, activation]
+      properties:
+        api_version: {const: v1}
+        object_id: {$ref: "#/components/schemas/ObjectId"}
+        owner_id: {$ref: "#/components/schemas/ObjectId"}
+        domain: {type: string}
+        forward_host: {type: string}
+        forward_port: {type: integer, minimum: 1, maximum: 65535}
+        forward_protocol: {type: string, enum: [http, https]}
+        automatic_https: {type: string, enum: [disabled, managed]}
+        access_policy_ref:
+          oneOf:
+            - {$ref: "#/components/schemas/ObjectId"}
+            - {type: "null"}
+        enabled: {type: boolean}
+        generated:
+          oneOf:
+            - {$ref: "#/components/schemas/GeneratedProxyHost"}
+            - {type: "null"}
+        candidate_hash: {type: string, pattern: '^[0-9a-f]{64}$'}
+        active_route_fingerprint: {type: string, pattern: '^[0-9a-f]{16}$'}
+        candidate_route_fingerprint: {type: string, pattern: '^[0-9a-f]{16}$'}
+        activation: {type: string, enum: [hot_reload, restart_required]}
+    ProxyHostValidation:
+      type: object
+      additionalProperties: false
+      required: [valid, summary]
+      properties:
+        valid: {const: true}
+        summary: {$ref: "#/components/schemas/ProxyHostSummary"}
+    PreparedProxyHost:
+      type: object
+      additionalProperties: false
+      required: [preview, diff]
+      properties:
+        preview:
+          type: object
+          additionalProperties: false
+          required: [summary, redacted_config]
+          properties:
+            summary: {$ref: "#/components/schemas/ProxyHostSummary"}
+            redacted_config: {type: object, description: Canonical configuration with all secret references redacted}
+        diff:
+          type: object
+          description: Bounded ordered typed creation diff; see response discriminator values
+          additionalProperties: false
+          required: [api_version, object_id, owner_id, current_hash, candidate_hash, changes]
+          properties:
+            api_version: {const: v1}
+            object_id: {$ref: "#/components/schemas/ObjectId"}
+            owner_id: {$ref: "#/components/schemas/ObjectId"}
+            current_hash: {type: "null"}
+            candidate_hash: {type: string, pattern: '^[0-9a-f]{64}$'}
+            changes: {type: array, minItems: 7, maxItems: 8, items: {type: object}}
     TokenScope:
       type: string
       enum: [read_status, read_config, validate_config, preview_config, create_candidate, activate_config, rollback_config, read_revisions, read_routes, read_upstreams, drain, read_certificates, renew_certificate, read_audit, create_backup, validate_restore, manage_identities]
     TokenMetadata:
       type: object
       additionalProperties: false
-      required: [id, role, scopes, expires_unix_secs, revoked]
+      required: [id, role, owner_id, scopes, expires_unix_secs, revoked]
       properties:
         id: {type: string, pattern: '^[A-Za-z0-9_-]{16}$'}
         role: {type: string, enum: [viewer, auditor, operator, admin]}
+        owner_id:
+          oneOf:
+            - {$ref: "#/components/schemas/ObjectId"}
+            - {type: "null"}
         scopes:
           type: array
           maxItems: 17

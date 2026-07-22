@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use zeroize::Zeroizing;
 
-use crate::{Action, Role, TokenScopeError, TokenScopes};
+use crate::{Action, ObjectId, Role, TokenScopeError, TokenScopes};
 
 const TOKEN_ID_BYTES: usize = 12;
 const TOKEN_SECRET_BYTES: usize = 32;
@@ -87,6 +87,9 @@ pub struct TokenRecord {
     pub id: String,
     /// Authorized built-in role.
     pub role: Role,
+    /// Stable owner for typed objects. Missing legacy ownership cannot use typed endpoints.
+    #[serde(default)]
+    pub owner_id: Option<ObjectId>,
     /// Explicit action scopes. Missing legacy scopes deserialize to deny-all.
     #[serde(default)]
     pub scopes: TokenScopes,
@@ -104,6 +107,8 @@ pub struct TokenMetadata {
     pub id: String,
     /// Authorized built-in role.
     pub role: Role,
+    /// Stable typed-object owner; absent only for legacy records.
+    pub owner_id: Option<ObjectId>,
     /// Explicit action scopes.
     pub scopes: TokenScopes,
     /// Absolute Unix expiry time.
@@ -143,6 +148,7 @@ impl fmt::Debug for TokenRecord {
             .debug_struct("TokenRecord")
             .field("id", &self.id)
             .field("role", &self.role)
+            .field("owner_id", &self.owner_id)
             .field("scopes", &self.scopes)
             .field("expires_unix_secs", &self.expires_unix_secs)
             .field("revoked", &self.revoked)
@@ -155,6 +161,7 @@ impl TokenRecord {
     /// Issue a 256-bit token and return its hash-only record.
     pub fn issue(
         role: Role,
+        owner_id: ObjectId,
         scopes: TokenScopes,
         expires_unix_secs: u64,
     ) -> Result<(Self, IssuedToken), TokenError> {
@@ -173,6 +180,7 @@ impl TokenRecord {
             Self {
                 id,
                 role,
+                owner_id: Some(owner_id),
                 scopes,
                 expires_unix_secs,
                 revoked: false,
@@ -216,6 +224,7 @@ impl TokenRecord {
         TokenMetadata {
             id: self.id.clone(),
             role: self.role,
+            owner_id: self.owner_id.clone(),
             scopes: self.scopes.clone(),
             expires_unix_secs: self.expires_unix_secs,
             revoked: self.revoked,
@@ -231,8 +240,9 @@ impl TokenStore {
         validate_records(&records)?;
         let fallback_scopes =
             TokenScopes::new(Role::Viewer, vec![Action::ReadStatus]).map_err(TokenError::from)?;
+        let fallback_owner = "system".parse().map_err(|_| TokenStoreError::Invalid)?;
         let (fallback, fallback_plaintext) =
-            TokenRecord::issue(Role::Viewer, fallback_scopes, u64::MAX)?;
+            TokenRecord::issue(Role::Viewer, fallback_owner, fallback_scopes, u64::MAX)?;
         drop(fallback_plaintext);
         Ok(Self {
             path,
@@ -245,10 +255,11 @@ impl TokenStore {
     pub fn issue(
         &self,
         role: Role,
+        owner_id: ObjectId,
         scopes: TokenScopes,
         expires_unix_secs: u64,
     ) -> Result<(TokenMetadata, IssuedToken), TokenStoreError> {
-        let (record, issued) = TokenRecord::issue(role, scopes, expires_unix_secs)?;
+        let (record, issued) = TokenRecord::issue(role, owner_id, scopes, expires_unix_secs)?;
         let metadata = record.metadata();
         let mut records = self
             .records
@@ -507,17 +518,21 @@ mod tests {
     use std::fs;
 
     use super::{TokenRecord, TokenStore};
-    use crate::{Action, Role, TokenScopes};
+    use crate::{Action, ObjectId, Role, TokenScopes};
 
     fn operator_scopes() -> TokenScopes {
         TokenScopes::new(Role::Operator, vec![Action::ReadStatus, Action::ReadRoutes])
             .expect("operator scopes")
     }
 
+    fn owner() -> ObjectId {
+        "alice".parse().expect("owner")
+    }
+
     #[test]
     fn token_is_hash_only_redacted_expiring_and_revocable() {
         let (mut record, issued) =
-            TokenRecord::issue(Role::Operator, operator_scopes(), 200).expect("issue");
+            TokenRecord::issue(Role::Operator, owner(), operator_scopes(), 200).expect("issue");
         let plaintext = issued.into_plaintext();
         assert_eq!(plaintext.split_once('.').expect("token").1.len(), 43);
         assert!(record.verify(&plaintext, 199));
@@ -541,7 +556,7 @@ mod tests {
         let path = directory.join("tokens.json");
         let store = TokenStore::open(&path).expect("open");
         let (metadata, issued) = store
-            .issue(Role::Operator, operator_scopes(), 200)
+            .issue(Role::Operator, owner(), operator_scopes(), 200)
             .expect("issue");
         let plaintext = issued.into_plaintext();
         assert_eq!(
@@ -573,7 +588,7 @@ mod tests {
         let path = directory.join("tokens.json");
         let store = TokenStore::open(&path).expect("open");
         let (_metadata, issued) = store
-            .issue(Role::Operator, operator_scopes(), 200)
+            .issue(Role::Operator, owner(), operator_scopes(), 200)
             .expect("issue");
         let plaintext = issued.into_plaintext();
         drop(store);
@@ -584,6 +599,10 @@ mod tests {
             .as_object_mut()
             .expect("token record")
             .remove("scopes");
+        value["records"][0]
+            .as_object_mut()
+            .expect("token record")
+            .remove("owner_id");
         fs::write(
             &path,
             serde_json::to_vec_pretty(&value).expect("legacy JSON"),
@@ -595,6 +614,7 @@ mod tests {
             .authenticate(&plaintext, 100)
             .expect("authenticate");
         assert!(authenticated.scopes.as_slice().is_empty());
+        assert!(authenticated.owner_id.is_none());
         assert!(!authenticated.scopes.allows(Action::ReadStatus));
         fs::remove_dir_all(directory).expect("remove");
     }

@@ -6,7 +6,7 @@ mod unix {
         fs,
         io::{Read, Write},
         net::TcpListener,
-        os::unix::fs::PermissionsExt,
+        os::unix::fs::{MetadataExt, PermissionsExt},
         path::{Path, PathBuf},
         process::{Child, Command, Output, Stdio},
         thread,
@@ -234,6 +234,71 @@ upstream_group = "app"
         }
 
         let current = active_revision(&state);
+        let owner = format!(
+            "uid-{}",
+            fs::metadata("/proc/self").expect("self metadata").uid()
+        );
+        let proxy_host_path = daemon.root.join("proxy-host.json");
+        let proxy_host = serde_json::json!({
+            "api_version": "v1",
+            "metadata": {"id": "proxy-cli", "owner_id": owner},
+            "spec": {
+                "domain": "typed.example.test",
+                "forward_host": "127.0.0.1",
+                "forward_port": 9001,
+                "forward_protocol": "http",
+                "automatic_https": "disabled",
+                "access_policy_ref": null,
+                "enabled": true
+            }
+        });
+        fs::write(
+            &proxy_host_path,
+            serde_json::to_vec_pretty(&proxy_host).expect("proxy host JSON"),
+        )
+        .expect("proxy host file");
+        let validate = run(&[
+            "proxy-host",
+            "validate",
+            "--socket",
+            socket,
+            proxy_host_path.to_str().expect("proxy host path"),
+        ]);
+        assert!(validate.status.success(), "{:?}", validate.stderr);
+        let preview = run(&[
+            "proxy-host",
+            "preview",
+            "--socket",
+            socket,
+            proxy_host_path.to_str().expect("proxy host path"),
+        ]);
+        assert!(preview.status.success(), "{:?}", preview.stderr);
+        let preview_json: serde_json::Value =
+            serde_json::from_slice(&preview.stdout).expect("preview JSON");
+        assert_eq!(preview_json["preview"]["summary"]["owner_id"], owner);
+        assert_eq!(
+            preview_json["diff"]["changes"].as_array().map(Vec::len),
+            Some(8)
+        );
+        assert_eq!(active_revision(&state), current);
+
+        let mut cross_owner = proxy_host.clone();
+        cross_owner["metadata"]["owner_id"] = serde_json::json!("uid-unauthorized");
+        let cross_owner_path = daemon.root.join("cross-owner.json");
+        fs::write(
+            &cross_owner_path,
+            serde_json::to_vec_pretty(&cross_owner).expect("cross-owner JSON"),
+        )
+        .expect("cross-owner file");
+        let denied_owner = run(&[
+            "proxy-host",
+            "preview",
+            "--socket",
+            socket,
+            cross_owner_path.to_str().expect("cross-owner path"),
+        ]);
+        assert_eq!(denied_owner.status.code(), Some(5));
+
         let escalation = run(&[
             "token",
             "create",
@@ -260,6 +325,8 @@ upstream_group = "app"
             "operator",
             "--scope",
             "read-status",
+            "--scope",
+            "preview-config",
             "--ttl-secs",
             "600",
         ]);
@@ -268,6 +335,7 @@ upstream_group = "app"
             serde_json::from_slice(&token.stdout).expect("issued token JSON");
         let plaintext = token_json["token"].as_str().expect("plaintext token");
         let token_id = token_json["metadata"]["id"].as_str().expect("token ID");
+        assert_eq!(token_json["metadata"]["owner_id"], owner);
         let token_file = daemon.root.join("operator.token");
         fs::write(&token_file, plaintext).expect("token file");
         fs::set_permissions(&token_file, fs::Permissions::from_mode(0o600)).expect("token mode");
@@ -281,6 +349,32 @@ upstream_group = "app"
             &token_ref,
         ]);
         assert!(scoped_status.status.success());
+        let scoped_preview = run(&[
+            "proxy-host",
+            "preview",
+            "--socket",
+            socket,
+            "--token-ref",
+            &token_ref,
+            proxy_host_path.to_str().expect("proxy host path"),
+        ]);
+        assert!(
+            scoped_preview.status.success(),
+            "{:?}",
+            scoped_preview.stderr
+        );
+        let malformed_path = daemon.root.join("malformed-proxy-host.json");
+        fs::write(&malformed_path, b"{").expect("malformed file");
+        let authorization_first = run(&[
+            "proxy-host",
+            "validate",
+            "--socket",
+            socket,
+            "--token-ref",
+            &token_ref,
+            malformed_path.to_str().expect("malformed path"),
+        ]);
+        assert_eq!(authorization_first.status.code(), Some(5));
         let denied = run(&[
             "token",
             "revoke",

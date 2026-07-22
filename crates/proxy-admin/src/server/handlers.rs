@@ -232,6 +232,55 @@ pub(super) async fn preview_config(
     }))
 }
 
+pub(super) async fn validate_proxy_host(
+    State(state): State<AppState>,
+    ValidateProxyHostPrincipal(principal): ValidateProxyHostPrincipal,
+    payload: Result<Json<ApiObject<ProxyHostSpec>>, JsonRejection>,
+) -> Result<axum::Json<ProxyHostValidationResponse>, ApiError> {
+    let prepared = prepare_proxy_host_request(&state, &principal, payload).await?;
+    Ok(axum::Json(ProxyHostValidationResponse {
+        valid: true,
+        summary: prepared.preview.summary,
+    }))
+}
+
+pub(super) async fn preview_proxy_host(
+    State(state): State<AppState>,
+    PreviewProxyHostPrincipal(principal): PreviewProxyHostPrincipal,
+    payload: Result<Json<ApiObject<ProxyHostSpec>>, JsonRejection>,
+) -> Result<axum::Json<PreparedProxyHost>, ApiError> {
+    prepare_proxy_host_request(&state, &principal, payload)
+        .await
+        .map(axum::Json)
+}
+
+async fn prepare_proxy_host_request(
+    state: &AppState,
+    principal: &Principal,
+    payload: Result<Json<ApiObject<ProxyHostSpec>>, JsonRejection>,
+) -> Result<PreparedProxyHost, ApiError> {
+    let object = payload.map_err(|_| ApiError::InvalidRequest)?.0;
+    let owner = principal.owner_id.clone().ok_or(ApiError::Forbidden)?;
+    let active = state.control.runtime().config();
+    tokio::task::spawn_blocking(move || crate::prepare_proxy_host(&object, &active, &owner))
+        .await
+        .map_err(|_| ApiError::Internal)?
+        .map_err(map_proxy_host_preparation_error)
+}
+
+fn map_proxy_host_preparation_error(error: ProxyHostPreparationError) -> ApiError {
+    match error {
+        ProxyHostPreparationError::UnauthorizedOwner => ApiError::Forbidden,
+        ProxyHostPreparationError::Preview | ProxyHostPreparationError::Diff => ApiError::Internal,
+        ProxyHostPreparationError::InvalidContract
+        | ProxyHostPreparationError::HttpListenerUnavailable
+        | ProxyHostPreparationError::UpstreamTemplateUnavailable
+        | ProxyHostPreparationError::AccessPolicyUnavailable
+        | ProxyHostPreparationError::ManagedHttpsUnavailable
+        | ProxyHostPreparationError::Compile => ApiError::InvalidRequest,
+    }
+}
+
 pub(super) async fn create_candidate(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
@@ -730,6 +779,12 @@ pub(super) async fn create_token(
             return Err(audited_failure(&audit, "invalid_scopes", ApiError::InvalidRequest).await);
         }
     };
+    let owner_id = match principal.owner_id.clone() {
+        Some(owner_id) => owner_id,
+        None => {
+            return Err(audited_failure(&audit, "owner_unavailable", ApiError::Forbidden).await);
+        }
+    };
     let permit = match Arc::clone(&state.auth_permits).try_acquire_owned() {
         Ok(permit) => permit,
         Err(_) => return Err(audited_failure(&audit, "capacity_exhausted", ApiError::Busy).await),
@@ -737,7 +792,7 @@ pub(super) async fn create_token(
     let store = Arc::clone(&state.tokens);
     let result = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        store.issue(request.role, scopes, request.expires_unix_secs)
+        store.issue(request.role, owner_id, scopes, request.expires_unix_secs)
     })
     .await;
     let (metadata, issued) = match result {

@@ -76,6 +76,11 @@ enum Command {
         #[command(subcommand)]
         command: TokenCommand,
     },
+    /// Validate or preview typed Proxy Hosts through the private socket.
+    ProxyHost {
+        #[command(subcommand)]
+        command: ProxyHostCommand,
+    },
     /// Create or verify encrypted state backups.
     Backup {
         #[command(subcommand)]
@@ -199,6 +204,22 @@ enum TokenCommand {
         #[arg(long)]
         expect: String,
         id: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ProxyHostCommand {
+    /// Compile and semantically validate one owned Proxy Host without persistence.
+    Validate {
+        #[command(flatten)]
+        admin: AdminConnection,
+        file: PathBuf,
+    },
+    /// Print a redacted candidate preview and typed creation diff without activation.
+    Preview {
+        #[command(flatten)]
+        admin: AdminConnection,
+        file: PathBuf,
     },
 }
 
@@ -454,6 +475,7 @@ async fn run(cli: Cli) -> Result<(), BoxError> {
             run_certificate_command(command).await?;
         }
         Command::Token { command } => run_token_command(command).await?,
+        Command::ProxyHost { command } => run_proxy_host_command(command).await?,
         Command::Backup { command } => run_backup_command(command).await?,
         Command::Restore { command } => run_restore_command(command).await?,
         Command::Health { admin } => {
@@ -699,6 +721,43 @@ async fn run_token_command(command: TokenCommand) -> Result<(), BoxError> {
         }
     }
     Ok(())
+}
+
+async fn run_proxy_host_command(command: ProxyHostCommand) -> Result<(), BoxError> {
+    let (admin, file, path) = match command {
+        ProxyHostCommand::Validate { admin, file } => (admin, file, "/v1/proxy-hosts/validate"),
+        ProxyHostCommand::Preview { admin, file } => (admin, file, "/v1/proxy-hosts/preview"),
+    };
+    let body = read_bounded(file, aegisproxy_config::MAX_CONFIG_BYTES).await?;
+    let response = admin_request(
+        &admin,
+        Method::POST,
+        path,
+        None,
+        Some("application/json"),
+        body,
+    )
+    .await?;
+    require_admin_success(&response)?;
+    io::stdout().lock().write_all(&response.body)?;
+    writeln!(io::stdout().lock())?;
+    Ok(())
+}
+
+async fn read_bounded(path: PathBuf, maximum: usize) -> Result<Vec<u8>, BoxError> {
+    tokio::task::spawn_blocking(move || {
+        let metadata = std::fs::metadata(&path)?;
+        if metadata.len() > maximum as u64 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "input exceeds its size limit",
+            ));
+        }
+        std::fs::read(path)
+    })
+    .await
+    .map_err(|error| -> BoxError { Box::new(error) })?
+    .map_err(|error| -> BoxError { Box::new(error) })
 }
 
 async fn run_backup_command(command: BackupCommand) -> Result<(), BoxError> {
