@@ -34,6 +34,11 @@ cannot persist or activate. Access-policy and managed-HTTPS preparation remains 
 typed ownership metadata can be checked. Remaining mutation and stored-credential contracts are
 still Phase 15 work.
 
+Typed Proxy Host desired-state persistence contains no secret-bearing field. Its private parent is
+mode `0700`, file is mode `0600`, symlink and broad-permission inputs fail closed, bytes and object
+count are bounded, and `Debug` exposes only object count. It has no secret resolver or activation
+handle. Current API does not write this store.
+
 Never put secret values in TOML, command arguments, logs, traces, audit records, screenshots,
 tickets, backups without encryption, or repository fixtures. See
 [certificate recovery](../operations/certificate-recovery.md) and [backup](../operations/backup.md).

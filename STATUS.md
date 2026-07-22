@@ -3,7 +3,8 @@
 Verification date: 2026-07-22
 Branch: `work/autonomous-roadmap`
 Verification basis: Phase 14 plus Phase 15 compiler `fa7913f`, preview service `d3de105`, typed diff
-`2617f0e`, API-token scopes `81bd500`, and owned Proxy Host endpoints `00cfa32`
+`2617f0e`, API-token scopes `81bd500`, owned Proxy Host endpoints `00cfa32`, and typed object store
+`5c8898b`
 Working tree at Phase 14 start: clean at `10aae8c`
 
 ## Release status
@@ -42,8 +43,10 @@ evidence.
   redaction, fingerprints, restart classification, and owner/object identity during diff. Existing
   low-level API tokens use a complete 17-action role-and-scope intersection. Private typed Proxy
   Host validation and preview endpoints authenticate and authorize before JSON deserialization,
-  enforce principal ownership, and cannot persist or activate. Object persistence, typed mutation,
-  certificate/access-policy ownership metadata, and a complete ownership matrix do not exist yet.
+  enforce principal ownership, and cannot persist or activate. A separate bounded private typed
+  object store supports owner-indexed state and generation CAS, but endpoints do not use it yet.
+  Typed mutation, certificate/access-policy ownership metadata, and a complete ownership matrix do
+  not exist yet.
 - Preview returns redacted config, fingerprints, and activation class; a separate pure function
   produces the ordered typed diff. Neither can persist or activate candidates.
 - Restore validates archives but does not extract or activate them.
@@ -83,7 +86,7 @@ is split by domain, and no production Rust module exceeds 1,200 measured lines. 
 | `cargo fmt --all -- --check` | passed |
 | `cargo check --workspace --all-targets --all-features` | passed; transitive warning below |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | passed |
-| `cargo test --workspace --all-features` | passed: 287 passed, 2 intentionally ignored |
+| `cargo test --workspace --all-features` | passed: 291 passed, 2 intentionally ignored |
 | `cargo test --workspace --doc` | passed; no doctests defined |
 | valid configuration corpus | seven accepted |
 | invalid configuration corpus | three rejected as expected |

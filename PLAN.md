@@ -93,10 +93,13 @@ bounded ordered typed field-level diff with owner/object identity checks; explic
 API-token scopes enforced as the intersection of role and scope; stable owner identity persisted
 with new tokens; private owner-aware Proxy Host validation and redacted preview endpoints with CLI
 coverage and authorization-before-deserialization.
+Bounded durable Proxy Host desired-state storage now provides strict schema/version loading,
+owner-indexed reads, deterministic serialization, object-local generation CAS, private permissions,
+and rollback of in-memory mutation when atomic persistence fails.
 
-**Remaining units:** typed object persistence and complete ownership/RBAC metadata; typed
-mutation/activation endpoints; access-policy and certificate objects; remaining domain objects;
-remaining OpenAPI and CLI contracts; migration/compatibility policy and tests; full
+**Remaining units:** integrate typed persistence through audited ownership/RBAC endpoints; typed
+candidate/revision/activation endpoints; access-policy and certificate objects; remaining domain
+objects; remaining OpenAPI and CLI contracts; migration/compatibility policy and tests; full
 authorization/security review.
 
 **Objective:** provide versioned high-level objects usable by GUI and advanced automation.

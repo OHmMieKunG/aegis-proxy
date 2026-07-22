@@ -32,3 +32,11 @@ rust-proxy token create --socket SOCKET --expect REV --role operator \
 
 The checked OpenAPI contract is [`../schema/admin-openapi.yaml`](../../config/schema/admin-openapi.yaml).
 No migration exposes token plaintext or stored password hashes.
+
+## Typed Proxy Host store
+
+The internal Proxy Host desired-state file uses strict schema version 1. Unknown fields, future
+versions, zero generations, duplicate owner/object identities, duplicate domains, malformed typed
+objects, oversized state, symlinks, and broad file permissions fail opening the store. No automatic
+downgrade or repair is attempted. This pre-release store is not yet opened by typed API endpoints; a
+release migration command must exist before its schema can change incompatibly.

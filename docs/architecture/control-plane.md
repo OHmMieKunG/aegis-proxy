@@ -33,6 +33,14 @@ Preparation runs off async worker and accepts exactly one configured HTTP listen
 upstream template. Access-policy and managed-HTTPS requests fail closed until typed ownership
 metadata exists. Endpoints expose no persistence, audit mutation, revision, or activation handle.
 
+`ProxyHostStore` is a separate library boundary for desired state. It stores strict schema-v1 JSON
+under a caller-selected private path, limits state to 4,096 objects and 2 MiB, indexes by owner then
+object ID, rejects duplicate domains globally, and uses object-local monotonic generations for
+compare-and-swap update/delete. Stable ordered serialization is fsynced before atomic rename; an
+in-memory mutation is restored if persistence fails. Store has no compiler context, audit writer,
+revision service, activation coordinator, runtime handle, or network access. Current endpoints do
+not open or mutate it.
+
 Machine contract: [`config/schema/admin-openapi.yaml`](../../config/schema/admin-openapi.yaml).
 The checked contract requires nonempty canonical scopes when creating tokens and returns only token
 ID, role, owner ID, scopes, expiry, and revocation metadata after the one-time plaintext response.

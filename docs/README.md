@@ -18,6 +18,8 @@
   migration behavior, and validation evidence.
 - [Phase 15 Proxy Host endpoints](reviews/phase-15-proxy-host-endpoints.md): owner-aware private
   validation/preview boundary, CLI contract, and validation evidence.
+- [Phase 15 Proxy Host store](reviews/phase-15-proxy-host-store.md): bounded durable desired-state
+  contract, generation concurrency, and failure evidence.
 
 ## Operators
 

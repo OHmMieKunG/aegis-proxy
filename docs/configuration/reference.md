@@ -52,6 +52,12 @@ requires exactly one HTTP listener and one all-HTTP upstream template in active 
 Managed HTTPS and access policies fail closed until their typed ownership metadata exists. These
 restrictions apply to endpoints, not lower-level compiler contract.
 
+Typed Proxy Host desired state has a separate internal schema-v1 JSON store. It is bounded to 4,096
+objects and 2 MiB, uses private directory/file permissions, stable owner/object ordering, globally
+unique domains, and object-local generations beginning at one. Create rejects existing identity or
+domain; update/delete require exact generation. File replacement is durable and atomic within its
+directory. This store is not active configuration and current endpoints do not write it.
+
 ## Routing rules
 
 - Host values are lowercase canonical ASCII DNS labels. Operators must supply valid IDNA A-labels (`xn--...`); Unicode U-labels are rejected. A wildcard covers one leftmost label only.

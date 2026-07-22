@@ -21,5 +21,7 @@ AegisProxy has not published a supported release.
   unscoped records load deny-all and token metadata remains hash-free.
 - Added private owner-aware Proxy Host validation and redacted preview endpoints plus CLI commands;
   authorization precedes typed deserialization and these endpoints cannot persist or activate.
+- Added bounded private Proxy Host desired-state storage with strict schema loading, deterministic
+  owner indexing, generation compare-and-swap, atomic replacement, and write-failure rollback.
 
 See [`STATUS.md`](STATUS.md) and [`docs/history/`](docs/history/README.md).
