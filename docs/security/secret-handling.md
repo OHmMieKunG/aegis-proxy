@@ -19,6 +19,12 @@ Phase 15 introduces opaque `secret_ref`, `certificate_ref`, `credential_ref`, an
 owner, fingerprint, scope, timestamps, expiration, last use, and rotation/revocation controls only.
 GUI and advanced API use the same boundary.
 
+Current Proxy Host compiler receives only access-policy and certificate identifiers plus existing
+validated configuration. It has no secret resolver, environment access, network client, persistence
+handle, or runtime handle. Candidate and context `Debug` output summarizes IDs/counts and omits full
+configuration secret references. Public preview/redaction and remaining stored-credential object
+contracts are still Phase 15 work.
+
 Never put secret values in TOML, command arguments, logs, traces, audit records, screenshots,
 tickets, backups without encryption, or repository fixtures. See
 [certificate recovery](../operations/certificate-recovery.md) and [backup](../operations/backup.md).

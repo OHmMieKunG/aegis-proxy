@@ -1,8 +1,8 @@
 # AegisProxy verified status
 
 Verification date: 2026-07-22
-Branch: `dev`
-Verification basis: Phase 14 implementation through `8f41180`, plus pending completion documents
+Branch: `feat/phase-15-proxy-host-compiler`
+Verification basis: Phase 14 implementation plus Phase 15 Proxy Host compiler commit `fa7913f`
 Working tree at Phase 14 start: clean at `10aae8c`
 
 ## Release status
@@ -35,9 +35,10 @@ evidence.
 - ACME requires explicit low-level issuer/challenge policy; common automatic HTTPS is Phase 17.
 - SSE uses generic streaming and skips compression but lacks a focused protocol test.
 - Administration is typed but TOML/revision oriented; high-level domain APIs are Phase 15.
-- Phase 15 has a strict library-only `v1` envelope, stable IDs/ownership metadata, opaque
-  access-policy references, and common Proxy Host fields. No endpoint, persistence, typed diff, or
-  canonical configuration compiler exposes this contract yet.
+- Phase 15 has a strict library-only `v1` envelope and deterministic Proxy Host compiler. It
+  validates ownership, access-policy references, canonical domains, conflicts, listener/certificate
+  policy, and generated configuration through the existing semantic validator. No high-level
+  endpoint, object persistence service, typed preview/diff, or complete scope matrix exists yet.
 - Preview returns redacted config, fingerprints, and activation class; field-level diff is absent.
 - Restore validates archives but does not extract or activate them.
 - Fleet operation uses external orchestration; no cluster or consensus exists.
@@ -76,18 +77,18 @@ is split by domain, and no production Rust module exceeds 1,200 measured lines. 
 | `cargo fmt --all -- --check` | passed |
 | `cargo check --workspace --all-targets --all-features` | passed; transitive warning below |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | passed |
-| `cargo test --workspace --all-features` | passed: 268 passed, 2 intentionally ignored |
+| `cargo test --workspace --all-features` | passed: 274 passed, 2 intentionally ignored |
 | `cargo test --workspace --doc` | passed; no doctests defined |
 | valid configuration corpus | seven accepted |
 | invalid configuration corpus | three rejected as expected |
 | changed documentation link targets | passed; every added/changed relative target exists |
 | `cargo tree -e features` | passed; 2,439 output lines |
-| Phase 14 manifest/schema/OpenAPI comparison against `10aae8c` | passed; no differences |
+| Phase 15 manifest/schema/OpenAPI comparison against `2d533a8` | passed; no differences |
 
 ## Unavailable or incomplete checks
 
-- `cargo audit` and `cargo deny check`: Cargo reports `no such command`. Dated Elysium results are
-  not current scans.
+- `cargo nextest`, `cargo audit`, `cargo deny`, `cargo machete`, and `cargo llvm-cov`: Cargo reports
+  `no such command`. Dated Elysium audit/deny results are not current scans.
 - Docker/Compose: Docker Desktop reports WSL integration unavailable.
 - `systemd-analyze verify`: sandbox blocked its credential sockets with `Operation not permitted`;
   unit validation did not complete.

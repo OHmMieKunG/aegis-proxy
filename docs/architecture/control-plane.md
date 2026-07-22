@@ -12,6 +12,13 @@ backup creation, and restore validation. It is low-level and TOML/revision orien
 not produce a field-level diff. Restore does not extract state. No TCP/public admin listener or web
 GUI exists.
 
+Phase 15 now includes a library-only strict Proxy Host object and side-effect-free compiler. Caller
+RBAC supplies immutable owner, object, domain, policy, listener, certificate, and upstream-template
+metadata. Compiler emits a full canonical `Config` candidate, then invokes existing semantic
+validation. It cannot persist, activate, access runtime state, resolve DNS, or read secrets. Existing
+revision and activation services remain sole durable/runtime path. No high-level API route exposes
+this compiler yet.
+
 Machine contract: [`config/schema/admin-openapi.yaml`](../../config/schema/admin-openapi.yaml).
 
 ## Target model

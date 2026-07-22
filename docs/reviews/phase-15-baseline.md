@@ -37,3 +37,11 @@ Recorded: 2026-07-22
 
 Contract types alone do not make a feature implemented. No high-level endpoint is advertised until
 its object compiles through existing validation, revision, audit, RBAC, and activation machinery.
+
+## Progress
+
+The strict envelope and Proxy Host contract landed before the deterministic compiler in `fa7913f`.
+Compiler scope and validation evidence are recorded in
+[the Proxy Host compiler review](phase-15-proxy-host-compiler.md). Phase 15 remains in progress;
+typed endpoints, preview/diff, complete ownership/RBAC, scopes, remaining objects, and compatibility
+policy remain open.

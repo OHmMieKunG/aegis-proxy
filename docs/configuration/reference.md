@@ -10,6 +10,22 @@
 - Future schema versions fail closed on older binaries. There is no automatic downgrade or silent fallback.
 - `rust-proxy fmt` emits a normalized validated document and preserves secret references. `rust-proxy preview` is the safe export: it redacts secret-reference metadata and includes the compiled route fingerprint.
 
+## Typed Proxy Host compilation
+
+Phase 15 provides a library-only compiler from the strict seven-field Proxy Host object into this
+same schema-v1 model. It does not add TOML fields or an administrative endpoint. Canonical lowercase
+ASCII domains are required; Unicode, trailing dots, IP literals, and wildcards are rejected. Forward
+destinations accept canonical DNS names or IP literals with explicit nonzero ports and only `http`
+or verified `https`.
+
+Enabled objects add one deterministic route, upstream group, and endpoint. Group policy is copied
+from an explicitly selected validated template, preserving egress, DNS, health, retry, circuit, and
+resource limits. Access-policy references resolve to existing middleware IDs and fail when missing,
+disabled, unauthorized, or semantically incompatible. Disabled objects remain in typed
+control-plane state but add no route or upstream. Managed HTTPS selects an existing HTTPS listener
+and certificate covering the domain; compilation neither orders nor claims issuance of a
+certificate. Every result passes the normal semantic validator before it becomes a candidate.
+
 ## Routing rules
 
 - Host values are lowercase canonical ASCII DNS labels. Operators must supply valid IDNA A-labels (`xn--...`); Unicode U-labels are rejected. A wildcard covers one leftmost label only.

@@ -80,7 +80,18 @@ available gate passes.
 
 **Status:** in progress. Baseline:
 [`docs/reviews/phase-15-baseline.md`](docs/reviews/phase-15-baseline.md). Initial strict `v1` object
-envelope and Proxy Host contract exist, but no high-level endpoint or canonical compiler exists yet.
+envelope, Proxy Host contract, and deterministic canonical compiler exist. Compiler evidence:
+[`docs/reviews/phase-15-proxy-host-compiler.md`](docs/reviews/phase-15-proxy-host-compiler.md).
+No high-level mutation endpoint exists.
+
+**Completed units:** strict object envelope; stable object IDs and ownership metadata; seven-field
+Proxy Host contract; opaque access-policy reference; side-effect-free Proxy Host compiler into the
+existing canonical configuration model; semantic validation and candidate/revision isolation tests.
+
+**Remaining units:** typed candidate and preview service; field-level diff; complete ownership and
+RBAC enforcement; API-token scopes; typed mutation/activation endpoints; remaining domain objects;
+OpenAPI and CLI contracts; migration/compatibility policy and tests; full authorization/security
+review.
 
 **Objective:** provide versioned high-level objects usable by GUI and advanced automation.
 

@@ -6,8 +6,9 @@ The socket parent is mode `0700`; the socket is mode `0660`. A configured
 `admin.allowed_uids` list further restricts peer credentials. No TCP, plaintext
 remote, public bind, browser session, or web UI exists in v1.
 
-High-level domain API and GUI are planned for Phases 15–16. They must use this same server-side
-authorization, audit, concurrency, secret, and activation boundary.
+A strict Proxy Host object and library-only compiler now exist, but no high-level mutation endpoint
+uses them. Remaining high-level API and GUI work is planned for Phases 15–16 and must use this same
+server-side authorization, audit, concurrency, secret, and activation boundary.
 
 Local socket peers are authenticated by kernel credentials and receive the
 fixed `admin` role. Automation may additionally send a bearer API token. Token

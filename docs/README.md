@@ -8,6 +8,8 @@
 - [`SECURITY.md`](../SECURITY.md): private vulnerability reporting.
 - [Repository documentation audit](reviews/repository-documentation-audit.md): detailed capability
   evidence.
+- [Phase 15 Proxy Host compiler](reviews/phase-15-proxy-host-compiler.md): current high-level object
+  compilation boundary and validation evidence.
 
 ## Operators
 
