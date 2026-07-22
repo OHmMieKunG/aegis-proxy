@@ -56,6 +56,8 @@ rust-proxy proxy-host get --socket SOCKET OBJECT_ID
 rust-proxy proxy-host create --socket SOCKET --expect ACTIVE_REV proxy-host.json
 rust-proxy proxy-host update --socket SOCKET --expect ACTIVE_REV --generation N OBJECT_ID proxy-host.json
 rust-proxy proxy-host delete --socket SOCKET --expect ACTIVE_REV --generation N OBJECT_ID
+rust-proxy proxy-host activate --socket SOCKET --expect ACTIVE_REV CANDIDATE_REV
+rust-proxy proxy-host rollback --socket SOCKET --expect ACTIVE_REV HISTORICAL_REV
 rust-proxy proxy-host validate --socket SOCKET proxy-host.json
 rust-proxy proxy-host preview --socket SOCKET proxy-host.json
 ```
@@ -77,8 +79,11 @@ is capped at 1,000 entries. Missing or invalid bindings fail typed activation.
 The Admin-only `proxy-host activate --expect REV CANDIDATE` command activates a candidate only after
 the server recompiles all stored Proxy Hosts and verifies exact canonical content. It uses the
 normal atomic activation coordinator and does not change desired objects. Stale, orphaned,
-already-active, or unauthorized candidates fail closed. Typed rollback, access-policy objects, and
-certificate-policy objects remain unavailable.
+already-active, or unauthorized candidates fail closed. Admin-only typed rollback accepts only a
+retained bound historical revision, creates a new bound forward revision, journals and replaces
+desired objects, and invokes the same coordinator. Restart recovery reconciles the journal against
+the durable active revision before Admin starts. Access-policy and certificate-policy objects
+remain unavailable.
 
 Typed Proxy Host desired state has a separate internal schema-v1 JSON store. It is bounded to 4,096
 objects and 2 MiB, uses private directory/file permissions, stable owner/object ordering, globally

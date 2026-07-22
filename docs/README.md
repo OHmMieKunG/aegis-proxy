@@ -32,6 +32,8 @@
   verification, serialized audit boundary, atomic activation reuse, and rejection evidence.
 - [Phase 15 typed candidate binding](reviews/phase-15-proxy-host-candidate-binding.md): immutable
   desired-state snapshots, metadata linkage, tamper rejection, and compatibility evidence.
+- [Phase 15 typed rollback](reviews/phase-15-proxy-host-rollback.md): bound historical desired
+  state, forward revision, recovery journal, authorization, and validation evidence.
 
 ## Operators
 

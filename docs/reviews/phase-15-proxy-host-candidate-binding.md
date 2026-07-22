@@ -102,8 +102,8 @@ metadata struct gains this field during the pre-release Phase 15 contract cycle.
 
 Snapshot retention is bounded but not yet coordinated with configuration revision pruning. At the
 1,000-file cap, typed candidate creation fails closed until an approved cleanup operation exists.
-This must be resolved before Phase 15 exit. Current low-level rollback still does not restore typed
-desired state. A crash-safe typed rollback transaction is the next unit.
+This must be resolved before Phase 15 exit. Subsequent unit `69a5fe3` adds crash-safe typed forward
+rollback; see [its review](phase-15-proxy-host-rollback.md).
 
 The candidate-binding unit meets its gate. Phase 15 remains in progress and production remains
 NO-GO.

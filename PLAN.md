@@ -118,10 +118,15 @@ All administrative mutations are serialized while their durable audit transactio
 Typed candidates now carry an optional validated desired-state binding hash in immutable revision
 metadata. Typed create/update/delete persist a strict private owner/object-ordered snapshot before
 changing desired state; activation requires that snapshot to equal complete current desired state.
+Admin-only typed rollback loads one retained bound snapshot, compiles it against current manual
+configuration, creates a new bound forward revision, journals previous and target desired state,
+and delegates publication to the existing activation coordinator. Startup recovery converges the
+object store according to the durable active revision; unresolved recovery blocks mutation.
 
-**Remaining units:** add crash-safe typed rollback using bound desired-state history; access-policy
-and certificate objects; remaining domain objects; remaining OpenAPI and CLI contracts;
-migration/compatibility policy and tests; full authorization/security review.
+**Remaining units:** coordinate typed snapshot retention with configuration revision pruning;
+access-policy and certificate objects; remaining domain objects; remaining OpenAPI and CLI
+contracts; migration/compatibility policy and tests; transport module split; full
+authorization/security review.
 
 **Objective:** provide versioned high-level objects usable by GUI and advanced automation.
 

@@ -3,48 +3,44 @@
 Updated: 2026-07-22
 
 - Current branch: `work/autonomous-roadmap`
-- Current completed-unit commit: `9381542`
+- Current completed-unit commit: `b7a053b`
 - Current phase: Phase 15, in progress
-- Completed unit: immutable typed Proxy Host candidate desired-state binding
-- Implementation commit: `80a7f27`
-- Documentation commit: `9381542`
-- Remote: `origin/work/autonomous-roadmap` through `9381542`
-- Working tree before this handoff: clean
+- Completed unit: crash-safe typed Proxy Host forward rollback
+- Implementation commits: `69a5fe3`, `b7a053b`
+- Documentation commit: this handoff's documentation commit
+- Remote target: `origin/work/autonomous-roadmap`
+- Expected working tree after documentation commit: clean
 
 ## Validation status
 
-Format, all-target/all-feature workspace check, Clippy with denied warnings, 297 workspace tests,
+Format, all-target/all-feature workspace check, Clippy with denied warnings, 299 workspace tests,
 doc tests, Rustdoc, feature tree, fuzz-manifest check, targeted revision/object-store/Admin CLI
 tests, repository documentation links, added-line secret review, and `git diff --check` passed. Two
 intentional ignored tests remain:
 manual reload benchmark and Docker-backed Pebble integration.
 
-## Completed binding boundary
+## Completed rollback boundary
 
-Typed create/update/delete now persist a strict private immutable owner/object-ordered snapshot and
-bind its SHA-256 into revision metadata before desired-state mutation. Typed activation requires
-that binding, validates file identity/permissions/schema/hash, and requires exact equality with
-complete current desired state. Missing, low-level-unbound, mismatched, or tampered bindings fail
-without runtime change.
+Admin-only typed rollback loads a retained bound historical object snapshot, compiles it against
+current manual configuration, creates a new bound forward revision, journals previous and target
+desired state, and activates only through the existing coordinator. Failure restores previous
+objects. Indeterminate activation retains the journal; startup reconciles against the durable active
+revision before Admin starts. Unresolved recovery blocks all mutation.
 
 ## Remaining Phase 15 work
 
-Crash-safe typed rollback and coordinated snapshot retention; access-policy/certificate ownership;
+Coordinated snapshot retention; access-policy/certificate ownership;
 remaining domain objects and contracts; migration/compatibility tests; transport module split;
 full authorization/security review.
 
 ## Exact next task
 
-Implement a crash-recoverable typed rollback transaction. It must load a bound historical snapshot,
-create a new bound forward revision, durably journal prior/target desired state, coordinate exact
-object-store epoch replacement with the existing activation coordinator, restore prior desired
-state on activation failure, and recover an incomplete transaction on restart. Add tamper, stale,
-audit-failure, activation-failure, persistence-failure, and restart tests before exposing the route.
+Coordinate typed snapshot retention with configuration revision pruning. Preserve the active,
+previous, journal target, and every retained bound revision; remove only snapshots whose revisions
+were durably pruned. Add cap, restart, tamper, and rollback-target retention tests.
 
 ## Known risks
 
-- Configuration revision and typed desired-state updates remain two filesystem transactions.
-  Typed rollback needs its own recovery journal before safely changing both.
 - Typed snapshot retention is hard-bounded but not coordinated with configuration revision pruning;
   creation fails closed at 1,000 snapshot files.
 - Activation is intentionally global and Admin-only until candidate ownership/approval metadata

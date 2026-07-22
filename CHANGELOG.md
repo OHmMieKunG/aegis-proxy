@@ -42,5 +42,9 @@ AegisProxy has not published a supported release.
 - Bound typed candidates to strict immutable desired-state snapshots through a validated metadata
   hash. Creation persists the binding before desired-state mutation, and activation rejects
   missing, mismatched, or tampered bindings.
+- Added Admin-only typed Proxy Host forward rollback with an exact revision precondition, distinct
+  token scope, bound historical desired state, private crash-recovery journal, and existing atomic
+  activation coordinator.
+- Fixed token revocation CLI parsing for valid generated token IDs that begin with a hyphen.
 
 See [`STATUS.md`](STATUS.md) and [`docs/history/`](docs/history/README.md).

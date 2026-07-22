@@ -54,6 +54,10 @@ Immutable typed candidate snapshots contain only strict seven-field Proxy Host o
 is bound into revision metadata, and activation verifies file schema, permissions, size, revision
 identity, hash, canonical object order, and equality with current desired state. The snapshot has no
 field capable of carrying secret plaintext.
+Typed rollback loads only those bound snapshots and never resolves referenced secret material. Its
+private recovery journal contains previous and target secret-free typed records, not configuration
+or credentials. Audit and API errors use fixed failure codes. An unresolved journal blocks further
+mutation until restart recovery reconciles desired state with the durable active revision.
 
 Never put secret values in TOML, command arguments, logs, traces, audit records, screenshots,
 tickets, backups without encryption, or repository fixtures. See

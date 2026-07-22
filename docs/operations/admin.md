@@ -10,9 +10,10 @@ A strict Proxy Host object can be listed, read, validated, previewed, created, u
 its verified complete candidate activated through private typed endpoints. Create/update/delete
 persist desired state and an immutable candidate but never activate it. Admin-only activation
 recompiles current desired state, verifies candidate content, and uses the existing atomic
-coordinator. Typed rollback and remaining high-level objects are planned for Phase 15; GUI work
-remains Phase 16. All must use this same server-side authorization, audit, concurrency, secret,
-revision, and activation boundary.
+coordinator. Admin-only typed rollback restores a retained bound snapshot through a new forward
+revision and private recovery journal. Remaining high-level objects are planned for Phase 15; GUI
+work remains Phase 16. All must use this same server-side authorization, audit, concurrency,
+secret, revision, and activation boundary.
 
 Local socket peers are authenticated by kernel credentials and receive the
 fixed `admin` role. Automation may additionally send a bearer API token. Token
@@ -52,6 +53,7 @@ rust-proxy proxy-host create --socket SOCKET --expect REV proxy-host.json
 rust-proxy proxy-host update --socket SOCKET --expect REV --generation N OBJECT_ID proxy-host.json
 rust-proxy proxy-host delete --socket SOCKET --expect REV --generation N OBJECT_ID
 rust-proxy proxy-host activate --socket SOCKET --expect REV CANDIDATE_ID
+rust-proxy proxy-host rollback --socket SOCKET --expect REV HISTORICAL_REVISION
 rust-proxy proxy-host validate --socket SOCKET proxy-host.json
 rust-proxy proxy-host preview --socket SOCKET proxy-host.json
 rust-proxy backup create --socket SOCKET --expect REV --output /backup/aegis.age
@@ -84,6 +86,12 @@ Exact active revision, current complete desired-state compilation, immutable can
 immutable bound object snapshot plus unchanged desired-state epoch must all match. The request
 serializes with other audited mutations, then invokes the normal atomic coordinator. Operator
 tokens cannot activate typed candidates.
+Rollback requires Admin role and `rollback-proxy-host` for bearer tokens. The historical revision
+must carry a valid immutable typed binding. The server creates and activates a new forward revision;
+it never rewrites history or activates the historical file directly. An interrupted operation is
+recovered before Admin startup by comparing its private journal with the durable active revision.
+Do not edit or remove `admin/proxy-host-rollback.json`; unresolved recovery blocks mutations while
+the data plane continues serving its durable active configuration.
 
 ## Recovery and review
 

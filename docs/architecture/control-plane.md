@@ -12,8 +12,8 @@ Current API supports low-level validation, redacted preview, candidates, activat
 rollback, routes/upstreams/providers/certificates/status, token management, certificate renewal
 requests, backup creation, and restore validation. It also exposes owner-scoped typed Proxy Host
 list/get, non-persistent validation/preview, audited create/update/delete of desired state plus a
-non-active immutable candidate, and verified Admin-only candidate activation. Restore does not
-extract state. No TCP/public admin listener or web GUI exists.
+non-active immutable candidate, verified Admin-only candidate activation, and Admin-only typed
+forward rollback. Restore does not extract state. No TCP/public admin listener or web GUI exists.
 
 Phase 15 now includes a library-only strict Proxy Host object and side-effect-free compiler. Caller
 RBAC supplies immutable owner, object, domain, policy, listener, certificate, and upstream-template
@@ -86,6 +86,15 @@ activation coordinator. Missing, stale, orphaned, already-active, tampered, or u
 candidates fail without publication. The compiler itself still has no activation or persistence
 capability. Operator activation stays disabled until candidates carry safe ownership and approval
 metadata.
+
+`POST /v1/proxy-hosts/revisions/{id}/rollback` is the separate typed rollback boundary. It requires
+Admin role, exact `rollback_proxy_host` token scope, and exact active-revision CAS. The target must
+have valid bound typed desired state. The handler compiles that historical object set against the
+current manual configuration, creates a new immutable bound forward revision, journals previous
+and target object records, then invokes the same activation coordinator. It never activates the
+historical revision directly or rewrites history. Activation failure restores previous objects;
+an indeterminate activation retains the journal and blocks mutation. Startup selects target versus
+previous desired state from the durable active revision before serving Admin requests.
 
 Machine contract: [`config/schema/admin-openapi.yaml`](../../config/schema/admin-openapi.yaml).
 The checked contract requires nonempty canonical scopes when creating tokens and returns only token

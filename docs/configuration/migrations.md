@@ -37,6 +37,8 @@ Update and delete likewise add distinct `update-proxy-host` and `delete-proxy-ho
 (`update_proxy_host` and `delete_proxy_host` in JSON). Existing tokens gain neither.
 Typed activation adds `activate-proxy-host` (`activate_proxy_host` in JSON). It is Admin-only;
 existing tokens gain no scope automatically and operator tokens cannot request it.
+Typed rollback adds `rollback-proxy-host` (`rollback_proxy_host` in JSON) with the same Admin-only
+role ceiling. Existing tokens gain no scope automatically.
 
 The checked OpenAPI contract is [`../schema/admin-openapi.yaml`](../../config/schema/admin-openapi.yaml).
 No migration exposes token plaintext or stored password hashes.
@@ -57,3 +59,8 @@ Typed candidate snapshots use strict schema version 1 under
 old low-level revisions without it still load and remain usable through low-level configuration
 operations, but typed activation rejects them. No automatic binding is inferred from runtime
 configuration because disabled typed objects cannot be recovered from generated routes.
+
+Typed rollback uses strict schema version 1 at
+`<state_dir>/admin/proxy-host-rollback.json` only while a desired-state/runtime transaction is in
+progress. Startup fails closed on malformed, insecure, or oversized journal state and reconciles a
+valid journal against the durable active revision. Operators must not edit or delete this file.
