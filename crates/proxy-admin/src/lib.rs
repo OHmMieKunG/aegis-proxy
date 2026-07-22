@@ -8,6 +8,7 @@ mod auth;
 mod backup;
 mod compile;
 mod diff;
+mod object_store;
 mod preview;
 mod proxy_host;
 mod rbac;
@@ -28,6 +29,7 @@ pub use diff::{
     DiffOperation, ProxyHostDiff, ProxyHostDiffError, ProxyHostDiffValue, ProxyHostField,
     ProxyHostFieldChange, diff_proxy_host_previews,
 };
+pub use object_store::{ProxyHostStore, ProxyHostStoreError, StoredProxyHost};
 pub use preview::{
     CandidateActivation, GeneratedProxyHostPreview, ProxyHostCandidatePreview,
     ProxyHostPreviewError, ProxyHostPreviewSummary, preview_proxy_host_candidate,

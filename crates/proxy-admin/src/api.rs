@@ -1,7 +1,8 @@
 //! Versioned high-level administration contracts.
 
-use std::{fmt, str::FromStr};
+use std::{fmt, net::IpAddr, str::FromStr};
 
+use aegisproxy_config::{validate_exact_host, validate_upstream_hostname};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
@@ -169,10 +170,21 @@ pub struct ProxyHostSpec {
 impl ProxyHostSpec {
     /// Validate bounded contract shape before canonical configuration compilation.
     pub fn validate_shape(&self) -> Result<(), ContractError> {
-        if self.domain.is_empty() || self.domain.len() > MAX_DOMAIN_BYTES {
+        if self.domain.is_empty()
+            || self.domain.len() > MAX_DOMAIN_BYTES
+            || !self.domain.is_ascii()
+            || self.domain.ends_with('.')
+            || self.domain.contains('*')
+            || self.domain.parse::<IpAddr>().is_ok()
+            || validate_exact_host(&self.domain).is_err()
+        {
             return Err(ContractError::InvalidDomain);
         }
-        if self.forward_host.is_empty() || self.forward_host.len() > MAX_FORWARD_HOST_BYTES {
+        if self.forward_host.is_empty()
+            || self.forward_host.len() > MAX_FORWARD_HOST_BYTES
+            || (self.forward_host.parse::<IpAddr>().is_err()
+                && validate_upstream_hostname(&self.forward_host).is_err())
+        {
             return Err(ContractError::InvalidForwardHost);
         }
         if self.forward_port == 0 {
@@ -269,5 +281,29 @@ mod tests {
         ] {
             assert!(!encoded.contains(forbidden));
         }
+    }
+
+    #[test]
+    fn proxy_host_shape_requires_canonical_domain_and_upstream() {
+        let mut object: ApiObject<ProxyHostSpec> =
+            serde_json::from_str(OBJECT).expect("valid object");
+        for domain in [
+            "Example.test",
+            "example.test.",
+            "*.example.test",
+            "127.0.0.1",
+        ] {
+            object.spec.domain = domain.into();
+            assert_eq!(
+                object.spec.validate_shape(),
+                Err(ContractError::InvalidDomain)
+            );
+        }
+        object.spec.domain = "example.test".into();
+        object.spec.forward_host = "bad_host".into();
+        assert_eq!(
+            object.spec.validate_shape(),
+            Err(ContractError::InvalidForwardHost)
+        );
     }
 }
