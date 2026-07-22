@@ -6,16 +6,18 @@ The socket parent is mode `0700`; the socket is mode `0660`. A configured
 `admin.allowed_uids` list further restricts peer credentials. No TCP, plaintext
 remote, public bind, browser session, or web UI exists in v1.
 
-A strict Proxy Host object and library-only compiler now exist, but no high-level mutation endpoint
-uses them. Remaining high-level API and GUI work is planned for Phases 15–16 and must use this same
-server-side authorization, audit, concurrency, secret, and activation boundary.
+A strict Proxy Host object can be validated or previewed through private read-only endpoints, but no
+high-level mutation endpoint uses it. Remaining high-level API and GUI work is planned for Phases
+15–16 and must use this same server-side authorization, audit, concurrency, secret, and activation
+boundary.
 
 Local socket peers are authenticated by kernel credentials and receive the
 fixed `admin` role. Automation may additionally send a bearer API token. Token
 plaintext is returned once, only hashes are persisted, and tokens have explicit
 expiry, revocation state, and action scopes. Effective permission is the intersection of the token's
 role and explicit scopes. Legacy records without scopes load deny-all and must be replaced through a
-local authorized Unix peer. CLI `--token-ref` accepts only `env://NAME` or an
+local authorized Unix peer. New tokens inherit creator's typed owner. Legacy records without owner
+metadata cannot use typed Proxy Host endpoints. CLI `--token-ref` accepts only `env://NAME` or an
 absolute `file:///path`; token values never belong in command arguments.
 
 ## Mutation safety
@@ -41,6 +43,8 @@ rust-proxy config rollback --socket SOCKET REV --expect CURRENT
 rust-proxy token create --socket SOCKET --expect REV --role operator --scope read-status
 rust-proxy token list --socket SOCKET --token-ref file:///run/secrets/admin-token
 rust-proxy token revoke --socket SOCKET --expect REV TOKEN_ID
+rust-proxy proxy-host validate --socket SOCKET proxy-host.json
+rust-proxy proxy-host preview --socket SOCKET proxy-host.json
 rust-proxy backup create --socket SOCKET --expect REV --output /backup/aegis.age
 rust-proxy backup verify /backup/aegis.age --identity file:///run/secrets/age-identity
 rust-proxy restore validate --socket SOCKET --expect REV /backup/aegis.age --identity file:///run/secrets/age-identity
@@ -50,6 +54,12 @@ The CLI defaults to `/run/rust-proxy/admin.sock`; pass `--socket` when the
 configured path differs. Exit codes are `0` success, `2` usage, `3` invalid
 input/configuration, `4` revision conflict, `5` authentication/authorization,
 `6` unavailable/failure, and `7` reserved for partial operational warnings.
+
+For local socket authentication, `metadata.owner_id` in `proxy-host.json` is `uid-<uid>`. Bearer
+requests use owner persisted with token. Validation requires `validate-config`; preview requires
+`preview-config`. Both compile and semantically validate a redacted candidate without writing state,
+creating a revision, or activating runtime configuration. Current endpoint policy rejects
+access-policy references and managed HTTPS until typed ownership metadata is implemented.
 
 ## Recovery and review
 

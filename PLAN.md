@@ -82,18 +82,22 @@ available gate passes.
 [`docs/reviews/phase-15-baseline.md`](docs/reviews/phase-15-baseline.md). Initial strict `v1` object
 envelope, Proxy Host contract, and deterministic canonical compiler exist. Compiler evidence:
 [`docs/reviews/phase-15-proxy-host-compiler.md`](docs/reviews/phase-15-proxy-host-compiler.md).
-No high-level mutation endpoint exists.
+No high-level mutation endpoint exists. Private owner-aware validation and preview endpoints are
+available, but they neither persist typed objects nor activate candidates.
 
 **Completed units:** strict object envelope; stable object IDs and ownership metadata; seven-field
 Proxy Host contract; opaque access-policy reference; side-effect-free Proxy Host compiler into the
 existing canonical configuration model; semantic validation and candidate/revision isolation tests;
 safe deterministic typed candidate preview with mandatory redaction and restart classification;
 bounded ordered typed field-level diff with owner/object identity checks; explicit deny-by-default
-API-token scopes enforced as the intersection of role and scope.
+API-token scopes enforced as the intersection of role and scope; stable owner identity persisted
+with new tokens; private owner-aware Proxy Host validation and redacted preview endpoints with CLI
+coverage and authorization-before-deserialization.
 
-**Remaining units:** complete typed-object ownership and RBAC enforcement; typed
-mutation/activation endpoints; remaining domain objects; remaining OpenAPI and CLI contracts;
-migration/compatibility policy and tests; full authorization/security review.
+**Remaining units:** typed object persistence and complete ownership/RBAC metadata; typed
+mutation/activation endpoints; access-policy and certificate objects; remaining domain objects;
+remaining OpenAPI and CLI contracts; migration/compatibility policy and tests; full
+authorization/security review.
 
 **Objective:** provide versioned high-level objects usable by GUI and advanced automation.
 

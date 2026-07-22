@@ -9,10 +9,11 @@ Phase 15 adds a required `scopes` list to token creation. Each value is one chec
 action. A token is authorized only when both its role and scopes allow the action. The CLI requires
 one or more repeated `--scope` options.
 
-Existing private `admin/tokens.json` records without `scopes` still parse under token-file schema 1,
-but receive an empty scope set and therefore authorize no action. This is intentional fail-closed
-compatibility, not an automatic privilege migration. Token hashes and plaintext cannot be converted
-into newly scoped credentials.
+Existing private `admin/tokens.json` records without `scopes` or `owner_id` still parse under
+token-file schema 1. Missing scopes become an empty set and authorize no action. A missing owner also
+prevents typed-object access. This is intentional fail-closed compatibility, not an automatic
+privilege migration. Token hashes and plaintext cannot be converted into newly scoped and owned
+credentials.
 
 To replace a legacy token:
 

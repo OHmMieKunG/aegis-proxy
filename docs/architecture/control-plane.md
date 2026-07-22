@@ -8,17 +8,17 @@ explicit action scope, so effective permission is role intersection scope. Mutat
 quoted `If-Match`, durable HMAC-chained audit intent, validated candidate state, and atomic
 activation.
 
-Current API supports validation, redacted preview, candidates, activation, revisions, rollback,
-routes/upstreams/providers/certificates/status, token management, certificate renewal requests,
-backup creation, and restore validation. It is low-level and TOML/revision oriented. Restore does
-not extract state. No TCP/public admin listener or web GUI exists.
+Current API supports low-level validation, redacted preview, candidates, activation, revisions,
+rollback, routes/upstreams/providers/certificates/status, token management, certificate renewal
+requests, backup creation, and restore validation. It also exposes non-persistent typed Proxy Host
+validation and preview. Restore does not extract state. No TCP/public admin listener or web GUI
+exists.
 
 Phase 15 now includes a library-only strict Proxy Host object and side-effect-free compiler. Caller
 RBAC supplies immutable owner, object, domain, policy, listener, certificate, and upstream-template
 metadata. Compiler emits a full canonical `Config` candidate, then invokes existing semantic
 validation. It cannot persist, activate, access runtime state, resolve DNS, or read secrets. Existing
-revision and activation services remain sole durable/runtime path. No high-level API route exposes
-this compiler yet.
+revision and activation services remain sole durable/runtime path.
 
 Compiled Proxy Hosts can now produce a deterministic typed preview containing desired fields,
 generated resource IDs, canonical candidate hash, route fingerprints, and hot-reload/restart class.
@@ -26,11 +26,16 @@ Preview revalidates active and candidate configuration, returns only a redacted 
 and has no runtime, persistence, audit, filesystem, environment, or network handle. A separate pure
 typed diff compares owner/object-matched preview summaries using a fixed eight-field vocabulary and
 stable order. It never accepts raw JSON or configuration values and cannot persist or activate.
-Public typed endpoints remain incomplete.
+`POST /v1/proxy-hosts/validate` requires `validate_config`; `POST /v1/proxy-hosts/preview` requires
+`preview_config`. Custom principal extractors enforce token role/scope before JSON deserialization.
+Request owner must equal Unix peer's stable `uid-<uid>` owner or owner stored with its bearer token.
+Preparation runs off async worker and accepts exactly one configured HTTP listener and one all-HTTP
+upstream template. Access-policy and managed-HTTPS requests fail closed until typed ownership
+metadata exists. Endpoints expose no persistence, audit mutation, revision, or activation handle.
 
 Machine contract: [`config/schema/admin-openapi.yaml`](../../config/schema/admin-openapi.yaml).
 The checked contract requires nonempty canonical scopes when creating tokens and returns only token
-ID, role, scopes, expiry, and revocation metadata after the one-time plaintext response.
+ID, role, owner ID, scopes, expiry, and revocation metadata after the one-time plaintext response.
 
 ## Target model
 

@@ -16,6 +16,8 @@
   contract and validation evidence.
 - [Phase 15 API-token scopes](reviews/phase-15-api-token-scopes.md): role-intersection authorization,
   migration behavior, and validation evidence.
+- [Phase 15 Proxy Host endpoints](reviews/phase-15-proxy-host-endpoints.md): owner-aware private
+  validation/preview boundary, CLI contract, and validation evidence.
 
 ## Operators
 

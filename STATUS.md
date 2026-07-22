@@ -3,7 +3,7 @@
 Verification date: 2026-07-22
 Branch: `work/autonomous-roadmap`
 Verification basis: Phase 14 plus Phase 15 compiler `fa7913f`, preview service `d3de105`, typed diff
-`2617f0e`, and API-token scopes `81bd500`
+`2617f0e`, API-token scopes `81bd500`, and owned Proxy Host endpoints `00cfa32`
 Working tree at Phase 14 start: clean at `10aae8c`
 
 ## Release status
@@ -35,13 +35,15 @@ evidence.
 
 - ACME requires explicit low-level issuer/challenge policy; common automatic HTTPS is Phase 17.
 - SSE uses generic streaming and skips compression but lacks a focused protocol test.
-- Administration is typed but TOML/revision oriented; high-level domain APIs are Phase 15.
+- Administration remains primarily TOML/revision oriented; high-level domain APIs are Phase 15.
 - Phase 15 has a strict library-only `v1` envelope, deterministic Proxy Host compiler, safe
   side-effect-free typed preview, and bounded field-level diff. Existing primitives validate
   ownership, references, domains, conflicts, listener/certificate policy, generated configuration,
   redaction, fingerprints, restart classification, and owner/object identity during diff. Existing
-  low-level API tokens use a complete 17-action role-and-scope intersection. No high-level endpoint,
-  object persistence service, or typed-object ownership matrix exists yet.
+  low-level API tokens use a complete 17-action role-and-scope intersection. Private typed Proxy
+  Host validation and preview endpoints authenticate and authorize before JSON deserialization,
+  enforce principal ownership, and cannot persist or activate. Object persistence, typed mutation,
+  certificate/access-policy ownership metadata, and a complete ownership matrix do not exist yet.
 - Preview returns redacted config, fingerprints, and activation class; a separate pure function
   produces the ordered typed diff. Neither can persist or activate candidates.
 - Restore validates archives but does not extract or activate them.
@@ -81,14 +83,14 @@ is split by domain, and no production Rust module exceeds 1,200 measured lines. 
 | `cargo fmt --all -- --check` | passed |
 | `cargo check --workspace --all-targets --all-features` | passed; transitive warning below |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | passed |
-| `cargo test --workspace --all-features` | passed: 284 passed, 2 intentionally ignored |
+| `cargo test --workspace --all-features` | passed: 287 passed, 2 intentionally ignored |
 | `cargo test --workspace --doc` | passed; no doctests defined |
 | valid configuration corpus | seven accepted |
 | invalid configuration corpus | three rejected as expected |
 | changed documentation link targets | passed; every added/changed relative target exists |
 | `cargo tree -e features` | passed; 2,439 output lines |
 | Phase 15 manifest/config-schema comparison against `2d533a8` | passed; no differences |
-| Admin OpenAPI | intentionally changed for required token scopes and hash-free metadata |
+| Admin OpenAPI | parsed with Python/PyYAML; intentionally changed for owned typed preview and token owner metadata |
 
 ## Unavailable or incomplete checks
 

@@ -19,5 +19,7 @@ AegisProxy has not published a supported release.
   identity checks, and explicit generated-resource add/remove operations.
 - Required explicit API-token action scopes, enforced as role-and-scope intersection; legacy
   unscoped records load deny-all and token metadata remains hash-free.
+- Added private owner-aware Proxy Host validation and redacted preview endpoints plus CLI commands;
+  authorization precedes typed deserialization and these endpoints cannot persist or activate.
 
 See [`STATUS.md`](STATUS.md) and [`docs/history/`](docs/history/README.md).

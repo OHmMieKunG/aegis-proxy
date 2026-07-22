@@ -12,11 +12,10 @@
 
 ## Typed Proxy Host compilation
 
-Phase 15 provides a library-only compiler from the strict seven-field Proxy Host object into this
-same schema-v1 model. It does not add TOML fields or an administrative endpoint. Canonical lowercase
-ASCII domains are required; Unicode, trailing dots, IP literals, and wildcards are rejected. Forward
-destinations accept canonical DNS names or IP literals with explicit nonzero ports and only `http`
-or verified `https`.
+Phase 15 provides a compiler from the strict seven-field Proxy Host object into this same schema-v1
+model. It adds no TOML fields. Canonical lowercase ASCII domains are required; Unicode, trailing
+dots, IP literals, and wildcards are rejected. Forward destinations accept canonical DNS names or
+IP literals with explicit nonzero ports and only `http` or verified `https`.
 
 Enabled objects add one deterministic route, upstream group, and endpoint. Group policy is copied
 from an explicitly selected validated template, preserving egress, DNS, health, retry, circuit, and
@@ -29,14 +28,29 @@ certificate. Every result passes the normal semantic validator before it becomes
 Library consumers may create a typed preview from a compiled candidate and active configuration.
 Preview revalidates both inputs, returns generated resource IDs, canonical hash, route fingerprints,
 and hot-reload/restart classification, plus a configuration clone where every secret reference is
-replaced with `<redacted-secret-reference>`. Preview does not persist or activate anything. No CLI or
-administrative endpoint exposes this high-level preview yet.
+replaced with `<redacted-secret-reference>`. Preview does not persist or activate anything. Private
+administrative validation and preview endpoints expose this high-level result without persistence
+or activation.
 
 Library consumers may compare an optional current preview summary with a candidate summary. The
 result is an ordered, bounded typed diff over the seven Proxy Host fields plus generated resources.
 Creation uses explicit additions; updates use replacements; disabling removes generated resources.
 Version, object, or owner mismatches fail closed. The diff contains opaque access-policy references,
 never policy contents or raw configuration, and performs no persistence or activation.
+
+The private typed endpoints are `POST /v1/proxy-hosts/validate` and
+`POST /v1/proxy-hosts/preview`. Their CLI equivalents accept a strict JSON object:
+
+```text
+rust-proxy proxy-host validate --socket SOCKET proxy-host.json
+rust-proxy proxy-host preview --socket SOCKET proxy-host.json
+```
+
+Local peer ownership is `uid-<uid>`; new bearer tokens inherit their creator's owner. Current
+endpoint preparation supports `automatic_https = "disabled"` with no access-policy reference and
+requires exactly one HTTP listener and one all-HTTP upstream template in active configuration.
+Managed HTTPS and access policies fail closed until their typed ownership metadata exists. These
+restrictions apply to endpoints, not lower-level compiler contract.
 
 ## Routing rules
 
