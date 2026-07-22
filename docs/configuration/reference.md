@@ -26,6 +26,12 @@ control-plane state but add no route or upstream. Managed HTTPS selects an exist
 and certificate covering the domain; compilation neither orders nor claims issuance of a
 certificate. Every result passes the normal semantic validator before it becomes a candidate.
 
+Library consumers may create a typed preview from a compiled candidate and active configuration.
+Preview revalidates both inputs, returns generated resource IDs, canonical hash, route fingerprints,
+and hot-reload/restart classification, plus a configuration clone where every secret reference is
+replaced with `<redacted-secret-reference>`. Preview does not persist or activate anything. No CLI or
+administrative endpoint exposes this high-level preview yet.
+
 ## Routing rules
 
 - Host values are lowercase canonical ASCII DNS labels. Operators must supply valid IDNA A-labels (`xn--...`); Unicode U-labels are rejected. A wildcard covers one leftmost label only.

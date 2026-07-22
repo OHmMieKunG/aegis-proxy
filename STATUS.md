@@ -1,8 +1,8 @@
 # AegisProxy verified status
 
 Verification date: 2026-07-22
-Branch: `feat/phase-15-proxy-host-compiler`
-Verification basis: Phase 14 implementation plus Phase 15 Proxy Host compiler commit `fa7913f`
+Branch: `work/autonomous-roadmap`
+Verification basis: Phase 14 plus Phase 15 compiler `fa7913f` and preview service `d3de105`
 Working tree at Phase 14 start: clean at `10aae8c`
 
 ## Release status
@@ -35,10 +35,11 @@ evidence.
 - ACME requires explicit low-level issuer/challenge policy; common automatic HTTPS is Phase 17.
 - SSE uses generic streaming and skips compression but lacks a focused protocol test.
 - Administration is typed but TOML/revision oriented; high-level domain APIs are Phase 15.
-- Phase 15 has a strict library-only `v1` envelope and deterministic Proxy Host compiler. It
-  validates ownership, access-policy references, canonical domains, conflicts, listener/certificate
-  policy, and generated configuration through the existing semantic validator. No high-level
-  endpoint, object persistence service, typed preview/diff, or complete scope matrix exists yet.
+- Phase 15 has a strict library-only `v1` envelope, deterministic Proxy Host compiler, and safe
+  side-effect-free typed preview service. Existing primitives validate ownership, references,
+  domains, conflicts, listener/certificate policy, generated configuration, redaction, fingerprints,
+  and restart classification. No high-level endpoint, object persistence service, typed field-level
+  diff, or complete scope matrix exists yet.
 - Preview returns redacted config, fingerprints, and activation class; field-level diff is absent.
 - Restore validates archives but does not extract or activate them.
 - Fleet operation uses external orchestration; no cluster or consensus exists.
@@ -77,7 +78,7 @@ is split by domain, and no production Rust module exceeds 1,200 measured lines. 
 | `cargo fmt --all -- --check` | passed |
 | `cargo check --workspace --all-targets --all-features` | passed; transitive warning below |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | passed |
-| `cargo test --workspace --all-features` | passed: 274 passed, 2 intentionally ignored |
+| `cargo test --workspace --all-features` | passed: 278 passed, 2 intentionally ignored |
 | `cargo test --workspace --doc` | passed; no doctests defined |
 | valid configuration corpus | seven accepted |
 | invalid configuration corpus | three rejected as expected |

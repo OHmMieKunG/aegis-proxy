@@ -19,6 +19,12 @@ validation. It cannot persist, activate, access runtime state, resolve DNS, or r
 revision and activation services remain sole durable/runtime path. No high-level API route exposes
 this compiler yet.
 
+Compiled Proxy Hosts can now produce a deterministic typed preview containing desired fields,
+generated resource IDs, canonical candidate hash, route fingerprints, and hot-reload/restart class.
+Preview revalidates active and candidate configuration, returns only a redacted configuration clone,
+and has no runtime, persistence, audit, filesystem, environment, or network handle. Field-level diff
+and public typed endpoints remain incomplete.
+
 Machine contract: [`config/schema/admin-openapi.yaml`](../../config/schema/admin-openapi.yaml).
 
 ## Target model

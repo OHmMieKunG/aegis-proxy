@@ -10,6 +10,8 @@
   evidence.
 - [Phase 15 Proxy Host compiler](reviews/phase-15-proxy-host-compiler.md): current high-level object
   compilation boundary and validation evidence.
+- [Phase 15 candidate preview](reviews/phase-15-candidate-preview.md): safe typed preview boundary
+  and validation evidence.
 
 ## Operators
 

@@ -13,5 +13,7 @@ AegisProxy has not published a supported release.
   it is not yet exposed as an administrative endpoint.
 - Added side-effect-free deterministic Proxy Host compilation into canonical validated configuration
   candidates, with fail-closed ownership, policy, domain, identifier, and certificate checks.
+- Added deterministic typed Proxy Host candidate previews with mandatory semantic validation,
+  secret-reference redaction, generated-resource summaries, fingerprints, and restart classification.
 
 See [`STATUS.md`](STATUS.md) and [`docs/history/`](docs/history/README.md).
