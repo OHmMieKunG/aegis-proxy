@@ -3,10 +3,10 @@
 Updated: 2026-07-27
 
 - Current branch: `work/autonomous-roadmap`
-- Current completed-unit commit: `334916d`
+- Current completed-unit commit: `c12f1c3`
 - Current phase: Phase 15, in progress
-- Completed unit: audited owner-scoped Access Policy update/delete
-- Implementation commit: `334916d`
+- Completed unit: non-persistent Proxy Host Access Policy validation/preview
+- Implementation commit: `c12f1c3`
 - Documentation commit: this handoff's documentation commit
 - Remote target: `origin/work/autonomous-roadmap`
 - Expected working tree after documentation commit: clean
@@ -41,14 +41,13 @@ update hide cross-owner existence. Both preserve runtime and configuration revis
 
 ## Remaining Phase 15 work
 
-Proxy Host Access Policy wiring; certificate ownership; remaining domain objects and contracts;
+Revision-bound Proxy Host Access Policy candidates/activation; certificate ownership; remaining domain objects and contracts;
 migration/compatibility tests; transport module split; full authorization/security review.
 
 ## Exact next task
 
-Bind Access Policy desired state into typed Proxy Host candidate snapshots so authorization and
-policy generations are validated and immutable candidates cannot consume indeterminate or changed
-policy state before activation.
+Extend typed Proxy Host candidate bindings with referenced Access Policy generation and
+authorization state, then revalidate that binding before activation and rollback.
 
 ## Known risks
 

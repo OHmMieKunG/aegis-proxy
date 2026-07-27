@@ -144,8 +144,11 @@ secret-free desired state, and never creates or activates a configuration revisi
 Audited owner-scoped update/delete now additionally require exact object generation, hide
 cross-owner existence, validate replacement middleware before persistence, and preserve the same
 non-activation boundary.
+Proxy Host validation/preview now resolves one owned or explicitly shared Access Policy from a
+recovery-safe metadata snapshot. Persisted candidates and activation remain fail closed until
+referenced policy generation and authorization state are included in the immutable binding.
 
-**Remaining units:** Proxy Host Access Policy wiring; certificate objects; remaining domain
+**Remaining units:** revision-bound Proxy Host Access Policy candidates/activation; certificate objects; remaining domain
 objects; remaining OpenAPI and CLI contracts; migration/compatibility policy and tests; transport
 module split; full authorization/security review.
 

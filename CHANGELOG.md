@@ -64,6 +64,8 @@ AegisProxy has not published a supported release.
 - Added audited owner-scoped Access Policy update/delete with active-revision and object-generation
   concurrency, semantic update validation, cross-owner not-found behavior, and no runtime
   activation.
+- Enabled side-effect-free Proxy Host validation/preview for owned or explicitly shared Access
+  Policy references; persisted candidates remain blocked pending policy dependency binding.
 - Fixed token revocation CLI parsing for valid generated token IDs that begin with a hyphen.
 
 See [`STATUS.md`](STATUS.md) and [`docs/history/`](docs/history/README.md).

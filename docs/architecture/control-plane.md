@@ -98,6 +98,12 @@ require `X-Aegis-Object-Generation`, preserve owner-scoped not-found behavior, a
 replacement middleware before generation CAS. They also create no configuration revision or
 runtime activation. Proxy Host endpoints still reject every policy reference.
 
+Proxy Host validation and preview are the first narrow exception: they load only the referenced
+policy's secret-free metadata, fail closed during policy-store recovery, and rely on the compiler's
+owner/share/enabled checks. They remain side-effect free. Candidate creation, mutation, activation,
+and rollback continue to reject policy references because current candidate bindings attest only
+to Proxy Host objects, not policy generation and authorization state.
+
 `PUT` and `DELETE /v1/proxy-hosts/{id}` follow the same ordering. They require
 `X-Aegis-Object-Generation` in addition to active-revision `If-Match`. Update enforces path/body
 identity and owner equality; delete resolves only within authenticated owner. Stale generation or

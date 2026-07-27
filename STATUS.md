@@ -13,7 +13,8 @@ Policy persistence `58f30dc`, dedicated Access Policy scopes/startup wiring `8eb
 owner-scoped Access Policy reads `ef115a6`. Post-rename Access Policy durability failures now gate
 all later policy writes until restart reconciliation (`697f530`); audited owner-scoped creation is
 available through the API and CLI (`926eb68`), with dual-concurrency update/delete following in
-`334916d`.
+`334916d`. Proxy Host validation/preview can now resolve one owned or explicitly shared policy
+without persistence (`c12f1c3`).
 
 Working tree at Phase 14 start: clean at `10aae8c`
 
@@ -89,8 +90,10 @@ evidence.
   active configuration, persists generation one, and never creates or activates a configuration
   revision. Update/delete require the active revision and exact object generation, preserve
   owner-scoped not-found behavior, validate updates before persistence, and likewise create no
-  configuration revision or runtime activation. Proxy Host endpoints still reject policy
-  references until reference wiring exists.
+  configuration revision or runtime activation. Proxy Host validation/preview resolve one
+  referenced policy through secret-free metadata and retain the non-persistent boundary.
+  Create/update/delete, activation, and rollback still reject policy references until policy
+  dependencies are included in immutable candidate bindings.
 - Preview returns redacted config, fingerprints, and activation class; a separate pure function
   produces the ordered typed diff. Neither can persist or activate candidates.
 - Restore validates archives but does not extract or activate them.
@@ -173,6 +176,7 @@ release. Dated exception: [dependency review](docs/security/dependency-unsafe-re
 - [Typed Access Policy recovery-gate review](docs/reviews/phase-15-access-policy-recovery-gate.md)
 - [Typed Access Policy create review](docs/reviews/phase-15-access-policy-create.md)
 - [Typed Access Policy update/delete review](docs/reviews/phase-15-access-policy-update-delete.md)
+- [Typed Access Policy preview wiring review](docs/reviews/phase-15-access-policy-preview-wiring.md)
 - [Historical evidence](docs/history/README.md)
 
 High-level user guides remain absent until Phase 15 defines stable objects and Phase 16 implements

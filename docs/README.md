@@ -51,6 +51,8 @@
   persistence with active-config validation and no runtime activation.
 - [Phase 15 Access Policy update/delete](reviews/phase-15-access-policy-update-delete.md): dual
   concurrency, owner isolation, semantic update validation, and non-activation evidence.
+- [Phase 15 Access Policy preview wiring](reviews/phase-15-access-policy-preview-wiring.md):
+  secret-free owner/share resolution for non-persistent Proxy Host validation and preview.
 
 ## Operators
 

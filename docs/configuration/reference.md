@@ -29,8 +29,10 @@ The current library-only Access Policy contract contains `enabled`, bounded expl
 `shared_with`, and 1–64 canonical middleware references. It carries no middleware body or secret.
 Metadata compilation accepts only existing IP policy, client/principal rate limit, in-flight limit,
 BasicAuth, and ForwardAuth definitions, applies fixed-stage compatibility rules, and sorts IDs.
-Policy IDs must be globally unique when persistence is added. Admin endpoints still fail closed on
-every Proxy Host policy reference; this contract is not yet an operator workflow.
+Policy IDs are globally unique. Proxy Host validation/preview may resolve one owned or explicitly
+shared enabled policy and show its canonical middleware IDs in the redacted non-active preview.
+Candidate creation, update/delete, activation, and rollback still fail closed on policy references
+until policy dependencies are included in immutable candidate bindings.
 
 Complete desired state may be compiled with explicit current and desired object sets. Current stored
 identities reserve deterministic generated namespaces; only complete compiler-shaped
