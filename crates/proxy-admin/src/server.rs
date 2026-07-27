@@ -46,7 +46,8 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     AccessPolicyStore, Action, ApiObject, AuditEvent, AuditLog, AuditOutcome, ObjectId,
     PreparedProxyHost, ProxyHostPreparationError, ProxyHostPreviewSummary, ProxyHostSpec,
-    ProxyHostStore, ProxyHostStoreError, Role, StoredProxyHost, TokenScopes, TokenStore,
+    ProxyHostStore, ProxyHostStoreError, Role, StoredAccessPolicy, StoredProxyHost, TokenScopes,
+    TokenStore,
 };
 use handlers::*;
 use support::*;
@@ -84,7 +85,7 @@ struct AppState {
     control: ManagedControl,
     tokens: Arc<TokenStore>,
     proxy_hosts: Arc<ProxyHostStore>,
-    _access_policies: Arc<AccessPolicyStore>,
+    access_policies: Arc<AccessPolicyStore>,
     audit: Option<Arc<AuditLog>>,
     allowed_uids: Arc<[u32]>,
     auth_permits: Arc<Semaphore>,
@@ -650,7 +651,7 @@ pub async fn serve(
         control,
         tokens: Arc::new(tokens),
         proxy_hosts: Arc::new(proxy_host_store),
-        _access_policies: Arc::new(access_policy_store),
+        access_policies: Arc::new(access_policy_store),
         audit,
         allowed_uids: Arc::from(config.admin.allowed_uids.clone()),
         auth_permits: Arc::new(Semaphore::new(config.admin.max_auth_in_flight)),
@@ -680,6 +681,8 @@ pub async fn serve(
         .route("/v1/config/validate", post(validate_config))
         .route("/v1/config/preview", post(preview_config))
         .route("/v1/proxy-hosts", get(proxy_hosts).post(create_proxy_host))
+        .route("/v1/access-policies", get(access_policies))
+        .route("/v1/access-policies/{id}", get(access_policy))
         .route(
             "/v1/proxy-hosts/{id}",
             get(proxy_host)

@@ -57,6 +57,8 @@ fn checked_openapi_contains_every_private_route() {
         "/v1/config/active:",
         "/v1/config/validate:",
         "/v1/config/preview:",
+        "/v1/access-policies:",
+        "/v1/access-policies/{id}:",
         "/v1/proxy-hosts:",
         "/v1/proxy-hosts/{id}:",
         "/v1/proxy-hosts/validate:",
@@ -84,6 +86,7 @@ fn checked_openapi_contains_every_private_route() {
     assert!(!openapi.contains("0.0.0.0"));
     assert!(!openapi.contains("private_key"));
     assert!(!openapi.contains("password_hash"));
+    assert!(openapi.contains("pattern: '^[a-z][a-z0-9_-]{0,62}$'"));
     let scopes = [
         "read_status",
         "read_config",

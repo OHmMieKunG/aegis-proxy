@@ -278,6 +278,40 @@ pub(super) async fn proxy_host(
     Ok(response)
 }
 
+pub(super) async fn access_policies(
+    State(state): State<AppState>,
+    principal: Principal,
+) -> Result<axum::Json<Vec<StoredAccessPolicy>>, ApiError> {
+    authorize(&principal, Action::ReadAccessPolicies)?;
+    let owner = principal.owner_id.ok_or(ApiError::Forbidden)?;
+    let store = Arc::clone(&state.access_policies);
+    tokio::task::spawn_blocking(move || store.list(&owner))
+        .await
+        .map(axum::Json)
+        .map_err(|_| ApiError::Internal)
+}
+
+pub(super) async fn access_policy(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    principal: Principal,
+) -> Result<Response, ApiError> {
+    authorize(&principal, Action::ReadAccessPolicies)?;
+    let owner = principal.owner_id.ok_or(ApiError::Forbidden)?;
+    let object_id = id.parse::<ObjectId>().map_err(|_| ApiError::NotFound)?;
+    let store = Arc::clone(&state.access_policies);
+    let stored = tokio::task::spawn_blocking(move || store.get(&owner, &object_id))
+        .await
+        .map_err(|_| ApiError::Internal)?
+        .ok_or(ApiError::NotFound)?;
+    let generation = stored.generation.to_string();
+    let mut response = axum::Json(stored).into_response();
+    response
+        .headers_mut()
+        .insert(ETAG, etag(&generation).ok_or(ApiError::Internal)?);
+    Ok(response)
+}
+
 async fn create_proxy_host_candidate_revision(
     state: &AppState,
     principal: &Principal,

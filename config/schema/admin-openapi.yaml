@@ -85,6 +85,30 @@ paths:
       responses:
         "200": {description: Redacted preview, fingerprints, and activation class; not a field-level diff}
         default: {$ref: "#/components/responses/Error"}
+  /v1/access-policies:
+    get:
+      operationId: listAccessPolicies
+      responses:
+        "200":
+          description: Stable object-ID ordered Access Policies owned by authenticated principal
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 1024
+                items: {$ref: "#/components/schemas/StoredAccessPolicy"}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/access-policies/{id}:
+    get:
+      operationId: getAccessPolicy
+      parameters: [{$ref: "#/components/parameters/TypedObjectId"}]
+      responses:
+        "200":
+          description: Owned Access Policy desired state and object-generation ETag
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/StoredAccessPolicy"}
+        default: {$ref: "#/components/responses/Error"}
   /v1/proxy-hosts:
     get:
       operationId: listProxyHosts
@@ -422,6 +446,9 @@ components:
     ObjectId:
       type: string
       pattern: '^[a-z][a-z0-9_-]{0,63}$'
+    MiddlewareRef:
+      type: string
+      pattern: '^[a-z][a-z0-9_-]{0,62}$'
     ProxyHostObject:
       type: object
       additionalProperties: false
@@ -457,6 +484,43 @@ components:
       properties:
         generation: {type: integer, minimum: 1}
         object: {$ref: "#/components/schemas/ProxyHostObject"}
+    AccessPolicyObject:
+      type: object
+      additionalProperties: false
+      required: [api_version, metadata, spec]
+      properties:
+        api_version: {const: v1}
+        metadata:
+          type: object
+          additionalProperties: false
+          required: [id, owner_id]
+          properties:
+            id: {$ref: "#/components/schemas/ObjectId"}
+            owner_id: {$ref: "#/components/schemas/ObjectId"}
+        spec:
+          type: object
+          additionalProperties: false
+          required: [enabled, middlewares]
+          properties:
+            enabled: {type: boolean}
+            shared_with:
+              type: array
+              maxItems: 128
+              uniqueItems: true
+              items: {$ref: "#/components/schemas/ObjectId"}
+            middlewares:
+              type: array
+              minItems: 1
+              maxItems: 64
+              uniqueItems: true
+              items: {$ref: "#/components/schemas/MiddlewareRef"}
+    StoredAccessPolicy:
+      type: object
+      additionalProperties: false
+      required: [generation, object]
+      properties:
+        generation: {type: integer, minimum: 1}
+        object: {$ref: "#/components/schemas/AccessPolicyObject"}
     Candidate:
       type: object
       additionalProperties: false

@@ -81,6 +81,11 @@ enum Command {
         #[command(subcommand)]
         command: ProxyHostCommand,
     },
+    /// Read typed Access Policies through the private socket.
+    AccessPolicy {
+        #[command(subcommand)]
+        command: AccessPolicyCommand,
+    },
     /// Create or verify encrypted state backups.
     Backup {
         #[command(subcommand)]
@@ -278,6 +283,21 @@ enum ProxyHostCommand {
         #[command(flatten)]
         admin: AdminConnection,
         file: PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AccessPolicyCommand {
+    /// List typed Access Policies owned by authenticated principal.
+    List {
+        #[command(flatten)]
+        admin: AdminConnection,
+    },
+    /// Get one typed Access Policy owned by authenticated principal.
+    Get {
+        #[command(flatten)]
+        admin: AdminConnection,
+        id: String,
     },
 }
 
@@ -554,6 +574,7 @@ async fn run(cli: Cli) -> Result<(), BoxError> {
         }
         Command::Token { command } => run_token_command(command).await?,
         Command::ProxyHost { command } => run_proxy_host_command(command).await?,
+        Command::AccessPolicy { command } => run_access_policy_command(command).await?,
         Command::Backup { command } => run_backup_command(command).await?,
         Command::Restore { command } => run_restore_command(command).await?,
         Command::Health { admin } => {
@@ -942,6 +963,38 @@ async fn run_proxy_host_command(command: ProxyHostCommand) -> Result<(), BoxErro
                 None,
                 Some("application/json"),
                 body,
+            )
+            .await?
+        }
+    };
+    require_admin_success(&response)?;
+    io::stdout().lock().write_all(&response.body)?;
+    writeln!(io::stdout().lock())?;
+    Ok(())
+}
+
+async fn run_access_policy_command(command: AccessPolicyCommand) -> Result<(), BoxError> {
+    let response = match command {
+        AccessPolicyCommand::List { admin } => {
+            admin_request(
+                &admin,
+                Method::GET,
+                "/v1/access-policies",
+                None,
+                None,
+                Vec::new(),
+            )
+            .await?
+        }
+        AccessPolicyCommand::Get { admin, id } => {
+            let id = id.parse::<aegisproxy_admin::ObjectId>()?;
+            admin_request(
+                &admin,
+                Method::GET,
+                &format!("/v1/access-policies/{id}"),
+                None,
+                None,
+                Vec::new(),
             )
             .await?
         }

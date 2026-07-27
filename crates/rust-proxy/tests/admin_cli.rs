@@ -6,7 +6,10 @@ mod unix {
         fs,
         io::{Read, Write},
         net::TcpListener,
-        os::unix::fs::{MetadataExt, PermissionsExt},
+        os::unix::{
+            fs::{MetadataExt, PermissionsExt},
+            net::UnixStream,
+        },
         path::{Path, PathBuf},
         process::{Child, Command, Output, Stdio},
         thread,
@@ -121,6 +124,18 @@ upstream_group = "app"
         Command::new(binary()).args(args).output().expect("run CLI")
     }
 
+    fn raw_get(socket: &str, path: &str) -> String {
+        let mut stream = UnixStream::connect(socket).expect("connect admin socket");
+        write!(
+            stream,
+            "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+        )
+        .expect("write request");
+        let mut response = String::new();
+        stream.read_to_string(&mut response).expect("read response");
+        response
+    }
+
     #[test]
     fn private_cli_enforces_cas_rbac_token_and_audit_contracts() {
         let root = root();
@@ -179,6 +194,55 @@ upstream_group = "app"
         .expect("Proxy Host store");
         fs::set_permissions(&proxy_host_store_path, fs::Permissions::from_mode(0o600))
             .expect("Proxy Host store mode");
+        let access_policy_store = serde_json::json!({
+            "schema_version": 1,
+            "policies": [
+                {
+                    "generation": 1,
+                    "object": {
+                        "api_version": "v1",
+                        "metadata": {"id": "other-policy", "owner_id": "other"},
+                        "spec": {
+                            "enabled": true,
+                            "shared_with": [owner.clone()],
+                            "middlewares": ["edge-ip"]
+                        }
+                    }
+                },
+                {
+                    "generation": 2,
+                    "object": {
+                        "api_version": "v1",
+                        "metadata": {"id": "private-lan", "owner_id": owner.clone()},
+                        "spec": {
+                            "enabled": true,
+                            "shared_with": ["other"],
+                            "middlewares": ["edge-ip"]
+                        }
+                    }
+                },
+                {
+                    "generation": 1,
+                    "object": {
+                        "api_version": "v1",
+                        "metadata": {"id": "z-policy", "owner_id": owner.clone()},
+                        "spec": {
+                            "enabled": false,
+                            "shared_with": [],
+                            "middlewares": ["edge-rate"]
+                        }
+                    }
+                }
+            ]
+        });
+        let access_policy_store_path = admin_state.join("access-policies.json");
+        fs::write(
+            &access_policy_store_path,
+            serde_json::to_vec_pretty(&access_policy_store).expect("Access Policy store JSON"),
+        )
+        .expect("Access Policy store");
+        fs::set_permissions(&access_policy_store_path, fs::Permissions::from_mode(0o600))
+            .expect("Access Policy store mode");
         let audit_key = root.join("audit.key");
         fs::write(&audit_key, [0_u8; 32]).expect("audit key");
         fs::set_permissions(&audit_key, fs::Permissions::from_mode(0o600)).expect("key mode");
@@ -219,6 +283,26 @@ upstream_group = "app"
         let socket = state.join("admin/admin.sock");
         wait_for_socket(&mut daemon.child, &socket);
         let socket = socket.to_str().expect("socket UTF-8");
+        let owned_policies = run(&["access-policy", "list", "--socket", socket]);
+        assert!(owned_policies.status.success());
+        let policies: serde_json::Value =
+            serde_json::from_slice(&owned_policies.stdout).expect("policy list");
+        assert_eq!(policies.as_array().expect("policy array").len(), 2);
+        assert_eq!(policies[0]["object"]["metadata"]["id"], "private-lan");
+        assert_eq!(policies[1]["object"]["metadata"]["id"], "z-policy");
+        let owned_policy = run(&["access-policy", "get", "--socket", socket, "private-lan"]);
+        assert!(owned_policy.status.success());
+        let raw_policy = raw_get(socket, "/v1/access-policies/private-lan");
+        assert!(raw_policy.starts_with("HTTP/1.1 200 "));
+        assert!(raw_policy.contains("\r\netag: \"2\"\r\n"));
+        let hidden_policy = run(&["access-policy", "get", "--socket", socket, "other-policy"]);
+        assert_eq!(hidden_policy.status.code(), Some(6));
+        assert_eq!(
+            run(&["access-policy", "get", "--socket", socket, "Bad!"])
+                .status
+                .code(),
+            Some(6)
+        );
         assert!(run(&["health", "--socket", socket]).status.success());
         let typed_list = run(&["proxy-host", "list", "--socket", socket]);
         assert!(typed_list.status.success(), "{:?}", typed_list.stderr);
@@ -391,6 +475,51 @@ upstream_group = "app"
             "600",
         ]);
         assert_eq!(escalation.status.code(), Some(3));
+        let limited = run(&[
+            "token",
+            "create",
+            "--socket",
+            socket,
+            "--expect",
+            &current,
+            "--role",
+            "viewer",
+            "--scope",
+            "read-status",
+            "--ttl-secs",
+            "600",
+        ]);
+        assert!(limited.status.success());
+        let limited_json: serde_json::Value =
+            serde_json::from_slice(&limited.stdout).expect("limited token JSON");
+        let limited_file = daemon.root.join("limited.token");
+        fs::write(
+            &limited_file,
+            limited_json["token"].as_str().expect("limited plaintext"),
+        )
+        .expect("limited token file");
+        fs::set_permissions(&limited_file, fs::Permissions::from_mode(0o600))
+            .expect("limited token mode");
+        let limited_ref = format!("file://{}", limited_file.display());
+        let denied_policy_list = run(&[
+            "access-policy",
+            "list",
+            "--socket",
+            socket,
+            "--token-ref",
+            &limited_ref,
+        ]);
+        assert_eq!(denied_policy_list.status.code(), Some(5));
+        let denied_policy_get = run(&[
+            "access-policy",
+            "get",
+            "--socket",
+            socket,
+            "--token-ref",
+            &limited_ref,
+            "private-lan",
+        ]);
+        assert_eq!(denied_policy_get.status.code(), Some(5));
         let token = run(&[
             "token",
             "create",
@@ -476,6 +605,33 @@ upstream_group = "app"
             &token_ref,
         ]);
         assert!(scoped_list.status.success(), "{:?}", scoped_list.stderr);
+        let scoped_policy_list = run(&[
+            "access-policy",
+            "list",
+            "--socket",
+            socket,
+            "--token-ref",
+            &token_ref,
+        ]);
+        assert!(
+            scoped_policy_list.status.success(),
+            "{:?}",
+            scoped_policy_list.stderr
+        );
+        let scoped_policy_get = run(&[
+            "access-policy",
+            "get",
+            "--socket",
+            socket,
+            "--token-ref",
+            &token_ref,
+            "private-lan",
+        ]);
+        assert!(
+            scoped_policy_get.status.success(),
+            "{:?}",
+            scoped_policy_get.stderr
+        );
         let scoped_preview = run(&[
             "proxy-host",
             "preview",
