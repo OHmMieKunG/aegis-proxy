@@ -12,6 +12,8 @@ pub const API_VERSION: &str = "v1";
 const MAX_OBJECT_ID_BYTES: usize = 64;
 const MAX_DOMAIN_BYTES: usize = 253;
 const MAX_FORWARD_HOST_BYTES: usize = 253;
+const MAX_ACCESS_POLICY_SHARES: usize = 128;
+const MAX_ACCESS_POLICY_MIDDLEWARES: usize = 64;
 
 /// Exact supported high-level administration contract version.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -127,6 +129,86 @@ impl AccessPolicyRef {
     }
 }
 
+/// Reference to one existing canonical middleware definition.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct MiddlewareRef(String);
+
+impl MiddlewareRef {
+    /// Return referenced middleware ID.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl FromStr for MiddlewareRef {
+    type Err = ContractError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value.is_empty()
+            || value.len() > 63
+            || !value.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+            || !value.bytes().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+            })
+        {
+            return Err(ContractError::InvalidMiddlewareReference);
+        }
+        Ok(Self(value.to_owned()))
+    }
+}
+
+impl<'de> Deserialize<'de> for MiddlewareRef {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        value.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+/// Secret-free ownership binding for an existing canonical access-policy pipeline.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AccessPolicySpec {
+    /// Whether references to this policy may compile.
+    pub enabled: bool,
+    /// Other owners explicitly allowed to reference this policy.
+    #[serde(default)]
+    pub shared_with: Vec<ObjectId>,
+    /// Existing canonical access-control middleware definitions.
+    pub middlewares: Vec<MiddlewareRef>,
+}
+
+impl AccessPolicySpec {
+    /// Validate bounded ownership and reference shape.
+    pub fn validate_shape(&self, owner_id: &ObjectId) -> Result<(), ContractError> {
+        if self.shared_with.len() > MAX_ACCESS_POLICY_SHARES
+            || self.middlewares.is_empty()
+            || self.middlewares.len() > MAX_ACCESS_POLICY_MIDDLEWARES
+        {
+            return Err(ContractError::InvalidAccessPolicy);
+        }
+        let shared = self
+            .shared_with
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        let middlewares = self
+            .middlewares
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        if shared.len() != self.shared_with.len()
+            || shared.contains(owner_id)
+            || middlewares.len() != self.middlewares.len()
+        {
+            return Err(ContractError::InvalidAccessPolicy);
+        }
+        Ok(())
+    }
+}
+
 /// Forward protocol exposed by common Proxy Host workflow.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -212,6 +294,12 @@ pub enum ContractError {
     /// Forward port is zero.
     #[error("invalid forward port")]
     InvalidForwardPort,
+    /// Access policy is empty, duplicated, self-shared, or exceeds a fixed bound.
+    #[error("invalid access policy")]
+    InvalidAccessPolicy,
+    /// Middleware reference is malformed or non-canonical.
+    #[error("invalid middleware reference")]
+    InvalidMiddlewareReference,
 }
 
 #[cfg(test)]
@@ -304,6 +392,102 @@ mod tests {
         assert_eq!(
             object.spec.validate_shape(),
             Err(ContractError::InvalidForwardHost)
+        );
+    }
+
+    #[test]
+    fn access_policy_contract_is_strict_bounded_and_secret_free() {
+        let source = serde_json::json!({
+            "api_version": "v1",
+            "metadata": {"id": "private-lan", "owner_id": "alice"},
+            "spec": {
+                "enabled": true,
+                "shared_with": ["bob"],
+                "middlewares": ["edge-ip", "edge-rate"]
+            }
+        });
+        let object: ApiObject<AccessPolicySpec> =
+            serde_json::from_value(source.clone()).expect("access policy");
+        object
+            .spec
+            .validate_shape(&object.metadata.owner_id)
+            .expect("valid shape");
+        let encoded = serde_json::to_string(&object).expect("policy JSON");
+        for forbidden in ["secret", "password", "private_key", "raw_config"] {
+            assert!(!encoded.contains(forbidden));
+        }
+
+        let mut invalid = source.clone();
+        invalid["spec"]["unknown"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<ApiObject<AccessPolicySpec>>(invalid).is_err());
+        let mut invalid = source.clone();
+        invalid["spec"]["middlewares"] = serde_json::json!(["Bad"]);
+        assert!(serde_json::from_value::<ApiObject<AccessPolicySpec>>(invalid).is_err());
+
+        let mut duplicate: ApiObject<AccessPolicySpec> =
+            serde_json::from_value(source).expect("access policy");
+        duplicate
+            .spec
+            .shared_with
+            .push("bob".parse().expect("owner"));
+        assert_eq!(
+            duplicate.spec.validate_shape(&duplicate.metadata.owner_id),
+            Err(ContractError::InvalidAccessPolicy)
+        );
+        duplicate.spec.shared_with = vec![duplicate.metadata.owner_id.clone()];
+        assert_eq!(
+            duplicate.spec.validate_shape(&duplicate.metadata.owner_id),
+            Err(ContractError::InvalidAccessPolicy)
+        );
+    }
+
+    #[test]
+    fn access_policy_contract_enforces_exact_collection_and_reference_bounds() {
+        let owner: ObjectId = "alice".parse().expect("owner");
+        let mut spec = AccessPolicySpec {
+            enabled: true,
+            shared_with: Vec::new(),
+            middlewares: Vec::new(),
+        };
+        assert_eq!(
+            spec.validate_shape(&owner),
+            Err(ContractError::InvalidAccessPolicy)
+        );
+
+        spec.middlewares = (0..MAX_ACCESS_POLICY_MIDDLEWARES)
+            .map(|index| format!("m{index}").parse().expect("middleware"))
+            .collect();
+        spec.shared_with = (0..MAX_ACCESS_POLICY_SHARES)
+            .map(|index| format!("o{index}").parse().expect("shared owner"))
+            .collect();
+        spec.validate_shape(&owner).expect("exact bounds");
+
+        spec.middlewares
+            .push("overflow".parse().expect("middleware"));
+        assert_eq!(
+            spec.validate_shape(&owner),
+            Err(ContractError::InvalidAccessPolicy)
+        );
+        spec.middlewares.pop();
+        spec.shared_with
+            .push("overflow".parse().expect("shared owner"));
+        assert_eq!(
+            spec.validate_shape(&owner),
+            Err(ContractError::InvalidAccessPolicy)
+        );
+        spec.shared_with.pop();
+        spec.middlewares[1] = spec.middlewares[0].clone();
+        assert_eq!(
+            spec.validate_shape(&owner),
+            Err(ContractError::InvalidAccessPolicy)
+        );
+
+        let maximum = format!("m{}", "a".repeat(62));
+        assert_eq!(maximum.len(), 63);
+        assert!(maximum.parse::<MiddlewareRef>().is_ok());
+        assert_eq!(
+            format!("{maximum}a").parse::<MiddlewareRef>(),
+            Err(ContractError::InvalidMiddlewareReference)
         );
     }
 }

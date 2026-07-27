@@ -2,6 +2,7 @@
 #![warn(missing_debug_implementations, missing_docs)]
 //! Administrative control-plane boundary.
 
+mod access_policy;
 mod api;
 mod audit;
 mod auth;
@@ -14,17 +15,19 @@ mod proxy_host;
 mod rbac;
 mod server;
 
+pub use access_policy::{
+    AccessPolicyCompileError, AccessPolicyMetadata, compile_access_policy_metadata,
+};
 pub use api::{
-    API_VERSION, AccessPolicyRef, ApiObject, ApiVersion, AutomaticHttps, ContractError,
-    ForwardProtocol, ObjectId, ObjectMetadata, ProxyHostSpec,
+    API_VERSION, AccessPolicyRef, AccessPolicySpec, ApiObject, ApiVersion, AutomaticHttps,
+    ContractError, ForwardProtocol, MiddlewareRef, ObjectId, ObjectMetadata, ProxyHostSpec,
 };
 pub use audit::{AuditError, AuditEvent, AuditLog, AuditOutcome, AuditRecord};
 pub use auth::{IssuedToken, TokenError, TokenMetadata, TokenRecord, TokenStore, TokenStoreError};
 pub use backup::{BackupError, BackupSummary, create_backup, validate_backup};
 pub use compile::{
-    AccessPolicyMetadata, CompileContext, ManagedHttpsPolicy, ProxyHostCandidate,
-    ProxyHostCompileError, ProxyHostSetCandidate, ProxyHostSetCompileContext, compile_proxy_host,
-    compile_proxy_hosts,
+    CompileContext, ManagedHttpsPolicy, ProxyHostCandidate, ProxyHostCompileError,
+    ProxyHostSetCandidate, ProxyHostSetCompileContext, compile_proxy_host, compile_proxy_hosts,
 };
 pub use diff::{
     DiffOperation, ProxyHostDiff, ProxyHostDiffError, ProxyHostDiffValue, ProxyHostField,

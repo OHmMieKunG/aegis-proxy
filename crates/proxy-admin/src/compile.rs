@@ -12,21 +12,9 @@ use aegisproxy_config::{
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+use crate::access_policy::AccessPolicyMetadata;
 use crate::object_store::MAX_PROXY_HOSTS;
 use crate::{ApiObject, AutomaticHttps, ForwardProtocol, ObjectId, ProxyHostSpec};
-
-/// Read-only access-policy metadata available during compilation.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AccessPolicyMetadata {
-    /// Policy owner.
-    pub owner_id: ObjectId,
-    /// Other owners explicitly allowed to reference this policy.
-    pub shared_with: BTreeSet<ObjectId>,
-    /// Disabled policies fail closed.
-    pub enabled: bool,
-    /// Existing canonical middleware IDs implementing this policy.
-    pub middleware_ids: Vec<String>,
-}
 
 /// Existing certificate policy used for managed HTTPS intent.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -586,14 +574,12 @@ fn resolve_access_policy(
     let policy = context
         .access_policies
         .get(reference.id())
-        .filter(|policy| policy.enabled)
+        .filter(|policy| policy.is_enabled())
         .ok_or(ProxyHostCompileError::MissingAccessPolicy)?;
-    if policy.owner_id != object.metadata.owner_id
-        && !policy.shared_with.contains(&object.metadata.owner_id)
-    {
+    if !policy.permits(&object.metadata.owner_id) {
         return Err(ProxyHostCompileError::UnauthorizedAccessPolicy);
     }
-    Ok(policy.middleware_ids.clone())
+    Ok(policy.middleware_ids().to_vec())
 }
 
 fn resolve_listener(
@@ -783,6 +769,29 @@ mod tests {
         }
     }
 
+    fn policy_metadata(
+        config: &Config,
+        id: &str,
+        owner: &str,
+        shared_with: &[&str],
+        enabled: bool,
+    ) -> (ObjectId, AccessPolicyMetadata) {
+        let object: ApiObject<crate::AccessPolicySpec> =
+            serde_json::from_value(serde_json::json!({
+                "api_version": "v1",
+                "metadata": {"id": id, "owner_id": owner},
+                "spec": {
+                    "enabled": enabled,
+                    "shared_with": shared_with,
+                    "middlewares": ["private-policy"]
+                }
+            }))
+            .expect("policy object");
+        let metadata =
+            crate::compile_access_policy_metadata(&object, config).expect("policy metadata");
+        (object.metadata.id, metadata)
+    }
+
     fn context<'a>(
         config: &'a Config,
         parts: &'a Parts,
@@ -818,15 +827,8 @@ mod tests {
     fn compiles_valid_variants_deterministically() {
         let config = base_config();
         let mut parts = parts();
-        parts.policies.insert(
-            "private".parse().expect("policy ID"),
-            AccessPolicyMetadata {
-                owner_id: parts.owner.clone(),
-                shared_with: BTreeSet::new(),
-                enabled: true,
-                middleware_ids: vec!["private-policy".into()],
-            },
-        );
+        let (policy_id, metadata) = policy_metadata(&config, "private", "alice", &[], true);
+        parts.policies.insert(policy_id, metadata);
         let https = ManagedHttpsPolicy {
             listener_id: "secure".into(),
             certificate_id: "managed-new-example".into(),
@@ -898,6 +900,94 @@ mod tests {
             config.upstream_groups.len()
         );
         assert!(!disabled.object().spec.enabled);
+    }
+
+    #[test]
+    fn shared_access_policy_compiles_only_for_explicit_owner() {
+        let config = base_config();
+        let mut parts = parts();
+        parts.owner = "bob".parse().expect("owner");
+        let (policy_id, metadata) = policy_metadata(&config, "shared", "alice", &["bob"], true);
+        parts.policies.insert(policy_id, metadata);
+        let mut value = object();
+        value.metadata.owner_id = parts.owner.clone();
+        value.spec.access_policy_ref = Some(serde_json::from_str("\"shared\"").expect("reference"));
+
+        let candidate =
+            compile_proxy_host(&value, &context(&config, &parts, None)).expect("shared policy");
+        assert_eq!(
+            candidate
+                .config()
+                .routes
+                .last()
+                .expect("generated route")
+                .middlewares,
+            ["private-policy"]
+        );
+        let managed_https = BTreeMap::new();
+        let aggregate = compile_proxy_hosts(
+            &[],
+            &[value.clone()],
+            &set_context(&config, &parts.policies, &managed_https),
+        )
+        .expect("aggregate shared policy");
+        assert_eq!(
+            aggregate
+                .config()
+                .routes
+                .last()
+                .expect("aggregate route")
+                .middlewares,
+            ["private-policy"]
+        );
+        validate(aggregate.config()).expect("aggregate semantic validation");
+
+        parts.owner = "charlie".parse().expect("owner");
+        value.metadata.owner_id = parts.owner.clone();
+        assert_eq!(
+            compile_proxy_host(&value, &context(&config, &parts, None))
+                .expect_err("unshared owner"),
+            ProxyHostCompileError::UnauthorizedAccessPolicy
+        );
+    }
+
+    #[test]
+    fn access_policy_cannot_bypass_listener_semantics() {
+        let mut config = base_config();
+        config.middlewares.insert(
+            "basic".into(),
+            MiddlewareConfig::BasicAuth {
+                realm: "test".into(),
+                users: BTreeMap::from([("operator".into(), "env://TEST_PASSWORD_HASH".into())]),
+                max_concurrent_verifications: 1,
+                timeout_secs: 1,
+            },
+        );
+        validate(&config).expect("valid unused middleware");
+        let policy: ApiObject<crate::AccessPolicySpec> =
+            serde_json::from_value(serde_json::json!({
+                "api_version": "v1",
+                "metadata": {"id": "authenticated", "owner_id": "alice"},
+                "spec": {
+                    "enabled": true,
+                    "shared_with": [],
+                    "middlewares": ["basic"]
+                }
+            }))
+            .expect("policy object");
+        let metadata =
+            crate::compile_access_policy_metadata(&policy, &config).expect("policy metadata");
+        let mut parts = parts();
+        parts.policies.insert(policy.metadata.id, metadata);
+        let mut value = object();
+        value.spec.access_policy_ref =
+            Some(serde_json::from_str("\"authenticated\"").expect("reference"));
+
+        assert_eq!(
+            compile_proxy_host(&value, &context(&config, &parts, None))
+                .expect_err("Basic auth on HTTP"),
+            ProxyHostCompileError::SemanticValidation
+        );
     }
 
     #[test]
@@ -1114,15 +1204,8 @@ mod tests {
                 .expect_err("missing policy"),
             ProxyHostCompileError::MissingAccessPolicy
         );
-        parts.policies.insert(
-            "disabled".parse().expect("policy ID"),
-            AccessPolicyMetadata {
-                owner_id: parts.owner.clone(),
-                shared_with: BTreeSet::new(),
-                enabled: false,
-                middleware_ids: vec!["private-policy".into()],
-            },
-        );
+        let (policy_id, metadata) = policy_metadata(&config, "disabled", "alice", &[], false);
+        parts.policies.insert(policy_id, metadata);
         value.spec.access_policy_ref =
             Some(serde_json::from_str("\"disabled\"").expect("reference"));
         assert_eq!(
@@ -1130,15 +1213,8 @@ mod tests {
                 .expect_err("disabled policy"),
             ProxyHostCompileError::MissingAccessPolicy
         );
-        parts.policies.insert(
-            "private".parse().expect("policy ID"),
-            AccessPolicyMetadata {
-                owner_id: "bob".parse().expect("owner"),
-                shared_with: BTreeSet::new(),
-                enabled: true,
-                middleware_ids: vec!["private-policy".into()],
-            },
-        );
+        let (policy_id, metadata) = policy_metadata(&config, "private", "bob", &[], true);
+        parts.policies.insert(policy_id, metadata);
         value.spec.access_policy_ref =
             Some(serde_json::from_str("\"private\"").expect("reference"));
         assert_eq!(
