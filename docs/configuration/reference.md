@@ -91,8 +91,8 @@ normal atomic activation coordinator and does not change desired objects. Stale,
 already-active, or unauthorized candidates fail closed. Admin-only typed rollback accepts only a
 retained bound historical revision, creates a new bound forward revision, journals and replaces
 desired objects, and invokes the same coordinator. Restart recovery reconciles the journal against
-the durable active revision before Admin starts. Access-policy and certificate-policy objects
-remain unavailable.
+the durable active revision before Admin starts. Access Policy persistence and dedicated token
+scopes exist, but no Access Policy route is exposed; certificate-policy objects remain unavailable.
 
 Typed Proxy Host desired state has a separate internal schema-v1 JSON store. It is bounded to 4,096
 objects and 2 MiB, uses private directory/file permissions, stable owner/object ordering, globally
@@ -102,6 +102,13 @@ directory. Administration opens it at `<state_dir>/admin/proxy-hosts.json`; list
 scoped, stable, and require `read_proxy_hosts`. Validation/preview reject its claimed IDs/domains.
 This store is not active configuration. Create writes only after complete-state compilation,
 semantic validation, immutable revision creation, and an unchanged process-local store epoch.
+
+Access Policy desired state uses a separate strict schema-v1 JSON store bounded to 1,024 objects
+and 1 MiB. It has globally unique IDs, owner-scoped stable reads, exact generations, canonical
+share/middleware ordering, exclusive ownership, and private permissions. Administration opens it
+at `<state_dir>/admin/access-policies.json` before binding its socket. Dedicated
+`read_access_policies`, `create_access_policy`, `update_access_policy`, and
+`delete_access_policy` token scopes exist, but no API or CLI CRUD route exists yet.
 
 ## Routing rules
 

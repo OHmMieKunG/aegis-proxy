@@ -41,6 +41,8 @@
   secret-free ownership/sharing contract, fixed-stage validation, and endpoint non-scope.
 - [Phase 15 Access Policy store](reviews/phase-15-access-policy-store.md): bounded canonical
   persistence, owner/generation CAS, exclusive ownership, and durability-failure evidence.
+- [Phase 15 Access Policy scopes](reviews/phase-15-access-policy-scopes.md): dedicated RBAC/token
+  actions, CLI/OpenAPI parity, private startup ownership, and endpoint non-scope.
 
 ## Operators
 

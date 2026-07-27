@@ -9,7 +9,7 @@ Verification basis: Phase 14 plus Phase 15 compiler `fa7913f`, preview service `
 update/delete `7e8b47d`, verified typed activation `7c6f613`, and immutable typed candidate binding
 `80a7f27`, crash-safe typed rollback `69a5fe3`, token-ID CLI fix `b7a053b`, coordinated typed
 snapshot retention `788b5a2`, typed Access Policy ownership metadata `f23468b`, and bounded Access
-Policy persistence `58f30dc`.
+Policy persistence `58f30dc`, and dedicated Access Policy scopes/startup wiring `8eb1c73`.
 
 Working tree at Phase 14 start: clean at `10aae8c`
 
@@ -49,7 +49,7 @@ evidence.
   side-effect-free typed preview, and bounded field-level diff. Existing primitives validate
   ownership, references, domains, conflicts, listener/certificate policy, generated configuration,
   redaction, fingerprints, restart classification, and owner/object identity during diff. Existing
-  low-level API tokens use a complete 23-action role-and-scope intersection. Private typed Proxy
+  low-level API tokens use a complete 27-action role-and-scope intersection. Private typed Proxy
   Host validation and preview endpoints authenticate and authorize before JSON deserialization,
   enforce principal ownership, reject persisted identity/domain conflicts, and cannot persist or
   activate. The bounded private typed object store is opened at administration startup and exposes
@@ -75,9 +75,10 @@ evidence.
   contract now compiles owner/share/enable metadata and canonical access-control middleware IDs,
   rejecting missing, duplicate-stage, incompatible, invalid, or secret-bearing shapes. Its bounded
   private store provides global IDs, owner-scoped reads, canonical serialization, generation CAS,
-  exclusive ownership, strict restart validation, and atomic replacement. No Access Policy API or
-  CLI route exists; Proxy Host endpoints still reject policy references until RBAC and audited
-  endpoint wiring exist.
+  exclusive ownership, strict restart validation, and atomic replacement. Administration owns the
+  store lock at startup and has distinct read/create/update/delete role-and-token scopes. No Access
+  Policy API or CLI route exists; Proxy Host endpoints still reject policy references until durable
+  audited endpoint wiring exists.
 - Preview returns redacted config, fingerprints, and activation class; a separate pure function
   produces the ordered typed diff. Neither can persist or activate candidates.
 - Restore validates archives but does not extract or activate them.
@@ -119,7 +120,7 @@ split after Phase 15 contracts stabilize. See the [completion evidence](docs/rev
 | `cargo fmt --all -- --check` | passed |
 | `cargo check --workspace --all-targets --all-features` | passed; transitive warning below |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | passed |
-| `cargo test --workspace --all-features` | passed: 317 passed, 2 intentionally ignored |
+| `cargo test --workspace --all-features` | passed: 318 passed, 2 intentionally ignored |
 | `cargo test --workspace --doc` | passed; no doctests defined |
 | valid configuration corpus | seven accepted |
 | invalid configuration corpus | three rejected as expected |
@@ -127,7 +128,7 @@ split after Phase 15 contracts stabilize. See the [completion evidence](docs/rev
 | `cargo tree -e features` | passed; 2,440 output lines |
 | Phase 15 config-schema comparison against `2d533a8` | passed; no differences |
 | Phase 15 manifest comparison against `2d533a8` | expected differences; Admin now directly declares already-locked `fs2` for Access Policy ownership |
-| Admin OpenAPI | parsed with Python/PyYAML; includes typed rollback and 23 token scopes |
+| Admin OpenAPI | checked in Rust and parsed with Python/PyYAML; includes typed rollback and 27 token scopes |
 
 ## Unavailable or incomplete checks
 
@@ -155,6 +156,7 @@ release. Dated exception: [dependency review](docs/security/dependency-unsafe-re
 - [Typed snapshot retention review](docs/reviews/phase-15-proxy-host-snapshot-retention.md)
 - [Typed Access Policy ownership review](docs/reviews/phase-15-access-policy-ownership.md)
 - [Typed Access Policy store review](docs/reviews/phase-15-access-policy-store.md)
+- [Typed Access Policy scope review](docs/reviews/phase-15-access-policy-scopes.md)
 - [Historical evidence](docs/history/README.md)
 
 High-level user guides remain absent until Phase 15 defines stable objects and Phase 16 implements

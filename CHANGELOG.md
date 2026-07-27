@@ -53,6 +53,8 @@ AegisProxy has not published a supported release.
   disabled until owned persistence and RBAC wiring land.
 - Added bounded private Access Policy persistence with global IDs, canonical records, owner-scoped
   reads, generation CAS, exclusive ownership, strict restart checks, and atomic replacement.
+- Added dedicated Access Policy read/create/update/delete token scopes and fail-closed private
+  startup ownership; no Access Policy route is exposed yet.
 - Fixed token revocation CLI parsing for valid generated token IDs that begin with a hyphen.
 
 See [`STATUS.md`](STATUS.md) and [`docs/history/`](docs/history/README.md).

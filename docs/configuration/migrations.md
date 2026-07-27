@@ -39,6 +39,10 @@ Typed activation adds `activate-proxy-host` (`activate_proxy_host` in JSON). It 
 existing tokens gain no scope automatically and operator tokens cannot request it.
 Typed rollback adds `rollback-proxy-host` (`rollback_proxy_host` in JSON) with the same Admin-only
 role ceiling. Existing tokens gain no scope automatically.
+Access Policy preparation adds `read-access-policies`, `create-access-policy`,
+`update-access-policy`, and `delete-access-policy` (`*_access_policy` in JSON). Existing tokens gain
+none automatically. The read scope is available to every built-in role; mutation scopes require
+Operator or Admin. No Access Policy route exists yet.
 
 The checked OpenAPI contract is [`../schema/admin-openapi.yaml`](../../config/schema/admin-openapi.yaml).
 No migration exposes token plaintext or stored password hashes.
@@ -53,6 +57,11 @@ downgrade or repair is attempted. Administration opens the store at
 than being skipped. Read/create endpoints do not migrate or repair it. Process-local store epoch is
 concurrency state, is not serialized, and resets safely on restart because no in-flight request
 survives restart. A release migration command must exist before schema can change incompatibly.
+
+The internal Access Policy store follows the same no-repair rule at
+`<state_dir>/admin/access-policies.json`. Its schema version is one, IDs are globally unique,
+records use canonical ID order and exact generations, and Administration acquires exclusive
+ownership before binding its socket.
 
 The pre-release Phase 15 Rust API now constructs `AccessPolicyMetadata` only through
 `compile_access_policy_metadata`; its fields are private and safe metadata is available through

@@ -80,6 +80,6 @@ non-blocking. Optional unavailable tools remain recorded in `STATUS.md`.
 
 The persistence unit satisfies its canonicalization, ownership, CAS, bounded-resource, strict
 restart, atomic replacement, secret isolation, compatibility, test, and review gates. Phase 15
-remains in progress. Access Policy RBAC actions, durable audited endpoints, Proxy Host policy
-wiring, OpenAPI/CLI contracts, and indeterminate-write recovery behavior remain mandatory before
-the object becomes operator-usable.
+remains in progress. Dedicated RBAC actions and token-scope contracts landed next in `8eb1c73`;
+durable audited endpoints, Proxy Host policy wiring, and indeterminate-write recovery behavior
+remain mandatory before the object becomes operator-usable.

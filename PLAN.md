@@ -132,8 +132,11 @@ contents or secret references. Proxy Host endpoints remain fail closed for polic
 authorization is wired. Bounded private persistence now enforces globally unique IDs, owner-scoped
 reads, canonical order, exact generation CAS, exclusive store ownership, strict restart validation,
 private permissions, and atomic replacement without activation or revision side effects.
+Distinct deny-by-default read/create/update/delete actions now flow through role-and-explicit-token
+scope intersection, CLI token issuance, and OpenAPI. Administration opens the store fail closed at
+startup but exposes no Access Policy route yet.
 
-**Remaining units:** Access Policy RBAC/endpoints; certificate objects; remaining domain
+**Remaining units:** Access Policy audited endpoints and Proxy Host wiring; certificate objects; remaining domain
 objects; remaining OpenAPI and CLI contracts; migration/compatibility policy and tests; transport
 module split; full authorization/security review.
 

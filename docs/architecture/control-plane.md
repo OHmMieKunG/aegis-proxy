@@ -87,7 +87,8 @@ Proxy Host compilation still performs complete route/listener semantic validatio
 private store persists canonical secret-free objects with exact generation CAS and owner-scoped
 reads. It holds an exclusive process and filesystem lock, rejects insecure or malformed restart
 state, and distinguishes pre-commit failure from indeterminate post-rename durability. The private
-Admin API does not expose Access Policies yet and rejects every policy reference.
+Admin service opens this store before binding its socket and has distinct read/create/update/delete
+RBAC and token scopes. It does not expose Access Policies yet and rejects every policy reference.
 
 `PUT` and `DELETE /v1/proxy-hosts/{id}` follow the same ordering. They require
 `X-Aegis-Object-Generation` in addition to active-revision `If-Match`. Update enforces path/body
