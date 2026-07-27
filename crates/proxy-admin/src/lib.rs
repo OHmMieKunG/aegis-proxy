@@ -16,7 +16,8 @@ mod rbac;
 mod server;
 
 pub use access_policy::{
-    AccessPolicyCompileError, AccessPolicyMetadata, compile_access_policy_metadata,
+    AccessPolicyCompileError, AccessPolicyMetadata, AccessPolicyStore, AccessPolicyStoreError,
+    StoredAccessPolicy, compile_access_policy_metadata,
 };
 pub use api::{
     API_VERSION, AccessPolicyRef, AccessPolicySpec, ApiObject, ApiVersion, AutomaticHttps,

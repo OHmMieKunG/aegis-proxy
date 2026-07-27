@@ -12,6 +12,7 @@ aegisproxy-secrets = { version = "=0.1.0", path = "../proxy-secrets" }
 argon2 = { version = "0.5.3", default-features = false, features = ["alloc", "password-hash"] }
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "query", "tokio"] }
 base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+fs2 = "0.4.3"
 getrandom = "0.3"
 hmac = "0.12"
 serde = { version = "1", features = ["derive"] }
