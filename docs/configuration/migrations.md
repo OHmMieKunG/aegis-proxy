@@ -42,7 +42,7 @@ role ceiling. Existing tokens gain no scope automatically.
 Access Policy preparation adds `read-access-policies`, `create-access-policy`,
 `update-access-policy`, and `delete-access-policy` (`*_access_policy` in JSON). Existing tokens gain
 none automatically. The read scope is available to every built-in role; mutation scopes require
-Operator or Admin. No Access Policy route exists yet.
+Operator or Admin. List/get now require `read-access-policies`; mutation routes remain absent.
 
 The checked OpenAPI contract is [`../schema/admin-openapi.yaml`](../../config/schema/admin-openapi.yaml).
 No migration exposes token plaintext or stored password hashes.

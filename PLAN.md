@@ -134,9 +134,10 @@ reads, canonical order, exact generation CAS, exclusive store ownership, strict 
 private permissions, and atomic replacement without activation or revision side effects.
 Distinct deny-by-default read/create/update/delete actions now flow through role-and-explicit-token
 scope intersection, CLI token issuance, and OpenAPI. Administration opens the store fail closed at
-startup but exposes no Access Policy route yet.
+startup. Owner-scoped list/get API and CLI now require exact read permission, return stable records
+and generation ETags, and make cross-owner resources indistinguishable from missing resources.
 
-**Remaining units:** Access Policy audited endpoints and Proxy Host wiring; certificate objects; remaining domain
+**Remaining units:** Access Policy audited mutation endpoints and Proxy Host wiring; certificate objects; remaining domain
 objects; remaining OpenAPI and CLI contracts; migration/compatibility policy and tests; transport
 module split; full authorization/security review.
 

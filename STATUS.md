@@ -9,7 +9,8 @@ Verification basis: Phase 14 plus Phase 15 compiler `fa7913f`, preview service `
 update/delete `7e8b47d`, verified typed activation `7c6f613`, and immutable typed candidate binding
 `80a7f27`, crash-safe typed rollback `69a5fe3`, token-ID CLI fix `b7a053b`, coordinated typed
 snapshot retention `788b5a2`, typed Access Policy ownership metadata `f23468b`, and bounded Access
-Policy persistence `58f30dc`, and dedicated Access Policy scopes/startup wiring `8eb1c73`.
+Policy persistence `58f30dc`, dedicated Access Policy scopes/startup wiring `8eb1c73`, and
+owner-scoped Access Policy reads `ef115a6`.
 
 Working tree at Phase 14 start: clean at `10aae8c`
 
@@ -77,8 +78,10 @@ evidence.
   private store provides global IDs, owner-scoped reads, canonical serialization, generation CAS,
   exclusive ownership, strict restart validation, and atomic replacement. Administration owns the
   store lock at startup and has distinct read/create/update/delete role-and-token scopes. No Access
-  Policy API or CLI route exists; Proxy Host endpoints still reject policy references until durable
-  audited endpoint wiring exists.
+  Policy list/get API and CLI are owner-scoped under exact read permission, return stable
+  secret-free records and generation ETags, and hide cross-owner existence. Mutation routes remain
+  absent; Proxy Host endpoints still reject policy references until durable audited mutation and
+  reference wiring exist.
 - Preview returns redacted config, fingerprints, and activation class; a separate pure function
   produces the ordered typed diff. Neither can persist or activate candidates.
 - Restore validates archives but does not extract or activate them.
@@ -157,6 +160,7 @@ release. Dated exception: [dependency review](docs/security/dependency-unsafe-re
 - [Typed Access Policy ownership review](docs/reviews/phase-15-access-policy-ownership.md)
 - [Typed Access Policy store review](docs/reviews/phase-15-access-policy-store.md)
 - [Typed Access Policy scope review](docs/reviews/phase-15-access-policy-scopes.md)
+- [Typed Access Policy read review](docs/reviews/phase-15-access-policy-reads.md)
 - [Historical evidence](docs/history/README.md)
 
 High-level user guides remain absent until Phase 15 defines stable objects and Phase 16 implements

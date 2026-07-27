@@ -58,7 +58,6 @@ tools remain recorded in `STATUS.md`.
 ## Decision and next boundary
 
 The scope/startup preparation unit meets its authorization, startup isolation, compatibility,
-contract parity, review, and validation gates. Phase 15 remains in progress. The next safe unit is
-owner-scoped list/get under exact `read_access_policies`, with cross-owner not-found behavior and
-generation ETags. Mutation routes remain blocked until durable audit ordering and recovery for an
-indeterminate post-rename store result are defined and tested.
+contract parity, review, and validation gates. Owner-scoped list/get landed next in `ef115a6`.
+Phase 15 remains in progress. Mutation routes remain blocked until durable audit ordering and
+recovery for an indeterminate post-rename store result are defined and tested.

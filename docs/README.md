@@ -43,6 +43,8 @@
   persistence, owner/generation CAS, exclusive ownership, and durability-failure evidence.
 - [Phase 15 Access Policy scopes](reviews/phase-15-access-policy-scopes.md): dedicated RBAC/token
   actions, CLI/OpenAPI parity, private startup ownership, and endpoint non-scope.
+- [Phase 15 Access Policy reads](reviews/phase-15-access-policy-reads.md): owner-scoped list/get,
+  scope enforcement, generation ETags, OpenAPI/CLI contracts, and isolation evidence.
 
 ## Operators
 

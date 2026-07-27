@@ -55,6 +55,8 @@ AegisProxy has not published a supported release.
   reads, generation CAS, exclusive ownership, strict restart checks, and atomic replacement.
 - Added dedicated Access Policy read/create/update/delete token scopes and fail-closed private
   startup ownership; no Access Policy route is exposed yet.
+- Added owner-scoped Access Policy list/get API and CLI operations with exact read scope, stable
+  ordering, generation ETags, and cross-owner not-found behavior.
 - Fixed token revocation CLI parsing for valid generated token IDs that begin with a hyphen.
 
 See [`STATUS.md`](STATUS.md) and [`docs/history/`](docs/history/README.md).

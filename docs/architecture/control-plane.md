@@ -88,7 +88,9 @@ private store persists canonical secret-free objects with exact generation CAS a
 reads. It holds an exclusive process and filesystem lock, rejects insecure or malformed restart
 state, and distinguishes pre-commit failure from indeterminate post-rename durability. The private
 Admin service opens this store before binding its socket and has distinct read/create/update/delete
-RBAC and token scopes. It does not expose Access Policies yet and rejects every policy reference.
+RBAC and token scopes. Owner-scoped list/get return only secret-free records under exact read
+permission; cross-owner get is not-found and object generation is the ETag. Mutation routes remain
+absent, and Proxy Host endpoints still reject every policy reference.
 
 `PUT` and `DELETE /v1/proxy-hosts/{id}` follow the same ordering. They require
 `X-Aegis-Object-Generation` in addition to active-revision `If-Match`. Update enforces path/body
