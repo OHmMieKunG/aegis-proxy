@@ -6,7 +6,10 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
-    sync::{Mutex, OnceLock},
+    sync::{
+        Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use aegisproxy_config::{Config, MiddlewareConfig, RateLimitKey, validate};
@@ -184,6 +187,9 @@ pub enum AccessPolicyStoreError {
     /// Atomic replacement completed but directory durability could not be confirmed.
     #[error("Access Policy storage durability is indeterminate")]
     Indeterminate(#[source] std::io::Error),
+    /// A prior indeterminate replacement requires restart reconciliation.
+    #[error("Access Policy storage requires recovery")]
+    RecoveryRequired,
     /// Another store instance owns this file.
     #[error("Access Policy storage is already locked")]
     Locked,
@@ -210,6 +216,7 @@ pub struct AccessPolicyStore {
     path: PathBuf,
     _registration: StoreRegistration,
     _lock: File,
+    recovery_required: AtomicBool,
     policies: Mutex<BTreeMap<ObjectId, StoredAccessPolicy>>,
 }
 
@@ -255,6 +262,7 @@ impl AccessPolicyStore {
             path,
             _registration: registration,
             _lock: lock,
+            recovery_required: AtomicBool::new(false),
         })
     }
 
@@ -269,6 +277,7 @@ impl AccessPolicyStore {
             .policies
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.ensure_mutable()?;
         if policies.len() >= MAX_ACCESS_POLICIES {
             return Err(AccessPolicyStoreError::Limit);
         }
@@ -283,6 +292,8 @@ impl AccessPolicyStore {
         if let Err(error) = persist_store(&self.path, &policies) {
             if !matches!(error, AccessPolicyStoreError::Indeterminate(_)) {
                 policies.remove(&id);
+            } else {
+                self.recovery_required.store(true, Ordering::Release);
             }
             return Err(error);
         }
@@ -302,6 +313,7 @@ impl AccessPolicyStore {
             .policies
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.ensure_mutable()?;
         let previous = policies
             .get(&id)
             .filter(|stored| {
@@ -322,6 +334,8 @@ impl AccessPolicyStore {
         if let Err(error) = persist_store(&self.path, &policies) {
             if !matches!(error, AccessPolicyStoreError::Indeterminate(_)) {
                 policies.insert(id, previous);
+            } else {
+                self.recovery_required.store(true, Ordering::Release);
             }
             return Err(error);
         }
@@ -339,6 +353,7 @@ impl AccessPolicyStore {
             .policies
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.ensure_mutable()?;
         let previous = policies
             .get(object_id)
             .filter(|stored| {
@@ -351,6 +366,8 @@ impl AccessPolicyStore {
         if let Err(error) = persist_store(&self.path, &policies) {
             if !matches!(error, AccessPolicyStoreError::Indeterminate(_)) {
                 policies.insert(object_id.clone(), previous.clone());
+            } else {
+                self.recovery_required.store(true, Ordering::Release);
             }
             return Err(error);
         }
@@ -401,6 +418,20 @@ impl AccessPolicyStore {
                     .map_err(|_| AccessPolicyStoreError::Invalid)
             })
             .collect()
+    }
+
+    /// Whether a post-rename durability failure blocks further mutation until restart.
+    #[must_use]
+    pub fn recovery_required(&self) -> bool {
+        self.recovery_required.load(Ordering::Acquire)
+    }
+
+    fn ensure_mutable(&self) -> Result<(), AccessPolicyStoreError> {
+        if self.recovery_required() {
+            Err(AccessPolicyStoreError::RecoveryRequired)
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -1111,6 +1142,7 @@ mod tests {
             Err(AccessPolicyStoreError::Io(_))
         ));
         assert!(store.get(&owner, &id).is_some());
+        assert!(!store.recovery_required());
         drop(store);
         fs::remove_dir_all(root).expect("cleanup");
     }
@@ -1126,6 +1158,11 @@ mod tests {
             result,
             Err(AccessPolicyStoreError::Indeterminate(_))
         ));
+        assert!(store.recovery_required());
+        assert!(matches!(
+            store.create(owned_policy("blocked", "alice", &["edge-ip"])),
+            Err(AccessPolicyStoreError::RecoveryRequired)
+        ));
         let owner: ObjectId = "alice".parse().expect("owner");
         let id: ObjectId = "private-lan".parse().expect("ID");
         assert!(store.get(&owner, &id).is_some());
@@ -1139,6 +1176,11 @@ mod tests {
         assert!(matches!(
             result,
             Err(AccessPolicyStoreError::Indeterminate(_))
+        ));
+        assert!(reopened.recovery_required());
+        assert!(matches!(
+            reopened.update(reopened.get(&owner, &id).expect("updated state").object, 2),
+            Err(AccessPolicyStoreError::RecoveryRequired)
         ));
         assert_eq!(
             reopened
@@ -1159,6 +1201,11 @@ mod tests {
         assert!(matches!(
             result,
             Err(AccessPolicyStoreError::Indeterminate(_))
+        ));
+        assert!(reopened.recovery_required());
+        assert!(matches!(
+            reopened.delete(&owner, &id, 2),
+            Err(AccessPolicyStoreError::RecoveryRequired)
         ));
         assert!(reopened.get(&owner, &id).is_none());
         drop(reopened);
