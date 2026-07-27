@@ -125,10 +125,15 @@ object store according to the durable active revision; unresolved recovery block
 Typed snapshot retention now treats the retained configuration revision list as authoritative.
 Admin startup and each typed snapshot binding validate all bounded snapshot files before removing
 only those whose revisions were already durably pruned.
+A strict library-only Access Policy object now binds owner, explicit sharing, enabled state, and
+canonical existing access-control middleware IDs. Metadata compilation validates the base
+configuration, rejects missing or incompatible fixed-stage combinations, and exposes no middleware
+contents or secret references. Proxy Host endpoints remain fail closed for policy references until
+owned policy persistence and authorization are wired.
 
-**Remaining units:** access-policy and certificate objects; remaining domain objects; remaining
-OpenAPI and CLI contracts; migration/compatibility policy and tests; transport module split; full
-authorization/security review.
+**Remaining units:** Access Policy persistence/RBAC/endpoints; certificate objects; remaining domain
+objects; remaining OpenAPI and CLI contracts; migration/compatibility policy and tests; transport
+module split; full authorization/security review.
 
 **Objective:** provide versioned high-level objects usable by GUI and advanced automation.
 

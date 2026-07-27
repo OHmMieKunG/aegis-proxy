@@ -25,6 +25,13 @@ control-plane state but add no route or upstream. Managed HTTPS selects an exist
 and certificate covering the domain; compilation neither orders nor claims issuance of a
 certificate. Every result passes the normal semantic validator before it becomes a candidate.
 
+The current library-only Access Policy contract contains `enabled`, bounded explicit
+`shared_with`, and 1–64 canonical middleware references. It carries no middleware body or secret.
+Metadata compilation accepts only existing IP policy, client/principal rate limit, in-flight limit,
+BasicAuth, and ForwardAuth definitions, applies fixed-stage compatibility rules, and sorts IDs.
+Policy IDs must be globally unique when persistence is added. Admin endpoints still fail closed on
+every Proxy Host policy reference; this contract is not yet an operator workflow.
+
 Complete desired state may be compiled with explicit current and desired object sets. Current stored
 identities reserve deterministic generated namespaces; only complete compiler-shaped
 route/group/endpoint trios are removed from active input. Missing trios represent pending state.

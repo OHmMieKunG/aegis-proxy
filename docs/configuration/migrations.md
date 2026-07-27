@@ -54,6 +54,12 @@ than being skipped. Read/create endpoints do not migrate or repair it. Process-l
 concurrency state, is not serialized, and resets safely on restart because no in-flight request
 survives restart. A release migration command must exist before schema can change incompatibly.
 
+The pre-release Phase 15 Rust API now constructs `AccessPolicyMetadata` only through
+`compile_access_policy_metadata`; its fields are private and safe metadata is available through
+getters. Library callers using the earlier public field literal must migrate to the validated
+constructor. No JSON, TOML, OpenAPI, CLI, persisted-state, or data-plane schema changed in this
+unit.
+
 Typed candidate snapshots use strict schema version 1 under
 `<state_dir>/admin/proxy-host-candidates/`. Revision metadata's optional `binding_hash` is additive:
 old low-level revisions without it still load and remain usable through low-level configuration

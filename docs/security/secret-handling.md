@@ -32,6 +32,11 @@ its `Debug` output omits the configuration. Typed field differences use a closed
 compare only preview summaries; raw configuration and secret fields cannot enter the diff contract.
 Aggregate compilation accepts typed objects and metadata-only policy/certificate maps, returns only
 typed desired state plus canonical configuration, and exposes counts—not configuration—in `Debug`.
+The library-only Access Policy object contains only owner/share IDs, enabled state, and canonical
+middleware IDs. Its validated metadata has no serialization implementation; redacted `Debug`
+returns only enabled state and counts. BasicAuth and ForwardAuth contents stay in the already
+validated canonical configuration and never enter the policy object, metadata, or compiler error.
+No Admin endpoint accepts this object yet.
 Private typed validation/preview/create/update/delete endpoints apply authorization before JSON deserialization,
 require exact principal ownership, and reuse this redaction boundary. They return fixed error
 envelopes and cannot expose or resolve secrets. Validation/preview cannot persist or activate.

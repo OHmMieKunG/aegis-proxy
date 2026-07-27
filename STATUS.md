@@ -7,8 +7,8 @@ Verification basis: Phase 14 plus Phase 15 compiler `fa7913f`, preview service `
 `5c8898b`, owner-scoped typed reads `d1514dd`, aggregate compiler `35d7d38`, mutation-scope fix
 `106f2fa`, desired-state snapshot CAS `f204012`, audited typed create `068f408`, audited typed
 update/delete `7e8b47d`, verified typed activation `7c6f613`, and immutable typed candidate binding
-`80a7f27`, crash-safe typed rollback `69a5fe3`, token-ID CLI fix `b7a053b`, and coordinated typed
-snapshot retention `788b5a2`.
+`80a7f27`, crash-safe typed rollback `69a5fe3`, token-ID CLI fix `b7a053b`, coordinated typed
+snapshot retention `788b5a2`, and typed Access Policy ownership metadata `f23468b`.
 
 Working tree at Phase 14 start: clean at `10aae8c`
 
@@ -70,7 +70,10 @@ evidence.
   interruption. Typed snapshot reconciliation now follows the authoritative retained configuration
   revisions at Admin startup and before new snapshot binding; it removes only fully validated
   orphan snapshots and fails closed on malformed or tampered state. Certificate/access-policy
-  ownership metadata and a complete ownership matrix do not exist yet.
+  persistence and a complete ownership matrix do not exist yet. A library-only strict Access Policy
+  contract now compiles owner/share/enable metadata and canonical access-control middleware IDs,
+  rejecting missing, duplicate-stage, incompatible, invalid, or secret-bearing shapes. Proxy Host
+  endpoints still reject policy references until owned persistence and RBAC wiring exist.
 - Preview returns redacted config, fingerprints, and activation class; a separate pure function
   produces the ordered typed diff. Neither can persist or activate candidates.
 - Restore validates archives but does not extract or activate them.
@@ -112,7 +115,7 @@ split after Phase 15 contracts stabilize. See the [completion evidence](docs/rev
 | `cargo fmt --all -- --check` | passed |
 | `cargo check --workspace --all-targets --all-features` | passed; transitive warning below |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | passed |
-| `cargo test --workspace --all-features` | passed: 302 passed, 2 intentionally ignored |
+| `cargo test --workspace --all-features` | passed: 309 passed, 2 intentionally ignored |
 | `cargo test --workspace --doc` | passed; no doctests defined |
 | valid configuration corpus | seven accepted |
 | invalid configuration corpus | three rejected as expected |
@@ -145,6 +148,7 @@ release. Dated exception: [dependency review](docs/security/dependency-unsafe-re
 - [Threat/control matrix](docs/security/threat-control-matrix.md)
 - [Typed rollback review](docs/reviews/phase-15-proxy-host-rollback.md)
 - [Typed snapshot retention review](docs/reviews/phase-15-proxy-host-snapshot-retention.md)
+- [Typed Access Policy ownership review](docs/reviews/phase-15-access-policy-ownership.md)
 - [Historical evidence](docs/history/README.md)
 
 High-level user guides remain absent until Phase 15 defines stable objects and Phase 16 implements

@@ -48,6 +48,9 @@ AegisProxy has not published a supported release.
 - Coordinated typed desired-state snapshot retention with authoritative configuration revision
   pruning; startup and pre-bind reconciliation remove only validated orphan snapshots and reject
   malformed or tampered state before deletion.
+- Added a strict secret-free Access Policy ownership contract and validated metadata compiler for
+  existing canonical IP, limit, and authentication middleware stages. Public endpoints remain
+  disabled until owned persistence and RBAC wiring land.
 - Fixed token revocation CLI parsing for valid generated token IDs that begin with a hyphen.
 
 See [`STATUS.md`](STATUS.md) and [`docs/history/`](docs/history/README.md).

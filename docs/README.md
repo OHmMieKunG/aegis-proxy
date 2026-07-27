@@ -37,6 +37,8 @@
 - [Phase 15 typed snapshot retention](reviews/phase-15-proxy-host-snapshot-retention.md):
   authoritative revision reconciliation, bounded cleanup, tamper rejection, and validation
   evidence.
+- [Phase 15 Access Policy ownership](reviews/phase-15-access-policy-ownership.md): strict
+  secret-free ownership/sharing contract, fixed-stage validation, and endpoint non-scope.
 
 ## Operators
 
