@@ -100,10 +100,10 @@ schema, CLI, OpenAPI paths, and action vocabulary are unchanged. Revision metada
 extended with an omitted-by-default optional field; old metadata loads with `None`. The public Rust
 metadata struct gains this field during the pre-release Phase 15 contract cycle.
 
-Snapshot retention is bounded but not yet coordinated with configuration revision pruning. At the
-1,000-file cap, typed candidate creation fails closed until an approved cleanup operation exists.
-This must be resolved before Phase 15 exit. Subsequent unit `69a5fe3` adds crash-safe typed forward
-rollback; see [its review](phase-15-proxy-host-rollback.md).
+Subsequent unit `788b5a2` coordinates bounded snapshot cleanup with authoritative configuration
+revision retention; see [its review](phase-15-proxy-host-snapshot-retention.md). Subsequent unit
+`69a5fe3` adds crash-safe typed forward rollback; see
+[its review](phase-15-proxy-host-rollback.md).
 
 The candidate-binding unit meets its gate. Phase 15 remains in progress and production remains
 NO-GO.

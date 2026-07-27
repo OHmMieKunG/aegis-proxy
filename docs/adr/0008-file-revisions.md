@@ -33,8 +33,12 @@ The state is small and file-shaped; backup/restore remains inspectable.
 ## Consequences
 
 Querying and multi-writer coordination are intentionally limited. V1 does not persist a success/rejection classification per revision, so the 70-revision recent window conservatively covers both outcomes instead of implementing separate 50-successful and 20-rejected buckets.
-Typed snapshot retention is separately hard-bounded to 1,000 entries and may fail closed before
-configuration revision retention; coordinated pruning remains Phase 15 work before rollback exit.
+Typed snapshot retention is separately hard-bounded to 1,000 entries. The retained configuration
+revision list is authoritative: Admin startup and typed snapshot creation validate the complete
+bounded snapshot directory, then durably remove only snapshots whose revisions have already been
+pruned. Invalid, tampered, symlinked, or retained-but-mismatched entries fail closed before any
+deletion. Revision and snapshot stores remain separate file transactions, so interruption may leave
+a harmless non-active orphan until the next reconciliation.
 The rollback journal coordinates two file-backed transactions without introducing a database. An
 unresolved journal blocks mutation rather than allowing typed desired state to diverge further.
 

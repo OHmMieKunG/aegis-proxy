@@ -1,13 +1,14 @@
 # AegisProxy verified status
 
-Verification date: 2026-07-22
+Verification date: 2026-07-27
 Branch: `work/autonomous-roadmap`
 Verification basis: Phase 14 plus Phase 15 compiler `fa7913f`, preview service `d3de105`, typed diff
 `2617f0e`, API-token scopes `81bd500`, owned Proxy Host endpoints `00cfa32`, typed object store
 `5c8898b`, owner-scoped typed reads `d1514dd`, aggregate compiler `35d7d38`, mutation-scope fix
 `106f2fa`, desired-state snapshot CAS `f204012`, audited typed create `068f408`, audited typed
 update/delete `7e8b47d`, verified typed activation `7c6f613`, and immutable typed candidate binding
-`80a7f27`, crash-safe typed rollback `69a5fe3`, and token-ID CLI fix `b7a053b`.
+`80a7f27`, crash-safe typed rollback `69a5fe3`, token-ID CLI fix `b7a053b`, and coordinated typed
+snapshot retention `788b5a2`.
 
 Working tree at Phase 14 start: clean at `10aae8c`
 
@@ -66,8 +67,10 @@ evidence.
   complete desired objects; mismatched or tampered bindings fail activation. Admin-only typed
   rollback loads one bound historical snapshot, creates and activates a new forward revision, and
   uses a private recovery journal to converge desired state with the durably active revision after
-  interruption. Certificate/access-policy ownership metadata and a complete ownership matrix do
-  not exist yet.
+  interruption. Typed snapshot reconciliation now follows the authoritative retained configuration
+  revisions at Admin startup and before new snapshot binding; it removes only fully validated
+  orphan snapshots and fails closed on malformed or tampered state. Certificate/access-policy
+  ownership metadata and a complete ownership matrix do not exist yet.
 - Preview returns redacted config, fingerprints, and activation class; a separate pure function
   produces the ordered typed diff. Neither can persist or activate candidates.
 - Restore validates archives but does not extract or activate them.
@@ -89,7 +92,7 @@ evidence.
 [Phase 15 stable typed control plane](PLAN.md#phase-15--stable-typed-control-plane). Phase 14
 completed behavior-preserving modularization: inline tests are focused and production ownership is
 split by domain. At Phase 14 completion no production Rust module exceeded 1,200 measured lines.
-Phase 15 endpoint growth now places `server/handlers.rs` at 1,928 lines and CLI `main.rs` at 1,308;
+Phase 15 endpoint growth now places `server/handlers.rs` at 1,933 lines and CLI `main.rs` at 1,309;
 their single transport-orchestration ownership is an explicit temporary exception that must be
 split after Phase 15 contracts stabilize. See the [completion evidence](docs/reviews/phase-14-completion.md).
 
@@ -109,7 +112,7 @@ split after Phase 15 contracts stabilize. See the [completion evidence](docs/rev
 | `cargo fmt --all -- --check` | passed |
 | `cargo check --workspace --all-targets --all-features` | passed; transitive warning below |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | passed |
-| `cargo test --workspace --all-features` | passed: 299 passed, 2 intentionally ignored |
+| `cargo test --workspace --all-features` | passed: 302 passed, 2 intentionally ignored |
 | `cargo test --workspace --doc` | passed; no doctests defined |
 | valid configuration corpus | seven accepted |
 | invalid configuration corpus | three rejected as expected |
@@ -141,6 +144,7 @@ release. Dated exception: [dependency review](docs/security/dependency-unsafe-re
 - [Testing](docs/development/testing.md)
 - [Threat/control matrix](docs/security/threat-control-matrix.md)
 - [Typed rollback review](docs/reviews/phase-15-proxy-host-rollback.md)
+- [Typed snapshot retention review](docs/reviews/phase-15-proxy-host-snapshot-retention.md)
 - [Historical evidence](docs/history/README.md)
 
 High-level user guides remain absent until Phase 15 defines stable objects and Phase 16 implements

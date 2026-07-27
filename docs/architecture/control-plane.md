@@ -70,6 +70,12 @@ owner/object-ordered snapshot under the private bounded `admin/proxy-host-candid
 The hash covers schema version and the complete seven-field object set, including disabled objects
 that generate no runtime resources. Low-level configuration candidates remain unbound. Identical
 configuration with different typed state is not deduplicated into one revision.
+The configuration revision store remains the retention authority. Admin startup and typed
+candidate creation reconcile the bounded snapshot directory against its retained metadata.
+Reconciliation validates every entry before deletion, preserves every retained matching binding,
+and removes only snapshots whose revision metadata is already absent. Tampering, unexpected entry
+types, and retained binding mismatches fail closed. The separate file transactions intentionally
+provide restart-safe eventual cleanup rather than claiming cross-directory atomicity.
 
 `PUT` and `DELETE /v1/proxy-hosts/{id}` follow the same ordering. They require
 `X-Aegis-Object-Generation` in addition to active-revision `If-Match`. Update enforces path/body

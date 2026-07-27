@@ -122,10 +122,12 @@ Admin-only typed rollback loads one retained bound snapshot, compiles it against
 configuration, creates a new bound forward revision, journals previous and target desired state,
 and delegates publication to the existing activation coordinator. Startup recovery converges the
 object store according to the durable active revision; unresolved recovery blocks mutation.
+Typed snapshot retention now treats the retained configuration revision list as authoritative.
+Admin startup and each typed snapshot binding validate all bounded snapshot files before removing
+only those whose revisions were already durably pruned.
 
-**Remaining units:** coordinate typed snapshot retention with configuration revision pruning;
-access-policy and certificate objects; remaining domain objects; remaining OpenAPI and CLI
-contracts; migration/compatibility policy and tests; transport module split; full
+**Remaining units:** access-policy and certificate objects; remaining domain objects; remaining
+OpenAPI and CLI contracts; migration/compatibility policy and tests; transport module split; full
 authorization/security review.
 
 **Objective:** provide versioned high-level objects usable by GUI and advanced automation.

@@ -15,11 +15,11 @@ TLS, raw TCP, TLS passthrough, strict TOML, deterministic routing, bounded balan
 transactional reload/rollback, ACME, fixed-stage middleware, private administration,
 metrics/tracing/audit, file/A/AAAA discovery, and external-load-balancer fleet checks.
 Phase 15 additionally provides owner-scoped typed Proxy Host validation, preview, CRUD candidate
-creation, and Admin-only verified candidate activation; the broader typed control plane is not yet
-complete.
+creation, Admin-only verified candidate activation and forward rollback, and bounded coordinated
+typed snapshot retention; the broader typed control plane is not yet complete.
 
 Major gaps include web GUI and first-run experience, complete high-level domain/API coverage,
-typed desired-state rollback, native OIDC,
+native OIDC,
 Docker/Kubernetes providers, PROXY protocol, client mTLS, HTTP/3, gRPC-Web, automated restore,
 release workflow, and production evidence. See [`STATUS.md`](STATUS.md) for exact status and
 [`PLAN.md`](PLAN.md) for phases 14–21.

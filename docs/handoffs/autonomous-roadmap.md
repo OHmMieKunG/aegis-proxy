@@ -1,48 +1,47 @@
 # Autonomous roadmap handoff
 
-Updated: 2026-07-22
+Updated: 2026-07-27
 
 - Current branch: `work/autonomous-roadmap`
-- Current completed-unit commit: `b7a053b`
+- Current completed-unit commit: `788b5a2`
 - Current phase: Phase 15, in progress
-- Completed unit: crash-safe typed Proxy Host forward rollback
-- Implementation commits: `69a5fe3`, `b7a053b`
+- Completed unit: coordinated typed Proxy Host snapshot retention
+- Implementation commit: `788b5a2`
 - Documentation commit: this handoff's documentation commit
 - Remote target: `origin/work/autonomous-roadmap`
 - Expected working tree after documentation commit: clean
 
 ## Validation status
 
-Format, all-target/all-feature workspace check, Clippy with denied warnings, 299 workspace tests,
+Format, all-target/all-feature workspace check, Clippy with denied warnings, 302 workspace tests,
 doc tests, Rustdoc, feature tree, fuzz-manifest check, targeted revision/object-store/Admin CLI
 tests, repository documentation links, added-line secret review, and `git diff --check` passed. Two
 intentional ignored tests remain:
 manual reload benchmark and Docker-backed Pebble integration.
 
-## Completed rollback boundary
+## Completed retention boundary
 
-Admin-only typed rollback loads a retained bound historical object snapshot, compiles it against
-current manual configuration, creates a new bound forward revision, journals previous and target
-desired state, and activates only through the existing coordinator. Failure restores previous
-objects. Indeterminate activation retains the journal; startup reconciles against the durable active
-revision before Admin starts. Unresolved recovery blocks all mutation.
+The configuration revision store is authoritative. Admin startup and each typed candidate/forward
+revision binding reconcile the bounded snapshot directory against retained revision metadata.
+Every entry is validated before any removal; matching retained snapshots remain and only valid
+orphan snapshots are durably removed. Tampered, malformed, symlinked, or mismatched retained state
+fails closed. Separate file transactions may leave a harmless non-active orphan until restart or
+the next binding.
 
 ## Remaining Phase 15 work
 
-Coordinated snapshot retention; access-policy/certificate ownership;
-remaining domain objects and contracts; migration/compatibility tests; transport module split;
-full authorization/security review.
+Access-policy/certificate ownership; remaining domain objects and contracts;
+migration/compatibility tests; transport module split; full authorization/security review.
 
 ## Exact next task
 
-Coordinate typed snapshot retention with configuration revision pruning. Preserve the active,
-previous, journal target, and every retained bound revision; remove only snapshots whose revisions
-were durably pruned. Add cap, restart, tamper, and rollback-target retention tests.
+Define the typed Access Policy ownership and sharing metadata required to compile protected Proxy
+Hosts without exposing policy contents or credentials. Reuse existing policy configuration and
+authorization paths; add strict contract, ownership, missing/disabled/incompatible reference, and
+secret-redaction tests before exposing mutations.
 
 ## Known risks
 
-- Typed snapshot retention is hard-bounded but not coordinated with configuration revision pruning;
-  creation fails closed at 1,000 snapshot files.
 - Activation is intentionally global and Admin-only until candidate ownership/approval metadata
   supports safe narrower authority.
 - Access-policy and managed-HTTPS endpoint preparation fails closed until typed ownership metadata

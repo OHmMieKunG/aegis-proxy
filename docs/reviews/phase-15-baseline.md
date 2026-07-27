@@ -45,5 +45,6 @@ Compiler, preview, diff, token-scope, and private owned endpoint evidence is ind
 [`docs/README.md`](../README.md). Durable typed storage and owner-scoped list/get now exist. Phase 15
 also has aggregate desired-state compilation and audited owner-scoped create with a non-active
 immutable candidate plus generation/epoch-CAS update/delete, bound candidate activation, and
-crash-safe typed forward rollback. Phase 15 remains in progress; coordinated retention, complete
-ownership/RBAC metadata, remaining objects, and compatibility policy remain open.
+crash-safe typed forward rollback. Snapshot retention is coordinated with authoritative revision
+pruning. Phase 15 remains in progress; complete ownership/RBAC metadata, remaining objects, and
+compatibility policy remain open.

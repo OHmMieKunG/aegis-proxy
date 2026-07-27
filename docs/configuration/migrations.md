@@ -59,6 +59,10 @@ Typed candidate snapshots use strict schema version 1 under
 old low-level revisions without it still load and remain usable through low-level configuration
 operations, but typed activation rejects them. No automatic binding is inferred from runtime
 configuration because disabled typed objects cannot be recovered from generated routes.
+The configuration revision list is authoritative for snapshot retention. Admin startup and
+pre-bind reconciliation remove valid snapshots only after their revision metadata has been pruned.
+Operators must not manually add, edit, or remove entries: malformed, symlinked, insecure, or
+retained-but-mismatched files fail Admin startup or candidate creation before cleanup proceeds.
 
 Typed rollback uses strict schema version 1 at
 `<state_dir>/admin/proxy-host-rollback.json` only while a desired-state/runtime transaction is in

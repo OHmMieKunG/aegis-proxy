@@ -34,6 +34,9 @@
   desired-state snapshots, metadata linkage, tamper rejection, and compatibility evidence.
 - [Phase 15 typed rollback](reviews/phase-15-proxy-host-rollback.md): bound historical desired
   state, forward revision, recovery journal, authorization, and validation evidence.
+- [Phase 15 typed snapshot retention](reviews/phase-15-proxy-host-snapshot-retention.md):
+  authoritative revision reconciliation, bounded cleanup, tamper rejection, and validation
+  evidence.
 
 ## Operators
 

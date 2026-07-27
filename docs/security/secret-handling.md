@@ -54,6 +54,10 @@ Immutable typed candidate snapshots contain only strict seven-field Proxy Host o
 is bound into revision metadata, and activation verifies file schema, permissions, size, revision
 identity, hash, canonical object order, and equality with current desired state. The snapshot has no
 field capable of carrying secret plaintext.
+Snapshot reconciliation consumes only revision IDs and binding hashes. It validates every bounded
+file before deleting valid snapshots whose authoritative revisions are absent; it never resolves
+credentials or exposes object content. Malformed, symlinked, insecure, or retained-but-mismatched
+entries fail closed before deletion.
 Typed rollback loads only those bound snapshots and never resolves referenced secret material. Its
 private recovery journal contains previous and target secret-free typed records, not configuration
 or credentials. Audit and API errors use fixed failure codes. An unresolved journal blocks further

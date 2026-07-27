@@ -138,12 +138,11 @@ Host object schema are unchanged. OpenAPI, CLI, and the action vocabulary add ty
 tokens remain valid but lack the new scope. Low-level rollback remains separate and cannot be used
 through this typed endpoint.
 
-Typed candidate retention is still independently capped at 1,000 files and is not pruned with
-configuration revision retention. Coordinated retention must land before Phase 15 exit. A restored
-object that was deleted and recreated can reuse generation one; cross-restart durable tombstone
-generations are not implemented. Access-policy/certificate ownership and the remaining typed
-objects also remain incomplete. Transport modules exceed size guidance and must be split before
-Phase 15 exits.
+Subsequent unit `788b5a2` coordinates the independently capped snapshot directory with
+configuration revision retention. A restored object that was deleted and recreated can reuse
+generation one; cross-restart durable tombstone generations are not implemented.
+Access-policy/certificate ownership and the remaining typed objects also remain incomplete.
+Transport modules exceed size guidance and must be split before Phase 15 exits.
 
 ## Completion decision
 

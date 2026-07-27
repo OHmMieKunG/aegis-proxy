@@ -45,6 +45,9 @@ AegisProxy has not published a supported release.
 - Added Admin-only typed Proxy Host forward rollback with an exact revision precondition, distinct
   token scope, bound historical desired state, private crash-recovery journal, and existing atomic
   activation coordinator.
+- Coordinated typed desired-state snapshot retention with authoritative configuration revision
+  pruning; startup and pre-bind reconciliation remove only validated orphan snapshots and reject
+  malformed or tampered state before deletion.
 - Fixed token revocation CLI parsing for valid generated token IDs that begin with a hyphen.
 
 See [`STATUS.md`](STATUS.md) and [`docs/history/`](docs/history/README.md).
