@@ -47,6 +47,8 @@
   scope enforcement, generation ETags, OpenAPI/CLI contracts, and isolation evidence.
 - [Phase 15 Access Policy recovery gate](reviews/phase-15-access-policy-recovery-gate.md):
   fail-closed write blocking after indeterminate atomic replacement.
+- [Phase 15 Access Policy create](reviews/phase-15-access-policy-create.md): audited owner-scoped
+  persistence with active-config validation and no runtime activation.
 
 ## Operators
 

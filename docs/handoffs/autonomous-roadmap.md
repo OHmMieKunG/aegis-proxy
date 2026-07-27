@@ -3,10 +3,10 @@
 Updated: 2026-07-27
 
 - Current branch: `work/autonomous-roadmap`
-- Current completed-unit commit: `697f530`
+- Current completed-unit commit: `926eb68`
 - Current phase: Phase 15, in progress
-- Completed unit: Access Policy indeterminate-write recovery gate
-- Implementation commit: `697f530`
+- Completed unit: audited owner-scoped Access Policy create
+- Implementation commit: `926eb68`
 - Documentation commit: this handoff's documentation commit
 - Remote target: `origin/work/autonomous-roadmap`
 - Expected working tree after documentation commit: clean
@@ -31,28 +31,30 @@ validation, and failure-safe atomic replacement. Distinct read/create/update/del
 flow through roles, explicit token scopes, CLI issuance, and OpenAPI. Admin owns the store before
 socket bind. Owner-scoped list/get now enforce exact read permission, stable order, cross-owner
 not-found, and generation ETags. A post-rename durability failure now blocks every later mutation
-until restart reloads the visible atomic file; reads remain available. Mutation routes remain
-absent.
+until restart reloads the visible atomic file; reads remain available. Create authorizes and
+records audit intent before parsing, requires exact
+active-revision concurrency and owner equality, validates middleware references against active
+configuration, persists generation one, returns an ETag, and never creates or activates a
+configuration revision.
 
 ## Remaining Phase 15 work
 
-Access Policy audited mutations and Proxy Host wiring; certificate ownership; remaining domain objects and
+Access Policy update/delete and Proxy Host wiring; certificate ownership; remaining domain objects and
 contracts; migration/compatibility tests; transport module split; full authorization/security
 review.
 
 ## Exact next task
 
-Implement audited owner-scoped Access Policy create. It must authorize before deserialization, bind owner,
-compile metadata against active configuration, record durable audit intent, persist only after
-validation, map indeterminate/recovery-required storage fail closed, and never activate runtime
-state.
+Implement audited owner-scoped Access Policy update/delete with exact object-generation and active
+revision preconditions, distinct scopes, owner isolation, semantic validation before update,
+recovery-safe persistence errors, CLI/OpenAPI parity, and no runtime activation.
 
 ## Known risks
 
 - Activation is intentionally global and Admin-only until candidate ownership/approval metadata
   supports safe narrower authority.
-- Access-policy mutations remain absent until audit ordering exists; managed HTTPS remains blocked
-  on certificate ownership.
+- Access-policy update/delete remain absent; managed HTTPS remains blocked on certificate
+  ownership.
 - Local Unix peer identity maps to stable `uid-<uid>`; user/session identity remains Phase 15/16.
 - Transitive `proc-macro-error2 2.0.1` has a pre-existing future-incompatibility warning.
 - Product remains production NO-GO pending later phases and independent review.

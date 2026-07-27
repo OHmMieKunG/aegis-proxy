@@ -138,8 +138,11 @@ startup. Owner-scoped list/get API and CLI now require exact read permission, re
 and generation ETags, and make cross-owner resources indistinguishable from missing resources.
 Post-rename durability uncertainty now blocks every later Access Policy mutation until restart
 reconciliation reloads the visible atomic file.
+Audited owner-scoped create now authorizes before deserialization, requires exact active-revision
+concurrency, validates referenced middleware against active configuration, persists only
+secret-free desired state, and never creates or activates a configuration revision.
 
-**Remaining units:** Access Policy audited mutation endpoints and Proxy Host wiring; certificate objects; remaining domain
+**Remaining units:** Access Policy update/delete and Proxy Host wiring; certificate objects; remaining domain
 objects; remaining OpenAPI and CLI contracts; migration/compatibility policy and tests; transport
 module split; full authorization/security review.
 

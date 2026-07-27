@@ -91,7 +91,10 @@ Admin service opens this store before binding its socket and has distinct read/c
 RBAC and token scopes. Owner-scoped list/get return only secret-free records under exact read
 permission; cross-owner get is not-found and object generation is the ETag. A post-rename durability
 failure blocks all later policy mutations until restart reloads the visible atomic file. Mutation
-routes remain absent, and Proxy Host endpoints still reject every policy reference.
+create requires exact active-revision `If-Match`, exact create scope, owner equality, durable audit
+intent, and semantic middleware validation before storage. It returns generation one and never
+creates or activates a configuration revision. Update/delete remain absent, and Proxy Host
+endpoints still reject every policy reference.
 
 `PUT` and `DELETE /v1/proxy-hosts/{id}` follow the same ordering. They require
 `X-Aegis-Object-Generation` in addition to active-revision `If-Match`. Update enforces path/body

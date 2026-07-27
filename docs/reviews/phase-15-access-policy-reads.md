@@ -14,9 +14,9 @@ ETag. Invalid IDs, missing IDs, and other-owner IDs all return the same not-foun
 routes require role permission plus exact `read_access_policies` token scope when bearer
 authentication is used.
 
-The CLI exposes `access-policy list` and `access-policy get`. OpenAPI defines the strict read-only
+The CLI exposes `access-policy list` and `access-policy get`. OpenAPI defines the strict read
 paths, the stored generation envelope, optional shared-owner array, and exact 63-byte middleware
-reference grammar. No Access Policy create/update/delete request body or mutation path exists.
+reference grammar. Audited create landed later in `926eb68`; update/delete remain absent.
 
 ## Isolation and security
 
@@ -56,6 +56,6 @@ The existing `proc-macro-error2 2.0.1` warning and unavailable optional tools re
 
 The read-only endpoint unit meets its authorization, ownership, non-disclosure, deterministic
 ordering, ETag, secret isolation, transport-contract, compatibility, review, and validation gates.
-Phase 15 remains in progress. Access Policy mutations and Proxy Host reference enablement remain
-absent until audit ordering, configuration validation, revision integration, and indeterminate
-write recovery are designed and tested.
+Phase 15 remains in progress. Create landed later after audit ordering, active-configuration
+validation, and indeterminate-write recovery. Update/delete and Proxy Host reference enablement
+remain absent.

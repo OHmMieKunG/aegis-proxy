@@ -43,5 +43,5 @@ process-crash durability campaign remains Phase 21 failure-testing work.
 ## Decision
 
 The recovery gate is complete. Phase 15 remains in progress. Audited owner-scoped Access Policy
-create is next; its endpoint must map both durability errors fail closed and must not treat
-indeterminate persistence as no change.
+create landed in `926eb68` and maps both durability errors fail closed. Update/delete and Proxy
+Host policy wiring remain.
