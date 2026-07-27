@@ -53,5 +53,6 @@ blocking security, compatibility, or test defect.
 
 ## Decision
 
-Access Policy create is complete. Phase 15 remains in progress. Update/delete and Proxy Host policy
-reference wiring remain unavailable.
+Access Policy create is complete. Update/delete landed later in `334916d`; see
+[the update/delete review](phase-15-access-policy-update-delete.md). Phase 15 remains in progress,
+and Proxy Host policy reference wiring remains unavailable.

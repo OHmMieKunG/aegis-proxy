@@ -38,16 +38,17 @@ returns only enabled state and counts. BasicAuth and ForwardAuth contents stay i
 validated canonical configuration and never enter the policy object, metadata, or compiler error.
 Its private bounded store serializes only this secret-free object, uses mode `0700` parent and
 `0600` files on Unix, rejects symlinks, broad permissions, and malformed state, and exposes only
-record count through `Debug`. Audited Access Policy create accepts only this strict object, validates
-middleware references against active configuration, and persists no middleware contents or
-credentials.
+record count through `Debug`. Audited Access Policy create/update accept only this strict object,
+validate middleware references against active configuration, and persist no middleware contents or
+credentials. Delete returns only the deleted secret-free record.
 Private typed Proxy Host validation/preview/create/update/delete endpoints apply authorization before JSON deserialization,
 require exact principal ownership, and reuse this redaction boundary. They return fixed error
 envelopes and cannot expose or resolve secrets. Validation/preview cannot persist or activate.
 Create may persist only the secret-free seven-field object and a canonical immutable candidate; it
-cannot activate. Access-policy and managed-HTTPS preparation remains unavailable until typed
-ownership metadata can be checked. Remaining mutation and stored-credential contracts are still
-Phase 15 work.
+cannot activate. Access-policy update/delete likewise cannot create or activate configuration
+revisions. Proxy Host access-policy wiring and managed-HTTPS preparation remain unavailable until
+typed ownership metadata can be checked. Remaining stored-credential contracts are still Phase 15
+work.
 
 Typed Proxy Host desired-state persistence contains no secret-bearing field. Its private parent is
 mode `0700`, file is mode `0600`, symlink and broad-permission inputs fail closed, bytes and object

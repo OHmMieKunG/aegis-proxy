@@ -141,8 +141,11 @@ reconciliation reloads the visible atomic file.
 Audited owner-scoped create now authorizes before deserialization, requires exact active-revision
 concurrency, validates referenced middleware against active configuration, persists only
 secret-free desired state, and never creates or activates a configuration revision.
+Audited owner-scoped update/delete now additionally require exact object generation, hide
+cross-owner existence, validate replacement middleware before persistence, and preserve the same
+non-activation boundary.
 
-**Remaining units:** Access Policy update/delete and Proxy Host wiring; certificate objects; remaining domain
+**Remaining units:** Proxy Host Access Policy wiring; certificate objects; remaining domain
 objects; remaining OpenAPI and CLI contracts; migration/compatibility policy and tests; transport
 module split; full authorization/security review.
 

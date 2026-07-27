@@ -43,7 +43,8 @@ Access Policy preparation adds `read-access-policies`, `create-access-policy`,
 `update-access-policy`, and `delete-access-policy` (`*_access_policy` in JSON). Existing tokens gain
 none automatically. The read scope is available to every built-in role; mutation scopes require
 Operator or Admin. List/get require `read-access-policies`; create now requires
-`create-access-policy`. Update/delete routes remain absent.
+`create-access-policy`; update/delete require their corresponding exact scope plus current object
+generation and active revision.
 
 The checked OpenAPI contract is [`../schema/admin-openapi.yaml`](../../config/schema/admin-openapi.yaml).
 No migration exposes token plaintext or stored password hashes.

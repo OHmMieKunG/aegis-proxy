@@ -12,7 +12,8 @@ snapshot retention `788b5a2`, typed Access Policy ownership metadata `f23468b`, 
 Policy persistence `58f30dc`, dedicated Access Policy scopes/startup wiring `8eb1c73`, and
 owner-scoped Access Policy reads `ef115a6`. Post-rename Access Policy durability failures now gate
 all later policy writes until restart reconciliation (`697f530`); audited owner-scoped creation is
-available through the API and CLI (`926eb68`).
+available through the API and CLI (`926eb68`), with dual-concurrency update/delete following in
+`334916d`.
 
 Working tree at Phase 14 start: clean at `10aae8c`
 
@@ -86,8 +87,10 @@ evidence.
   restart reloads the visible atomic file; reads remain available. Audited create requires exact
   active-revision concurrency, authorizes before parsing, validates middleware references against
   active configuration, persists generation one, and never creates or activates a configuration
-  revision. Update/delete remain absent. Proxy Host endpoints still reject policy references until
-  reference wiring exists.
+  revision. Update/delete require the active revision and exact object generation, preserve
+  owner-scoped not-found behavior, validate updates before persistence, and likewise create no
+  configuration revision or runtime activation. Proxy Host endpoints still reject policy
+  references until reference wiring exists.
 - Preview returns redacted config, fingerprints, and activation class; a separate pure function
   produces the ordered typed diff. Neither can persist or activate candidates.
 - Restore validates archives but does not extract or activate them.
@@ -109,7 +112,7 @@ evidence.
 [Phase 15 stable typed control plane](PLAN.md#phase-15--stable-typed-control-plane). Phase 14
 completed behavior-preserving modularization: inline tests are focused and production ownership is
 split by domain. At Phase 14 completion no production Rust module exceeded 1,200 measured lines.
-Phase 15 endpoint growth now places `server/handlers.rs` at 1,933 lines and CLI `main.rs` at 1,309;
+Phase 15 endpoint growth now places `server/handlers.rs` at 2,296 lines and CLI `main.rs` at 1,451;
 their single transport-orchestration ownership is an explicit temporary exception that must be
 split after Phase 15 contracts stabilize. See the [completion evidence](docs/reviews/phase-14-completion.md).
 
@@ -169,6 +172,7 @@ release. Dated exception: [dependency review](docs/security/dependency-unsafe-re
 - [Typed Access Policy read review](docs/reviews/phase-15-access-policy-reads.md)
 - [Typed Access Policy recovery-gate review](docs/reviews/phase-15-access-policy-recovery-gate.md)
 - [Typed Access Policy create review](docs/reviews/phase-15-access-policy-create.md)
+- [Typed Access Policy update/delete review](docs/reviews/phase-15-access-policy-update-delete.md)
 - [Historical evidence](docs/history/README.md)
 
 High-level user guides remain absent until Phase 15 defines stable objects and Phase 16 implements

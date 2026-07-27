@@ -61,6 +61,9 @@ AegisProxy has not published a supported release.
   reconciliation, preventing retries against uncertain state.
 - Added audited owner-scoped Access Policy creation with active-revision concurrency, semantic
   middleware validation, generation ETags, CLI/OpenAPI contracts, and no runtime activation.
+- Added audited owner-scoped Access Policy update/delete with active-revision and object-generation
+  concurrency, semantic update validation, cross-owner not-found behavior, and no runtime
+  activation.
 - Fixed token revocation CLI parsing for valid generated token IDs that begin with a hyphen.
 
 See [`STATUS.md`](STATUS.md) and [`docs/history/`](docs/history/README.md).

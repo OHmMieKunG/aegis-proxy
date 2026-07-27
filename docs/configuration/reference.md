@@ -114,7 +114,10 @@ If an atomic replacement reaches rename but parent-directory sync fails, the pro
 visible new state for reads and rejects every later policy mutation until restart reconciliation.
 `access-policy create --expect <active-revision> <json-file>` uses the exact create scope, validates
 the owner and referenced active middleware, durably audits the request, and stores generation one
-without creating or activating a configuration revision. Update/delete remain unavailable.
+without creating or activating a configuration revision. `access-policy update` and
+`access-policy delete` additionally require `--generation`; update validates the replacement
+against active middleware and both operations preserve owner-scoped not-found behavior. Neither
+creates nor activates a configuration revision.
 
 ## Routing rules
 
