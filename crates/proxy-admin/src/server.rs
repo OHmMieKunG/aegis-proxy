@@ -604,9 +604,14 @@ pub async fn serve(
         .map_err(|_| AdminServerError::Token)?;
     let proxy_host_path = state_dir.join("admin/proxy-hosts.json");
     let active_revision = control.runtime().revision().to_string();
+    let revision_store = control.revisions();
     let proxy_host_store = tokio::task::spawn_blocking(move || {
         let store = ProxyHostStore::open(proxy_host_path)?;
         store.recover_rollback(&active_revision)?;
+        let retained = revision_store
+            .list()
+            .map_err(|_| ProxyHostStoreError::Invalid)?;
+        store.reconcile_candidates(&retained)?;
         Ok::<_, ProxyHostStoreError>(store)
     })
     .await

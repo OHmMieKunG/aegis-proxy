@@ -318,8 +318,9 @@ async fn create_proxy_host_candidate_revision(
         principal.actor_type, principal.actor_id
     );
     let revision_binding = binding_hash.clone();
-    let metadata = match tokio::task::spawn_blocking(move || {
-        revisions.create_bound_candidate(&config, &source, &revision_binding)
+    let (metadata, retained) = match tokio::task::spawn_blocking(move || {
+        let metadata = revisions.create_bound_candidate(&config, &source, &revision_binding)?;
+        Ok::<_, RevisionError>((metadata, revisions.list()?))
     })
     .await
     {
@@ -339,6 +340,7 @@ async fn create_proxy_host_candidate_revision(
     let candidate_id = metadata.id.clone();
     let snapshot_binding = binding_hash;
     match tokio::task::spawn_blocking(move || {
+        store.reconcile_candidates(&retained)?;
         store.bind_candidate(&candidate_id, &snapshot_binding, &desired_objects)
     })
     .await
@@ -1030,8 +1032,10 @@ pub(super) async fn rollback_proxy_hosts(
     let revisions = state.control.revisions();
     let source = format!("rollback:proxy-host:{id}");
     let revision_binding = forward_binding.clone();
-    let forward = match tokio::task::spawn_blocking(move || {
-        revisions.create_bound_forward_revision(&config, &source, &revision_binding)
+    let (forward, retained) = match tokio::task::spawn_blocking(move || {
+        let metadata =
+            revisions.create_bound_forward_revision(&config, &source, &revision_binding)?;
+        Ok::<_, RevisionError>((metadata, revisions.list()?))
     })
     .await
     {
@@ -1052,6 +1056,7 @@ pub(super) async fn rollback_proxy_hosts(
     let snapshot_binding = forward_binding;
     let bound_objects = target_objects.clone();
     match tokio::task::spawn_blocking(move || {
+        store.reconcile_candidates(&retained)?;
         store.bind_candidate(&forward_id, &snapshot_binding, &bound_objects)
     })
     .await

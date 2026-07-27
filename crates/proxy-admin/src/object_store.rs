@@ -12,6 +12,7 @@ use std::{
     },
 };
 
+use aegisproxy_config::revision::RevisionMetadata;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -523,6 +524,82 @@ impl ProxyHostStore {
         revision_id: &str,
         expected_hash: &str,
     ) -> Result<BoundProxyHostCandidate, ProxyHostStoreError> {
+        let candidate = self.load_candidate_file(revision_id)?;
+        if candidate.binding_hash != expected_hash {
+            return Err(ProxyHostStoreError::Invalid);
+        }
+        Ok(candidate)
+    }
+
+    /// Remove valid typed snapshots only after their authoritative revisions are gone.
+    pub fn reconcile_candidates(
+        &self,
+        retained_revisions: &[RevisionMetadata],
+    ) -> Result<usize, ProxyHostStoreError> {
+        let mut retained = BTreeMap::new();
+        for revision in retained_revisions {
+            validate_revision_id(&revision.id)?;
+            if revision
+                .binding_hash
+                .as_deref()
+                .is_some_and(|hash| !valid_binding_hash(hash))
+            {
+                return Err(ProxyHostStoreError::Invalid);
+            }
+            if retained
+                .insert(revision.id.as_str(), revision.binding_hash.as_deref())
+                .is_some()
+            {
+                return Err(ProxyHostStoreError::Invalid);
+            }
+        }
+        let metadata = match fs::symlink_metadata(&self.candidate_dir) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(error) => return Err(error.into()),
+        };
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return Err(ProxyHostStoreError::Invalid);
+        }
+        reject_insecure_directory_permissions(&metadata)?;
+
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(&self.candidate_dir)? {
+            entries.push(entry?);
+            if entries.len() > MAX_CANDIDATE_SNAPSHOTS {
+                return Err(ProxyHostStoreError::Limit);
+            }
+        }
+        entries.sort_unstable_by_key(fs::DirEntry::file_name);
+
+        let mut stale = Vec::new();
+        for entry in entries {
+            if !entry.file_type()?.is_file() {
+                return Err(ProxyHostStoreError::Invalid);
+            }
+            let file_name = entry.file_name();
+            let revision_id = file_name
+                .to_str()
+                .and_then(|name| name.strip_suffix(".json"))
+                .ok_or(ProxyHostStoreError::Invalid)?;
+            validate_revision_id(revision_id)?;
+            let candidate = self.load_candidate_file(revision_id)?;
+            match retained.get(revision_id) {
+                Some(Some(expected_hash)) if candidate.binding_hash == *expected_hash => {}
+                Some(_) => return Err(ProxyHostStoreError::Invalid),
+                None => stale.push(entry.path()),
+            }
+        }
+        for path in &stale {
+            remove_private_file(path)?;
+        }
+        Ok(stale.len())
+    }
+
+    fn load_candidate_file(
+        &self,
+        revision_id: &str,
+    ) -> Result<BoundProxyHostCandidate, ProxyHostStoreError> {
         validate_revision_id(revision_id)?;
         let path = self.candidate_path(revision_id);
         let metadata = fs::symlink_metadata(&path)?;
@@ -546,8 +623,7 @@ impl ProxyHostStore {
         let binding_hash = Self::binding_hash(&objects)?;
         if file.schema_version != STORE_SCHEMA_VERSION
             || file.revision_id != revision_id
-            || file.binding_hash != expected_hash
-            || binding_hash != expected_hash
+            || file.binding_hash != binding_hash
         {
             return Err(ProxyHostStoreError::Invalid);
         }
@@ -751,6 +827,13 @@ fn validate_revision_id(id: &str) -> Result<(), ProxyHostStoreError> {
         return Err(ProxyHostStoreError::Invalid);
     }
     Ok(())
+}
+
+fn valid_binding_hash(hash: &str) -> bool {
+    hash.len() == 64
+        && hash
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 fn directory_entry_count(path: &Path) -> Result<usize, ProxyHostStoreError> {
@@ -1062,6 +1145,17 @@ mod tests {
         .expect("typed object")
     }
 
+    fn revision_metadata(id: &str, binding_hash: Option<&str>) -> RevisionMetadata {
+        RevisionMetadata {
+            id: id.into(),
+            sequence: id[..20].parse().expect("revision sequence"),
+            hash: id[21..].into(),
+            created_unix_secs: 1,
+            source: "test".into(),
+            binding_hash: binding_hash.map(str::to_owned),
+        }
+    }
+
     #[test]
     fn persists_owner_indexed_objects_in_stable_order() {
         let (path, root) = temporary_store("round-trip");
@@ -1271,6 +1365,136 @@ mod tests {
             reopened.load_candidate(&revision, &binding_hash),
             Err(ProxyHostStoreError::Invalid)
         ));
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn candidate_reconciliation_prunes_only_valid_unretained_snapshots() {
+        let (path, root) = temporary_store("candidate-retention");
+        let store = ProxyHostStore::open(&path).expect("store");
+        let objects = vec![object("proxy-a", "alice", "a.example.test")];
+        let binding_hash = ProxyHostStore::binding_hash(&objects).expect("binding hash");
+        let retained = format!("{:020}-{}", 1, "ab".repeat(32));
+        let stale = format!("{:020}-{}", 2, "cd".repeat(32));
+        store
+            .bind_candidate(&retained, &binding_hash, &objects)
+            .expect("retained binding");
+        store
+            .bind_candidate(&stale, &binding_hash, &objects)
+            .expect("stale binding");
+
+        assert_eq!(
+            store
+                .reconcile_candidates(&[revision_metadata(&retained, Some(&binding_hash))])
+                .expect("reconcile"),
+            1
+        );
+        assert!(
+            store.load_candidate(&retained, &binding_hash).is_ok(),
+            "retained snapshot must remain"
+        );
+        assert!(matches!(
+            store.load_candidate(&stale, &binding_hash),
+            Err(ProxyHostStoreError::Io(error))
+                if error.kind() == std::io::ErrorKind::NotFound
+        ));
+        drop(store);
+
+        let reopened = ProxyHostStore::open(&path).expect("reopen");
+        assert_eq!(
+            reopened
+                .reconcile_candidates(&[revision_metadata(&retained, Some(&binding_hash))])
+                .expect("idempotent reconcile"),
+            0
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn candidate_reconciliation_fails_closed_before_deleting_on_tamper() {
+        let (path, root) = temporary_store("candidate-retention-tamper");
+        let store = ProxyHostStore::open(&path).expect("store");
+        let objects = vec![object("proxy-a", "alice", "a.example.test")];
+        let binding_hash = ProxyHostStore::binding_hash(&objects).expect("binding hash");
+        let retained = format!("{:020}-{}", 1, "ab".repeat(32));
+        let stale = format!("{:020}-{}", 2, "cd".repeat(32));
+        store
+            .bind_candidate(&retained, &binding_hash, &objects)
+            .expect("retained binding");
+        store
+            .bind_candidate(&stale, &binding_hash, &objects)
+            .expect("stale binding");
+        let stale_path = store.candidate_path(&stale);
+        let original = fs::read(&stale_path).expect("stale bytes");
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&original).expect("candidate JSON");
+        value["binding_hash"] = serde_json::json!("00".repeat(32));
+        fs::write(
+            &stale_path,
+            serde_json::to_vec(&value).expect("tampered JSON"),
+        )
+        .expect("tamper stale snapshot");
+
+        assert!(matches!(
+            store.reconcile_candidates(&[revision_metadata(&retained, Some(&binding_hash))]),
+            Err(ProxyHostStoreError::Invalid)
+        ));
+        assert!(store.candidate_path(&retained).exists());
+        assert!(stale_path.exists());
+        fs::write(&stale_path, original).expect("restore stale snapshot");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+
+            let symlink_id = format!("{:020}-{}", 3, "ef".repeat(32));
+            let symlink_path = store.candidate_path(&symlink_id);
+            symlink(&stale_path, &symlink_path).expect("candidate symlink");
+            assert!(matches!(
+                store.reconcile_candidates(&[revision_metadata(&retained, Some(&binding_hash))]),
+                Err(ProxyHostStoreError::Invalid)
+            ));
+            assert!(stale_path.exists());
+            fs::remove_file(symlink_path).expect("remove symlink");
+        }
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn candidate_reconciliation_frees_capacity_after_revision_pruning() {
+        let (path, root) = temporary_store("candidate-retention-cap");
+        let store = ProxyHostStore::open(&path).expect("store");
+        let objects = vec![object("proxy-a", "alice", "a.example.test")];
+        let binding_hash = ProxyHostStore::binding_hash(&objects).expect("binding hash");
+        let retained = format!("{:020}-{}", 1, "ab".repeat(32));
+        store
+            .bind_candidate(&retained, &binding_hash, &objects)
+            .expect("retained binding");
+        for sequence in 2..=MAX_CANDIDATE_SNAPSHOTS {
+            let revision = format!("{sequence:020}-{}", "cd".repeat(32));
+            store
+                .bind_candidate(&revision, &binding_hash, &objects)
+                .expect("fill candidate capacity");
+        }
+        let next = format!("{:020}-{}", MAX_CANDIDATE_SNAPSHOTS + 1, "ef".repeat(32));
+        assert!(matches!(
+            store.bind_candidate(&next, &binding_hash, &objects),
+            Err(ProxyHostStoreError::Limit)
+        ));
+
+        assert_eq!(
+            store
+                .reconcile_candidates(&[revision_metadata(&retained, Some(&binding_hash))])
+                .expect("prune stale snapshots"),
+            MAX_CANDIDATE_SNAPSHOTS - 1
+        );
+        store
+            .bind_candidate(&next, &binding_hash, &objects)
+            .expect("bind after pruning");
+        assert!(store.load_candidate(&retained, &binding_hash).is_ok());
+        assert!(store.load_candidate(&next, &binding_hash).is_ok());
 
         fs::remove_dir_all(root).expect("cleanup");
     }
