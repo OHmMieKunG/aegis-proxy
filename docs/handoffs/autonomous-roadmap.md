@@ -3,10 +3,10 @@
 Updated: 2026-07-27
 
 - Current branch: `work/autonomous-roadmap`
-- Current completed-unit commit: `ef115a6`
+- Current completed-unit commit: `697f530`
 - Current phase: Phase 15, in progress
-- Completed unit: owner-scoped Access Policy list/get
-- Implementation commit: `ef115a6`
+- Completed unit: Access Policy indeterminate-write recovery gate
+- Implementation commit: `697f530`
 - Documentation commit: this handoff's documentation commit
 - Remote target: `origin/work/autonomous-roadmap`
 - Expected working tree after documentation commit: clean
@@ -30,7 +30,9 @@ global IDs, owner reads, canonical records, generation CAS, exclusive ownership,
 validation, and failure-safe atomic replacement. Distinct read/create/update/delete actions
 flow through roles, explicit token scopes, CLI issuance, and OpenAPI. Admin owns the store before
 socket bind. Owner-scoped list/get now enforce exact read permission, stable order, cross-owner
-not-found, and generation ETags. Mutations remain absent.
+not-found, and generation ETags. A post-rename durability failure now blocks every later mutation
+until restart reloads the visible atomic file; reads remain available. Mutation routes remain
+absent.
 
 ## Remaining Phase 15 work
 
@@ -40,17 +42,17 @@ review.
 
 ## Exact next task
 
-Define a recovery-required mutation gate for `AccessPolicyStoreError::Indeterminate`, then implement
-audited owner-scoped Access Policy create. It must authorize before deserialization, bind owner,
+Implement audited owner-scoped Access Policy create. It must authorize before deserialization, bind owner,
 compile metadata against active configuration, record durable audit intent, persist only after
-validation, and never activate runtime state.
+validation, map indeterminate/recovery-required storage fail closed, and never activate runtime
+state.
 
 ## Known risks
 
 - Activation is intentionally global and Admin-only until candidate ownership/approval metadata
   supports safe narrower authority.
-- Access-policy mutations remain absent until audit ordering and indeterminate-write recovery
-  exist; managed HTTPS remains blocked on certificate ownership.
+- Access-policy mutations remain absent until audit ordering exists; managed HTTPS remains blocked
+  on certificate ownership.
 - Local Unix peer identity maps to stable `uid-<uid>`; user/session identity remains Phase 15/16.
 - Transitive `proc-macro-error2 2.0.1` has a pre-existing future-incompatibility warning.
 - Product remains production NO-GO pending later phases and independent review.

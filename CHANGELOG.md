@@ -57,6 +57,8 @@ AegisProxy has not published a supported release.
   startup ownership; no Access Policy route is exposed yet.
 - Added owner-scoped Access Policy list/get API and CLI operations with exact read scope, stable
   ordering, generation ETags, and cross-owner not-found behavior.
+- Blocked Access Policy writes after indeterminate post-rename durability failures until restart
+  reconciliation, preventing retries against uncertain state.
 - Fixed token revocation CLI parsing for valid generated token IDs that begin with a hyphen.
 
 See [`STATUS.md`](STATUS.md) and [`docs/history/`](docs/history/README.md).

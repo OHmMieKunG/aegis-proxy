@@ -45,6 +45,8 @@
   actions, CLI/OpenAPI parity, private startup ownership, and endpoint non-scope.
 - [Phase 15 Access Policy reads](reviews/phase-15-access-policy-reads.md): owner-scoped list/get,
   scope enforcement, generation ETags, OpenAPI/CLI contracts, and isolation evidence.
+- [Phase 15 Access Policy recovery gate](reviews/phase-15-access-policy-recovery-gate.md):
+  fail-closed write blocking after indeterminate atomic replacement.
 
 ## Operators
 

@@ -110,6 +110,8 @@ at `<state_dir>/admin/access-policies.json` before binding its socket. Dedicated
 `read_access_policies`, `create_access_policy`, `update_access_policy`, and
 `delete_access_policy` token scopes exist. API and CLI list/get require the read scope, use
 owner-scoped not-found behavior, and return generation ETags. Mutation routes do not exist yet.
+If an atomic replacement reaches rename but parent-directory sync fails, the process keeps the
+visible new state for reads and rejects every later policy mutation until restart reconciliation.
 
 ## Routing rules
 

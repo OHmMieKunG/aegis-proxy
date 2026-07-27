@@ -33,8 +33,9 @@ The immediate parent is a real private directory and the data and lock files are
 Unix. Replacement writes and syncs a random exclusive temporary file, renames it atomically, then
 syncs the parent directory. Failure before rename restores the in-memory mutation. A failure after
 rename returns the distinct `Indeterminate` error and retains the new in-memory state so memory
-matches the visible durable file. Future endpoint integration must block or reconcile mutation on
-that error; it must not report that no change occurred.
+matches the visible durable file. The store now gates every subsequent mutation after that error
+until restart reconciliation reloads the visible atomic file; reads remain available. Endpoint
+integration must map both durability states fail closed and must not report that no change occurred.
 
 ## Isolation and compatibility
 
@@ -81,5 +82,5 @@ non-blocking. Optional unavailable tools remain recorded in `STATUS.md`.
 The persistence unit satisfies its canonicalization, ownership, CAS, bounded-resource, strict
 restart, atomic replacement, secret isolation, compatibility, test, and review gates. Phase 15
 remains in progress. Dedicated RBAC actions and token-scope contracts landed next in `8eb1c73`;
-durable audited endpoints, Proxy Host policy wiring, and indeterminate-write recovery behavior
-remain mandatory before the object becomes operator-usable.
+the recovery gate landed in `697f530`. Durable audited endpoints and Proxy Host policy wiring remain
+mandatory before the object becomes operator-usable.

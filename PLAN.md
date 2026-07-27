@@ -136,6 +136,8 @@ Distinct deny-by-default read/create/update/delete actions now flow through role
 scope intersection, CLI token issuance, and OpenAPI. Administration opens the store fail closed at
 startup. Owner-scoped list/get API and CLI now require exact read permission, return stable records
 and generation ETags, and make cross-owner resources indistinguishable from missing resources.
+Post-rename durability uncertainty now blocks every later Access Policy mutation until restart
+reconciliation reloads the visible atomic file.
 
 **Remaining units:** Access Policy audited mutation endpoints and Proxy Host wiring; certificate objects; remaining domain
 objects; remaining OpenAPI and CLI contracts; migration/compatibility policy and tests; transport
