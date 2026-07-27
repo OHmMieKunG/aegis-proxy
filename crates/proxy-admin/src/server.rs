@@ -4,7 +4,7 @@ mod handlers;
 mod support;
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fs, io,
     os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
@@ -44,10 +44,10 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    AccessPolicySpec, AccessPolicyStore, AccessPolicyStoreError, Action, ApiObject, AuditEvent,
-    AuditLog, AuditOutcome, ObjectId, PreparedProxyHost, ProxyHostPreparationError,
-    ProxyHostPreviewSummary, ProxyHostSpec, ProxyHostStore, ProxyHostStoreError, Role,
-    StoredAccessPolicy, StoredProxyHost, TokenScopes, TokenStore,
+    AccessPolicyMetadata, AccessPolicySpec, AccessPolicyStore, AccessPolicyStoreError, Action,
+    ApiObject, AuditEvent, AuditLog, AuditOutcome, ObjectId, PreparedProxyHost,
+    ProxyHostPreparationError, ProxyHostPreviewSummary, ProxyHostSpec, ProxyHostStore,
+    ProxyHostStoreError, Role, StoredAccessPolicy, StoredProxyHost, TokenScopes, TokenStore,
 };
 use handlers::*;
 use support::*;

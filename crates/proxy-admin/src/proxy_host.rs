@@ -7,10 +7,10 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::{
-    ApiObject, AutomaticHttps, CompileContext, ContractError, ObjectId, ProxyHostCandidatePreview,
-    ProxyHostClaims, ProxyHostCompileError, ProxyHostDiff, ProxyHostDiffError,
-    ProxyHostPreviewError, ProxyHostSetCandidate, ProxyHostSetCompileContext, ProxyHostSpec,
-    compile_proxy_host, compile_proxy_hosts, diff_proxy_host_previews,
+    AccessPolicyMetadata, ApiObject, AutomaticHttps, CompileContext, ContractError, ObjectId,
+    ProxyHostCandidatePreview, ProxyHostClaims, ProxyHostCompileError, ProxyHostDiff,
+    ProxyHostDiffError, ProxyHostPreviewError, ProxyHostSetCandidate, ProxyHostSetCompileContext,
+    ProxyHostSpec, compile_proxy_host, compile_proxy_hosts, diff_proxy_host_previews,
     preview_proxy_host_candidate,
 };
 
@@ -66,6 +66,7 @@ pub fn prepare_proxy_host(
         active,
         authenticated_owner,
         &ProxyHostClaims::default(),
+        &BTreeMap::new(),
     )
 }
 
@@ -74,27 +75,24 @@ pub(crate) fn prepare_proxy_host_with_claims(
     active: &Config,
     authenticated_owner: &ObjectId,
     claims: &ProxyHostClaims,
+    access_policies: &BTreeMap<ObjectId, AccessPolicyMetadata>,
 ) -> Result<PreparedProxyHost, ProxyHostPreparationError> {
     if &object.metadata.owner_id != authenticated_owner {
         return Err(ProxyHostPreparationError::UnauthorizedOwner);
     }
     object.spec.validate_shape().map_err(map_contract_error)?;
-    if object.spec.access_policy_ref.is_some() {
-        return Err(ProxyHostPreparationError::AccessPolicyUnavailable);
-    }
     if object.spec.automatic_https == AutomaticHttps::Managed {
         return Err(ProxyHostPreparationError::ManagedHttpsUnavailable);
     }
 
     let http_listener_id = single_http_listener(active)?;
     let upstream_template_id = single_http_upstream_template(active)?;
-    let access_policies = BTreeMap::new();
     let context = CompileContext {
         base_config: active,
         owner_id: authenticated_owner,
         http_listener_id,
         upstream_template_id,
-        access_policies: &access_policies,
+        access_policies,
         claimed_objects: &claims.objects,
         claimed_domains: &claims.domains,
         managed_https: None,
@@ -137,6 +135,10 @@ fn map_contract_error(_error: ContractError) -> ProxyHostPreparationError {
 fn map_compile_error(error: ProxyHostCompileError) -> ProxyHostPreparationError {
     match error {
         ProxyHostCompileError::UnauthorizedOwner => ProxyHostPreparationError::UnauthorizedOwner,
+        ProxyHostCompileError::MissingAccessPolicy
+        | ProxyHostCompileError::UnauthorizedAccessPolicy => {
+            ProxyHostPreparationError::AccessPolicyUnavailable
+        }
         _ => ProxyHostPreparationError::Compile,
     }
 }

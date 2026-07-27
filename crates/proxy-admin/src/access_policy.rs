@@ -406,7 +406,11 @@ impl AccessPolicyStore {
         let policies = self
             .policies
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.recovery_required() {
+            return Err(AccessPolicyStoreError::RecoveryRequired);
+        }
+        let policies = policies
             .iter()
             .map(|(id, stored)| (id.clone(), stored.object.clone()))
             .collect::<Vec<_>>();
@@ -418,6 +422,29 @@ impl AccessPolicyStore {
                     .map_err(|_| AccessPolicyStoreError::Invalid)
             })
             .collect()
+    }
+
+    /// Compile one globally identified policy for a side-effect-free reference check.
+    pub fn metadata_for(
+        &self,
+        config: &Config,
+        id: &ObjectId,
+    ) -> Result<Option<AccessPolicyMetadata>, AccessPolicyStoreError> {
+        validate(config).map_err(|_| AccessPolicyStoreError::Invalid)?;
+        let policies = self
+            .policies
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.recovery_required() {
+            return Err(AccessPolicyStoreError::RecoveryRequired);
+        }
+        policies
+            .get(id)
+            .map(|stored| {
+                compile_access_policy_metadata_validated(&stored.object, config)
+                    .map_err(|_| AccessPolicyStoreError::Invalid)
+            })
+            .transpose()
     }
 
     /// Whether a post-rename durability failure blocks further mutation until restart.
@@ -1161,6 +1188,10 @@ mod tests {
         assert!(store.recovery_required());
         assert!(matches!(
             store.create(owned_policy("blocked", "alice", &["edge-ip"])),
+            Err(AccessPolicyStoreError::RecoveryRequired)
+        ));
+        assert!(matches!(
+            store.metadata(&config()),
             Err(AccessPolicyStoreError::RecoveryRequired)
         ));
         let owner: ObjectId = "alice".parse().expect("owner");

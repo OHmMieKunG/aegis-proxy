@@ -1,5 +1,25 @@
 use super::*;
 
+async fn access_policy_metadata(
+    state: &AppState,
+    config: Arc<Config>,
+    policy_id: Option<ObjectId>,
+) -> Result<BTreeMap<ObjectId, AccessPolicyMetadata>, ApiError> {
+    let Some(policy_id) = policy_id else {
+        return Ok(BTreeMap::new());
+    };
+    let store = Arc::clone(&state.access_policies);
+    let lookup_id = policy_id.clone();
+    match tokio::task::spawn_blocking(move || store.metadata_for(&config, &lookup_id)).await {
+        Ok(Ok(metadata)) => Ok(metadata
+            .map(|metadata| BTreeMap::from([(policy_id, metadata)]))
+            .unwrap_or_default()),
+        Ok(Err(AccessPolicyStoreError::RecoveryRequired)) => Err(ApiError::Unavailable),
+        Ok(Err(AccessPolicyStoreError::Invalid)) => Err(ApiError::InvalidRequest),
+        Ok(Err(_)) | Err(_) => Err(ApiError::Internal),
+    }
+}
+
 pub(super) async fn live() -> axum::Json<HealthResponse> {
     axum::Json(HealthResponse { status: "live" })
 }
@@ -1525,10 +1545,22 @@ async fn prepare_proxy_host_request(
     let object = payload.map_err(|_| ApiError::InvalidRequest)?.0;
     let owner = principal.owner_id.clone().ok_or(ApiError::Forbidden)?;
     let active = state.control.runtime().config();
+    let policy_id = object
+        .spec
+        .access_policy_ref
+        .as_ref()
+        .map(|reference| reference.id().clone());
+    let access_policies = access_policy_metadata(state, Arc::clone(&active), policy_id).await?;
     let store = Arc::clone(&state.proxy_hosts);
     tokio::task::spawn_blocking(move || {
         let claims = store.claims();
-        crate::proxy_host::prepare_proxy_host_with_claims(&object, &active, &owner, &claims)
+        crate::proxy_host::prepare_proxy_host_with_claims(
+            &object,
+            &active,
+            &owner,
+            &claims,
+            &access_policies,
+        )
     })
     .await
     .map_err(|_| ApiError::Internal)?

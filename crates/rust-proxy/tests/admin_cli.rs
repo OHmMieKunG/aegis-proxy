@@ -430,6 +430,44 @@ allow = ["127.0.0.1/32"]
         );
         assert_eq!(active_revision(&state), current);
 
+        let mut protected_proxy_host = proxy_host.clone();
+        protected_proxy_host["spec"]["access_policy_ref"] = serde_json::json!("private-lan");
+        let protected_proxy_host_path = daemon.root.join("protected-proxy-host.json");
+        fs::write(
+            &protected_proxy_host_path,
+            serde_json::to_vec_pretty(&protected_proxy_host).expect("protected Proxy Host JSON"),
+        )
+        .expect("protected Proxy Host file");
+        let protected_preview = run(&[
+            "proxy-host",
+            "preview",
+            "--socket",
+            socket,
+            protected_proxy_host_path
+                .to_str()
+                .expect("protected Proxy Host path"),
+        ]);
+        assert!(
+            protected_preview.status.success(),
+            "{:?}",
+            protected_preview.stderr
+        );
+        let protected_preview: serde_json::Value =
+            serde_json::from_slice(&protected_preview.stdout).expect("protected preview JSON");
+        let protected_route = protected_preview["preview"]["redacted_config"]["routes"]
+            .as_array()
+            .and_then(|routes| {
+                routes
+                    .iter()
+                    .find(|route| route["hosts"] == serde_json::json!(["typed.example.test"]))
+            })
+            .expect("protected route");
+        assert_eq!(
+            protected_route["middlewares"],
+            serde_json::json!(["edge-ip"])
+        );
+        assert_eq!(active_revision(&state), current);
+
         let mut claimed_domain = proxy_host.clone();
         claimed_domain["spec"]["domain"] = serde_json::json!("stored.example.test");
         let claimed_domain_path = daemon.root.join("claimed-domain.json");
