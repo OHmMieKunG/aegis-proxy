@@ -39,6 +39,8 @@
   evidence.
 - [Phase 15 Access Policy ownership](reviews/phase-15-access-policy-ownership.md): strict
   secret-free ownership/sharing contract, fixed-stage validation, and endpoint non-scope.
+- [Phase 15 Access Policy store](reviews/phase-15-access-policy-store.md): bounded canonical
+  persistence, owner/generation CAS, exclusive ownership, and durability-failure evidence.
 
 ## Operators
 

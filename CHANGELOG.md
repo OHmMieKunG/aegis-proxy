@@ -51,6 +51,8 @@ AegisProxy has not published a supported release.
 - Added a strict secret-free Access Policy ownership contract and validated metadata compiler for
   existing canonical IP, limit, and authentication middleware stages. Public endpoints remain
   disabled until owned persistence and RBAC wiring land.
+- Added bounded private Access Policy persistence with global IDs, canonical records, owner-scoped
+  reads, generation CAS, exclusive ownership, strict restart checks, and atomic replacement.
 - Fixed token revocation CLI parsing for valid generated token IDs that begin with a hyphen.
 
 See [`STATUS.md`](STATUS.md) and [`docs/history/`](docs/history/README.md).

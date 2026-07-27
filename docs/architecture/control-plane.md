@@ -77,14 +77,17 @@ and removes only snapshots whose revision metadata is already absent. Tampering,
 types, and retained binding mismatches fail closed. The separate file transactions intentionally
 provide restart-safe eventual cleanup rather than claiming cross-directory atomicity.
 
-The library-only `ApiObject<AccessPolicySpec>` binds one globally unique policy ID to an owner,
+`ApiObject<AccessPolicySpec>` binds one globally unique policy ID to an owner,
 explicit shared-owner IDs, enabled state, and opaque canonical middleware IDs. It contains no
 middleware definitions or credentials. `compile_access_policy_metadata` validates canonical
 configuration and accepts only IP policy, client/principal rate limit, in-flight limit, BasicAuth,
 and ForwardAuth stages. It canonicalizes order and rejects missing resources, duplicate fixed
 stages, multiple authentication stages, and principal rate limiting without authentication.
-Proxy Host compilation still performs complete route/listener semantic validation. The private
-Admin API does not persist or expose Access Policies yet and rejects every policy reference.
+Proxy Host compilation still performs complete route/listener semantic validation. A bounded
+private store persists canonical secret-free objects with exact generation CAS and owner-scoped
+reads. It holds an exclusive process and filesystem lock, rejects insecure or malformed restart
+state, and distinguishes pre-commit failure from indeterminate post-rename durability. The private
+Admin API does not expose Access Policies yet and rejects every policy reference.
 
 `PUT` and `DELETE /v1/proxy-hosts/{id}` follow the same ordering. They require
 `X-Aegis-Object-Generation` in addition to active-revision `If-Match`. Update enforces path/body

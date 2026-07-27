@@ -129,9 +129,11 @@ A strict library-only Access Policy object now binds owner, explicit sharing, en
 canonical existing access-control middleware IDs. Metadata compilation validates the base
 configuration, rejects missing or incompatible fixed-stage combinations, and exposes no middleware
 contents or secret references. Proxy Host endpoints remain fail closed for policy references until
-owned policy persistence and authorization are wired.
+authorization is wired. Bounded private persistence now enforces globally unique IDs, owner-scoped
+reads, canonical order, exact generation CAS, exclusive store ownership, strict restart validation,
+private permissions, and atomic replacement without activation or revision side effects.
 
-**Remaining units:** Access Policy persistence/RBAC/endpoints; certificate objects; remaining domain
+**Remaining units:** Access Policy RBAC/endpoints; certificate objects; remaining domain
 objects; remaining OpenAPI and CLI contracts; migration/compatibility policy and tests; transport
 module split; full authorization/security review.
 

@@ -3,17 +3,17 @@
 Updated: 2026-07-27
 
 - Current branch: `work/autonomous-roadmap`
-- Current completed-unit commit: `f23468b`
+- Current completed-unit commit: `58f30dc`
 - Current phase: Phase 15, in progress
-- Completed unit: typed Access Policy ownership metadata
-- Implementation commit: `f23468b`
+- Completed unit: bounded durable Access Policy store
+- Implementation commit: `58f30dc`
 - Documentation commit: this handoff's documentation commit
 - Remote target: `origin/work/autonomous-roadmap`
 - Expected working tree after documentation commit: clean
 
 ## Validation status
 
-Format, all-target/all-feature workspace check, Clippy with denied warnings, 309 workspace tests,
+Format, all-target/all-feature workspace check, Clippy with denied warnings, 317 workspace tests,
 doc tests, Rustdoc, feature tree, fuzz-manifest check, targeted revision/object-store/Admin CLI
 tests, repository documentation links, added-line secret review, and `git diff --check` passed. Two
 intentional ignored tests remain:
@@ -25,27 +25,29 @@ The strict library object binds a globally unique ID and owner to explicit shari
 and bounded canonical middleware references. Its metadata compiler validates configuration,
 permits only existing IP/limit/authentication stages, rejects ambiguous fixed-stage combinations,
 canonicalizes order, and exposes no middleware contents or credentials. Proxy Host single and
-aggregate compilers enforce sharing and complete route semantics. Admin endpoints remain fail
-closed until owned policy persistence and RBAC actions exist.
+aggregate compilers enforce sharing and complete route semantics. The bounded private store adds
+global IDs, owner reads, canonical records, generation CAS, exclusive ownership, strict restart
+validation, and failure-safe atomic replacement. Admin endpoints remain fail closed until distinct
+RBAC actions and durable audit integration exist.
 
 ## Remaining Phase 15 work
 
-Access Policy persistence/RBAC/endpoints; certificate ownership; remaining domain objects and
+Access Policy RBAC/endpoints and Proxy Host wiring; certificate ownership; remaining domain objects and
 contracts; migration/compatibility tests; transport module split; full authorization/security
 review.
 
 ## Exact next task
 
-Add a bounded durable Access Policy desired-state store with globally unique IDs, owner indexing,
-strict schema/version loading, generation CAS, private permissions, and secret-free records. Do not
-expose mutation endpoints until distinct RBAC actions and durable audit integration are ready.
+Add distinct Access Policy read/create/update/delete RBAC actions and token scopes, then wire the
+store into private administration startup without adding routes. Define fail-closed recovery for
+the store's indeterminate post-rename durability result before audited mutation endpoints.
 
 ## Known risks
 
 - Activation is intentionally global and Admin-only until candidate ownership/approval metadata
   supports safe narrower authority.
-- Access-policy endpoint preparation still fails closed until typed policy persistence and RBAC
-  actions exist; managed HTTPS remains blocked on certificate ownership metadata.
+- Access-policy endpoints remain absent until dedicated RBAC actions, startup wiring, audit, and
+  indeterminate-write recovery exist; managed HTTPS remains blocked on certificate ownership.
 - Local Unix peer identity maps to stable `uid-<uid>`; user/session identity remains Phase 15/16.
 - Transitive `proc-macro-error2 2.0.1` has a pre-existing future-incompatibility warning.
 - Product remains production NO-GO pending later phases and independent review.

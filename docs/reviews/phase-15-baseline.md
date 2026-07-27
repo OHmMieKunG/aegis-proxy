@@ -46,6 +46,6 @@ Compiler, preview, diff, token-scope, and private owned endpoint evidence is ind
 also has aggregate desired-state compilation and audited owner-scoped create with a non-active
 immutable candidate plus generation/epoch-CAS update/delete, bound candidate activation, and
 crash-safe typed forward rollback. Snapshot retention is coordinated with authoritative revision
-pruning. A strict library-only Access Policy ownership object and metadata compiler now exist, while
-its persistence/endpoints and certificate ownership remain open. Phase 15 remains in progress;
+pruning. A strict Access Policy ownership object, metadata compiler, and bounded private store now
+exist, while its endpoints/RBAC and certificate ownership remain open. Phase 15 remains in progress;
 complete ownership/RBAC metadata, remaining objects, and compatibility policy remain open.
