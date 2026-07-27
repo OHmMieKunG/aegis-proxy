@@ -132,6 +132,14 @@ fn checked_openapi_contains_every_private_route() {
         scopes
     );
     assert_eq!(openapi.matches("maxItems: 27").count(), 2);
+    assert!(openapi.contains("operationId: createAccessPolicy"));
+    assert!(openapi.contains("schema: {$ref: \"#/components/schemas/AccessPolicyObject\"}"));
+    assert!(
+        openapi
+            .matches("description: Quoted object generation")
+            .count()
+            >= 2
+    );
 }
 
 #[tokio::test]

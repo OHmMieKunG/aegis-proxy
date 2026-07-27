@@ -312,6 +312,105 @@ pub(super) async fn access_policy(
     Ok(response)
 }
 
+pub(super) async fn create_access_policy(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    principal: Principal,
+    body: axum::body::Bytes,
+) -> Result<Response, ApiError> {
+    let current_revision = state.control.runtime().revision().to_string();
+    let audit = begin_mutation(
+        &state,
+        &principal,
+        &request_id,
+        Some(current_revision.clone()),
+        MutationSpec {
+            permission: Action::CreateAccessPolicy,
+            action: "access_policy_create",
+            resource_id: "access_policy",
+            new_revision: None,
+        },
+    )
+    .await?;
+    let expected = match expected_revision(&headers) {
+        Ok(expected) => expected,
+        Err(error) => return Err(audited_failure(&audit, "invalid_if_match", error).await),
+    };
+    if current_revision != expected || state.control.runtime().revision().as_ref() != expected {
+        return Err(audited_failure(&audit, "revision_conflict", ApiError::Conflict).await);
+    }
+    if require_json(&headers).is_err() {
+        return Err(
+            audited_failure(&audit, "invalid_content_type", ApiError::InvalidRequest).await,
+        );
+    }
+    let object = match serde_json::from_slice::<ApiObject<AccessPolicySpec>>(&body) {
+        Ok(object) => object,
+        Err(_) => {
+            return Err(audited_failure(&audit, "invalid_json", ApiError::InvalidRequest).await);
+        }
+    };
+    if principal.owner_id.as_ref() != Some(&object.metadata.owner_id) {
+        return Err(audited_failure(&audit, "owner_denied", ApiError::Forbidden).await);
+    }
+    let active = state.control.runtime().config();
+    let validation_object = object.clone();
+    match tokio::task::spawn_blocking(move || {
+        crate::compile_access_policy_metadata(&validation_object, &active)
+    })
+    .await
+    {
+        Ok(Ok(_)) => {}
+        Ok(Err(_)) => {
+            return Err(
+                audited_failure(&audit, "invalid_access_policy", ApiError::InvalidRequest).await,
+            );
+        }
+        Err(_) => return Err(audited_failure(&audit, "compile_failed", ApiError::Internal).await),
+    }
+    if state.control.runtime().revision().as_ref() != expected {
+        return Err(audited_failure(&audit, "revision_conflict", ApiError::Conflict).await);
+    }
+    let store = Arc::clone(&state.access_policies);
+    let stored = match tokio::task::spawn_blocking(move || store.create(object)).await {
+        Ok(Ok(stored)) => stored,
+        Ok(Err(AccessPolicyStoreError::Conflict)) => {
+            return Err(audited_failure(&audit, "object_conflict", ApiError::ObjectConflict).await);
+        }
+        Ok(Err(AccessPolicyStoreError::Invalid)) => {
+            return Err(
+                audited_failure(&audit, "invalid_access_policy", ApiError::InvalidRequest).await,
+            );
+        }
+        Ok(Err(
+            AccessPolicyStoreError::Indeterminate(_) | AccessPolicyStoreError::RecoveryRequired,
+        )) => {
+            return Err(audited_failure(
+                &audit,
+                "access_policy_recovery_required",
+                ApiError::Unavailable,
+            )
+            .await);
+        }
+        Ok(Err(_)) | Err(_) => {
+            return Err(audited_failure(
+                &audit,
+                "access_policy_store_failed",
+                ApiError::Unavailable,
+            )
+            .await);
+        }
+    };
+    audit.record(AuditOutcome::Success, None, None).await?;
+    let generation = stored.generation.to_string();
+    let mut response = (StatusCode::CREATED, axum::Json(stored)).into_response();
+    response
+        .headers_mut()
+        .insert(ETAG, etag(&generation).ok_or(ApiError::Internal)?);
+    Ok(response)
+}
+
 async fn create_proxy_host_candidate_revision(
     state: &AppState,
     principal: &Principal,

@@ -93,6 +93,10 @@ hosts = ["example.test"]
 path_prefixes = ["/"]
 priority = {priority}
 upstream_group = "app"
+
+[middlewares.edge-ip]
+type = "ip_policy"
+allow = ["127.0.0.1/32"]
 "#,
             state = state.display().to_string(),
             audit = format!("file://{}", audit_key.display()),
@@ -501,6 +505,23 @@ upstream_group = "app"
         fs::set_permissions(&limited_file, fs::Permissions::from_mode(0o600))
             .expect("limited token mode");
         let limited_ref = format!("file://{}", limited_file.display());
+        let invalid_policy_path = daemon.root.join("invalid-policy.json");
+        fs::write(&invalid_policy_path, b"{").expect("invalid policy file");
+        let denied_policy_create = Command::new(binary())
+            .args([
+                "access-policy",
+                "create",
+                "--socket",
+                socket,
+                "--token-ref",
+                &limited_ref,
+                "--expect",
+                &current,
+            ])
+            .arg(&invalid_policy_path)
+            .output()
+            .expect("denied Access Policy create");
+        assert_eq!(denied_policy_create.status.code(), Some(5));
         let denied_policy_list = run(&[
             "access-policy",
             "list",
@@ -562,6 +583,159 @@ upstream_group = "app"
         fs::write(&token_file, plaintext).expect("token file");
         fs::set_permissions(&token_file, fs::Permissions::from_mode(0o600)).expect("token mode");
         let token_ref = format!("file://{}", token_file.display());
+        let policy_revisions_before = fs::read_dir(state.join("config/revisions"))
+            .expect("revision directory")
+            .count();
+        let access_policy_path = daemon.root.join("access-policy.json");
+        let access_policy = serde_json::json!({
+            "api_version": "v1",
+            "metadata": {"id": "created-policy", "owner_id": owner},
+            "spec": {
+                "enabled": true,
+                "shared_with": [],
+                "middlewares": ["edge-ip"]
+            }
+        });
+        fs::write(
+            &access_policy_path,
+            serde_json::to_vec_pretty(&access_policy).expect("Access Policy JSON"),
+        )
+        .expect("Access Policy file");
+        let policy_create = Command::new(binary())
+            .args([
+                "access-policy",
+                "create",
+                "--socket",
+                socket,
+                "--token-ref",
+                &token_ref,
+                "--expect",
+                &current,
+            ])
+            .arg(&access_policy_path)
+            .output()
+            .expect("Access Policy create");
+        assert!(policy_create.status.success(), "{:?}", policy_create.stderr);
+        let policy_create_json: serde_json::Value =
+            serde_json::from_slice(&policy_create.stdout).expect("Access Policy create JSON");
+        assert_eq!(policy_create_json["generation"], 1);
+        assert_eq!(policy_create_json["object"], access_policy);
+        let raw_created_policy = raw_get(socket, "/v1/access-policies/created-policy");
+        assert!(raw_created_policy.starts_with("HTTP/1.1 200 "));
+        assert!(raw_created_policy.contains("\r\netag: \"1\"\r\n"));
+        assert_eq!(active_revision(&state), current);
+        assert_eq!(
+            fs::read_dir(state.join("config/revisions"))
+                .expect("revision directory")
+                .count(),
+            policy_revisions_before
+        );
+        let duplicate_policy = Command::new(binary())
+            .args([
+                "access-policy",
+                "create",
+                "--socket",
+                socket,
+                "--token-ref",
+                &token_ref,
+                "--expect",
+                &current,
+            ])
+            .arg(&access_policy_path)
+            .output()
+            .expect("duplicate Access Policy create");
+        assert_eq!(duplicate_policy.status.code(), Some(4));
+        let mut missing_middleware = access_policy.clone();
+        missing_middleware["metadata"]["id"] = serde_json::json!("missing-middleware");
+        missing_middleware["spec"]["middlewares"] = serde_json::json!(["missing"]);
+        let missing_middleware_path = daemon.root.join("missing-middleware.json");
+        fs::write(
+            &missing_middleware_path,
+            serde_json::to_vec_pretty(&missing_middleware).expect("missing middleware JSON"),
+        )
+        .expect("missing middleware file");
+        let invalid_policy = Command::new(binary())
+            .args([
+                "access-policy",
+                "create",
+                "--socket",
+                socket,
+                "--token-ref",
+                &token_ref,
+                "--expect",
+                &current,
+            ])
+            .arg(&missing_middleware_path)
+            .output()
+            .expect("invalid Access Policy create");
+        assert_eq!(invalid_policy.status.code(), Some(3));
+        let stale_policy = Command::new(binary())
+            .args([
+                "access-policy",
+                "create",
+                "--socket",
+                socket,
+                "--token-ref",
+                &token_ref,
+                "--expect",
+                "00000000000000000000-0000000000000000000000000000000000000000000000000000000000000000",
+            ])
+            .arg(&missing_middleware_path)
+            .output()
+            .expect("stale Access Policy create");
+        assert_eq!(stale_policy.status.code(), Some(4));
+        let mut wrong_owner_policy = access_policy.clone();
+        wrong_owner_policy["metadata"]["id"] = serde_json::json!("wrong-owner-policy");
+        wrong_owner_policy["metadata"]["owner_id"] = serde_json::json!("other");
+        let wrong_owner_policy_path = daemon.root.join("wrong-owner-policy.json");
+        fs::write(
+            &wrong_owner_policy_path,
+            serde_json::to_vec_pretty(&wrong_owner_policy).expect("wrong owner policy JSON"),
+        )
+        .expect("wrong owner policy file");
+        let wrong_owner_create = Command::new(binary())
+            .args([
+                "access-policy",
+                "create",
+                "--socket",
+                socket,
+                "--token-ref",
+                &token_ref,
+                "--expect",
+                &current,
+            ])
+            .arg(&wrong_owner_policy_path)
+            .output()
+            .expect("wrong-owner Access Policy create");
+        assert_eq!(wrong_owner_create.status.code(), Some(5));
+        let policy_store_after_failures: serde_json::Value = serde_json::from_slice(
+            &fs::read(&access_policy_store_path).expect("Access Policy store after failures"),
+        )
+        .expect("Access Policy store JSON after failures");
+        let policy_records = policy_store_after_failures["policies"]
+            .as_array()
+            .expect("Access Policy records");
+        assert_eq!(policy_records.len(), 4);
+        assert_eq!(
+            policy_records
+                .iter()
+                .filter(|record| record["object"]["metadata"]["id"] == "created-policy")
+                .count(),
+            1
+        );
+        assert_eq!(
+            policy_records
+                .iter()
+                .find(|record| record["object"]["metadata"]["id"] == "created-policy")
+                .expect("created Access Policy")["generation"],
+            1
+        );
+        assert!(policy_records.iter().all(|record| {
+            !matches!(
+                record["object"]["metadata"]["id"].as_str(),
+                Some("missing-middleware" | "wrong-owner-policy")
+            )
+        }));
         let unauthorized_config = daemon.root.join("unauthorized.toml");
         write_config(
             &unauthorized_config,
@@ -1077,6 +1251,7 @@ upstream_group = "app"
         assert!(audit.contains("\"action\":\"proxy_host_delete\""));
         assert!(audit.contains("\"action\":\"proxy_host_activate\""));
         assert!(audit.contains("\"action\":\"proxy_host_rollback\""));
+        assert!(audit.contains("\"action\":\"access_policy_create\""));
         assert!(
             audit
                 .lines()

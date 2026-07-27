@@ -98,6 +98,25 @@ paths:
                 maxItems: 1024
                 items: {$ref: "#/components/schemas/StoredAccessPolicy"}
         default: {$ref: "#/components/responses/Error"}
+    post:
+      operationId: createAccessPolicy
+      parameters: [{$ref: "#/components/parameters/IfMatch"}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/AccessPolicyObject"}
+      responses:
+        "201":
+          description: Owned Access Policy desired state persisted without runtime activation; object generation is returned as ETag
+          headers:
+            ETag:
+              description: Quoted object generation
+              schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/StoredAccessPolicy"}
+        default: {$ref: "#/components/responses/Error"}
   /v1/access-policies/{id}:
     get:
       operationId: getAccessPolicy
@@ -105,6 +124,10 @@ paths:
       responses:
         "200":
           description: Owned Access Policy desired state and object-generation ETag
+          headers:
+            ETag:
+              description: Quoted object generation
+              schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/StoredAccessPolicy"}

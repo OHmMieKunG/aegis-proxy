@@ -44,10 +44,10 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    AccessPolicyStore, Action, ApiObject, AuditEvent, AuditLog, AuditOutcome, ObjectId,
-    PreparedProxyHost, ProxyHostPreparationError, ProxyHostPreviewSummary, ProxyHostSpec,
-    ProxyHostStore, ProxyHostStoreError, Role, StoredAccessPolicy, StoredProxyHost, TokenScopes,
-    TokenStore,
+    AccessPolicySpec, AccessPolicyStore, AccessPolicyStoreError, Action, ApiObject, AuditEvent,
+    AuditLog, AuditOutcome, ObjectId, PreparedProxyHost, ProxyHostPreparationError,
+    ProxyHostPreviewSummary, ProxyHostSpec, ProxyHostStore, ProxyHostStoreError, Role,
+    StoredAccessPolicy, StoredProxyHost, TokenScopes, TokenStore,
 };
 use handlers::*;
 use support::*;
@@ -681,7 +681,10 @@ pub async fn serve(
         .route("/v1/config/validate", post(validate_config))
         .route("/v1/config/preview", post(preview_config))
         .route("/v1/proxy-hosts", get(proxy_hosts).post(create_proxy_host))
-        .route("/v1/access-policies", get(access_policies))
+        .route(
+            "/v1/access-policies",
+            get(access_policies).post(create_access_policy),
+        )
         .route("/v1/access-policies/{id}", get(access_policy))
         .route(
             "/v1/proxy-hosts/{id}",

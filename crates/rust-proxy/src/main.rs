@@ -299,6 +299,14 @@ enum AccessPolicyCommand {
         admin: AdminConnection,
         id: String,
     },
+    /// Validate and persist one owned Access Policy without activation.
+    Create {
+        #[command(flatten)]
+        admin: AdminConnection,
+        #[arg(long)]
+        expect: String,
+        file: PathBuf,
+    },
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -995,6 +1003,22 @@ async fn run_access_policy_command(command: AccessPolicyCommand) -> Result<(), B
                 None,
                 None,
                 Vec::new(),
+            )
+            .await?
+        }
+        AccessPolicyCommand::Create {
+            admin,
+            expect,
+            file,
+        } => {
+            let body = read_bounded(file, aegisproxy_config::MAX_CONFIG_BYTES).await?;
+            admin_request(
+                &admin,
+                Method::POST,
+                "/v1/access-policies",
+                Some(expect),
+                Some("application/json"),
+                body,
             )
             .await?
         }
