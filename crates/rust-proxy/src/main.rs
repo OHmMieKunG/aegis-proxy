@@ -307,6 +307,27 @@ enum AccessPolicyCommand {
         expect: String,
         file: PathBuf,
     },
+    /// Replace one owned Access Policy without activation.
+    Update {
+        #[command(flatten)]
+        admin: AdminConnection,
+        #[arg(long)]
+        expect: String,
+        #[arg(long)]
+        generation: u64,
+        id: String,
+        file: PathBuf,
+    },
+    /// Delete one owned Access Policy without activation.
+    Delete {
+        #[command(flatten)]
+        admin: AdminConnection,
+        #[arg(long)]
+        expect: String,
+        #[arg(long)]
+        generation: u64,
+        id: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -1019,6 +1040,42 @@ async fn run_access_policy_command(command: AccessPolicyCommand) -> Result<(), B
                 Some(expect),
                 Some("application/json"),
                 body,
+            )
+            .await?
+        }
+        AccessPolicyCommand::Update {
+            admin,
+            expect,
+            generation,
+            id,
+            file,
+        } => {
+            let body = read_bounded(file, aegisproxy_config::MAX_CONFIG_BYTES).await?;
+            admin_request_with_generation(
+                &admin,
+                Method::PUT,
+                &format!("/v1/access-policies/{id}"),
+                Some(expect),
+                Some(generation),
+                Some("application/json"),
+                body,
+            )
+            .await?
+        }
+        AccessPolicyCommand::Delete {
+            admin,
+            expect,
+            generation,
+            id,
+        } => {
+            admin_request_with_generation(
+                &admin,
+                Method::DELETE,
+                &format!("/v1/access-policies/{id}"),
+                Some(expect),
+                Some(generation),
+                None,
+                Vec::new(),
             )
             .await?
         }

@@ -522,6 +522,38 @@ allow = ["127.0.0.1/32"]
             .output()
             .expect("denied Access Policy create");
         assert_eq!(denied_policy_create.status.code(), Some(5));
+        let denied_policy_update = Command::new(binary())
+            .args([
+                "access-policy",
+                "update",
+                "--socket",
+                socket,
+                "--token-ref",
+                &limited_ref,
+                "--expect",
+                &current,
+                "--generation",
+                "2",
+                "private-lan",
+            ])
+            .arg(&invalid_policy_path)
+            .output()
+            .expect("denied Access Policy update");
+        assert_eq!(denied_policy_update.status.code(), Some(5));
+        let denied_policy_delete = run(&[
+            "access-policy",
+            "delete",
+            "--socket",
+            socket,
+            "--token-ref",
+            &limited_ref,
+            "--expect",
+            &current,
+            "--generation",
+            "2",
+            "private-lan",
+        ]);
+        assert_eq!(denied_policy_delete.status.code(), Some(5));
         let denied_policy_list = run(&[
             "access-policy",
             "list",
@@ -560,6 +592,10 @@ allow = ["127.0.0.1/32"]
             "read-access-policies",
             "--scope",
             "create-access-policy",
+            "--scope",
+            "update-access-policy",
+            "--scope",
+            "delete-access-policy",
             "--ttl-secs",
             "600",
         ]);
@@ -576,7 +612,9 @@ allow = ["127.0.0.1/32"]
                 "preview_config",
                 "read_proxy_hosts",
                 "read_access_policies",
-                "create_access_policy"
+                "create_access_policy",
+                "update_access_policy",
+                "delete_access_policy"
             ])
         );
         let token_file = daemon.root.join("operator.token");
@@ -708,6 +746,226 @@ allow = ["127.0.0.1/32"]
             .output()
             .expect("wrong-owner Access Policy create");
         assert_eq!(wrong_owner_create.status.code(), Some(5));
+        let mut updated_policy = access_policy.clone();
+        updated_policy["spec"]["enabled"] = serde_json::json!(false);
+        let updated_policy_path = daemon.root.join("updated-access-policy.json");
+        fs::write(
+            &updated_policy_path,
+            serde_json::to_vec_pretty(&updated_policy).expect("updated Access Policy JSON"),
+        )
+        .expect("updated Access Policy file");
+        let stale_policy_update = Command::new(binary())
+            .args([
+                "access-policy",
+                "update",
+                "--socket",
+                socket,
+                "--token-ref",
+                &token_ref,
+                "--expect",
+                &current,
+                "--generation",
+                "2",
+                "created-policy",
+            ])
+            .arg(&updated_policy_path)
+            .output()
+            .expect("stale Access Policy update");
+        assert_eq!(stale_policy_update.status.code(), Some(4));
+        let policy_update = Command::new(binary())
+            .args([
+                "access-policy",
+                "update",
+                "--socket",
+                socket,
+                "--token-ref",
+                &token_ref,
+                "--expect",
+                &current,
+                "--generation",
+                "1",
+                "created-policy",
+            ])
+            .arg(&updated_policy_path)
+            .output()
+            .expect("Access Policy update");
+        assert!(policy_update.status.success(), "{:?}", policy_update.stderr);
+        let policy_update_json: serde_json::Value =
+            serde_json::from_slice(&policy_update.stdout).expect("Access Policy update JSON");
+        assert_eq!(policy_update_json["generation"], 2);
+        assert_eq!(policy_update_json["object"], updated_policy);
+        let raw_updated_policy = raw_get(socket, "/v1/access-policies/created-policy");
+        assert!(raw_updated_policy.contains("\r\netag: \"2\"\r\n"));
+        let mut invalid_update_policy = updated_policy.clone();
+        invalid_update_policy["spec"]["middlewares"] = serde_json::json!(["missing"]);
+        let invalid_update_path = daemon.root.join("invalid-updated-access-policy.json");
+        fs::write(
+            &invalid_update_path,
+            serde_json::to_vec_pretty(&invalid_update_policy)
+                .expect("invalid updated Access Policy JSON"),
+        )
+        .expect("invalid updated Access Policy file");
+        let invalid_policy_update = Command::new(binary())
+            .args([
+                "access-policy",
+                "update",
+                "--socket",
+                socket,
+                "--token-ref",
+                &token_ref,
+                "--expect",
+                &current,
+                "--generation",
+                "2",
+                "created-policy",
+            ])
+            .arg(&invalid_update_path)
+            .output()
+            .expect("invalid Access Policy update");
+        assert_eq!(invalid_policy_update.status.code(), Some(3));
+        let retained_policy = run(&["access-policy", "get", "--socket", socket, "created-policy"]);
+        assert!(retained_policy.status.success());
+        let retained_policy: serde_json::Value =
+            serde_json::from_slice(&retained_policy.stdout).expect("retained Access Policy JSON");
+        assert_eq!(retained_policy["generation"], 2);
+        assert_eq!(retained_policy["object"], updated_policy);
+        let wrong_id_update = Command::new(binary())
+            .args([
+                "access-policy",
+                "update",
+                "--socket",
+                socket,
+                "--token-ref",
+                &token_ref,
+                "--expect",
+                &current,
+                "--generation",
+                "2",
+                "private-lan",
+            ])
+            .arg(&updated_policy_path)
+            .output()
+            .expect("wrong-ID Access Policy update");
+        assert_eq!(wrong_id_update.status.code(), Some(3));
+        let mut wrong_owner_update = updated_policy.clone();
+        wrong_owner_update["metadata"]["owner_id"] = serde_json::json!("other");
+        let wrong_owner_update_path = daemon.root.join("wrong-owner-update.json");
+        fs::write(
+            &wrong_owner_update_path,
+            serde_json::to_vec_pretty(&wrong_owner_update).expect("wrong-owner update JSON"),
+        )
+        .expect("wrong-owner update file");
+        let wrong_owner_update = Command::new(binary())
+            .args([
+                "access-policy",
+                "update",
+                "--socket",
+                socket,
+                "--token-ref",
+                &token_ref,
+                "--expect",
+                &current,
+                "--generation",
+                "2",
+                "created-policy",
+            ])
+            .arg(&wrong_owner_update_path)
+            .output()
+            .expect("wrong-owner Access Policy update");
+        assert_eq!(wrong_owner_update.status.code(), Some(5));
+        let cross_owner_delete = run(&[
+            "access-policy",
+            "delete",
+            "--socket",
+            socket,
+            "--token-ref",
+            &token_ref,
+            "--expect",
+            &current,
+            "--generation",
+            "1",
+            "other-policy",
+        ]);
+        assert_eq!(cross_owner_delete.status.code(), Some(6));
+        let stale_revision =
+            "00000000000000000000-0000000000000000000000000000000000000000000000000000000000000000";
+        let stale_revision_update = Command::new(binary())
+            .args([
+                "access-policy",
+                "update",
+                "--socket",
+                socket,
+                "--token-ref",
+                &token_ref,
+                "--expect",
+                stale_revision,
+                "--generation",
+                "2",
+                "created-policy",
+            ])
+            .arg(&updated_policy_path)
+            .output()
+            .expect("stale-revision Access Policy update");
+        assert_eq!(stale_revision_update.status.code(), Some(4));
+        let stale_revision_delete = run(&[
+            "access-policy",
+            "delete",
+            "--socket",
+            socket,
+            "--token-ref",
+            &token_ref,
+            "--expect",
+            stale_revision,
+            "--generation",
+            "2",
+            "created-policy",
+        ]);
+        assert_eq!(stale_revision_delete.status.code(), Some(4));
+        let stale_policy_delete = run(&[
+            "access-policy",
+            "delete",
+            "--socket",
+            socket,
+            "--token-ref",
+            &token_ref,
+            "--expect",
+            &current,
+            "--generation",
+            "1",
+            "created-policy",
+        ]);
+        assert_eq!(stale_policy_delete.status.code(), Some(4));
+        let policy_delete = run(&[
+            "access-policy",
+            "delete",
+            "--socket",
+            socket,
+            "--token-ref",
+            &token_ref,
+            "--expect",
+            &current,
+            "--generation",
+            "2",
+            "created-policy",
+        ]);
+        assert!(policy_delete.status.success(), "{:?}", policy_delete.stderr);
+        let policy_delete_json: serde_json::Value =
+            serde_json::from_slice(&policy_delete.stdout).expect("Access Policy delete JSON");
+        assert_eq!(policy_delete_json["generation"], 2);
+        assert_eq!(policy_delete_json["object"], updated_policy);
+        assert_eq!(
+            run(&["access-policy", "get", "--socket", socket, "created-policy"])
+                .status
+                .code(),
+            Some(6)
+        );
+        assert_eq!(active_revision(&state), current);
+        assert_eq!(
+            fs::read_dir(state.join("config/revisions"))
+                .expect("revision directory")
+                .count(),
+            policy_revisions_before
+        );
         let policy_store_after_failures: serde_json::Value = serde_json::from_slice(
             &fs::read(&access_policy_store_path).expect("Access Policy store after failures"),
         )
@@ -715,25 +973,11 @@ allow = ["127.0.0.1/32"]
         let policy_records = policy_store_after_failures["policies"]
             .as_array()
             .expect("Access Policy records");
-        assert_eq!(policy_records.len(), 4);
-        assert_eq!(
-            policy_records
-                .iter()
-                .filter(|record| record["object"]["metadata"]["id"] == "created-policy")
-                .count(),
-            1
-        );
-        assert_eq!(
-            policy_records
-                .iter()
-                .find(|record| record["object"]["metadata"]["id"] == "created-policy")
-                .expect("created Access Policy")["generation"],
-            1
-        );
+        assert_eq!(policy_records.len(), 3);
         assert!(policy_records.iter().all(|record| {
             !matches!(
                 record["object"]["metadata"]["id"].as_str(),
-                Some("missing-middleware" | "wrong-owner-policy")
+                Some("created-policy" | "missing-middleware" | "wrong-owner-policy")
             )
         }));
         let unauthorized_config = daemon.root.join("unauthorized.toml");
@@ -1252,6 +1496,25 @@ allow = ["127.0.0.1/32"]
         assert!(audit.contains("\"action\":\"proxy_host_activate\""));
         assert!(audit.contains("\"action\":\"proxy_host_rollback\""));
         assert!(audit.contains("\"action\":\"access_policy_create\""));
+        assert!(audit.contains("\"action\":\"access_policy_update\""));
+        assert!(audit.contains("\"action\":\"access_policy_delete\""));
+        let audit_records = audit
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("audit JSON"))
+            .collect::<Vec<_>>();
+        for action in ["access_policy_update", "access_policy_delete"] {
+            let outcomes = audit_records
+                .iter()
+                .filter(|record| record["action"] == action)
+                .filter_map(|record| record["outcome"].as_str())
+                .collect::<Vec<_>>();
+            for outcome in ["intent", "success", "failed", "denied"] {
+                assert!(
+                    outcomes.contains(&outcome),
+                    "missing {action} {outcome} audit"
+                );
+            }
+        }
         assert!(
             audit
                 .lines()

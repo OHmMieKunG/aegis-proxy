@@ -132,6 +132,41 @@ paths:
             application/json:
               schema: {$ref: "#/components/schemas/StoredAccessPolicy"}
         default: {$ref: "#/components/responses/Error"}
+    put:
+      operationId: updateAccessPolicy
+      parameters:
+        - {$ref: "#/components/parameters/TypedObjectId"}
+        - {$ref: "#/components/parameters/IfMatch"}
+        - {$ref: "#/components/parameters/ObjectGeneration"}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/AccessPolicyObject"}
+      responses:
+        "200":
+          description: Owned Access Policy desired state replaced without runtime activation
+          headers:
+            ETag:
+              description: Quoted object generation
+              schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/StoredAccessPolicy"}
+        default: {$ref: "#/components/responses/Error"}
+    delete:
+      operationId: deleteAccessPolicy
+      parameters:
+        - {$ref: "#/components/parameters/TypedObjectId"}
+        - {$ref: "#/components/parameters/IfMatch"}
+        - {$ref: "#/components/parameters/ObjectGeneration"}
+      responses:
+        "200":
+          description: Owned Access Policy desired state deleted without runtime activation
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/StoredAccessPolicy"}
+        default: {$ref: "#/components/responses/Error"}
   /v1/proxy-hosts:
     get:
       operationId: listProxyHosts

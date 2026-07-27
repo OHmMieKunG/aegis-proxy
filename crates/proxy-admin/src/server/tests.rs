@@ -133,6 +133,8 @@ fn checked_openapi_contains_every_private_route() {
     );
     assert_eq!(openapi.matches("maxItems: 27").count(), 2);
     assert!(openapi.contains("operationId: createAccessPolicy"));
+    assert!(openapi.contains("operationId: updateAccessPolicy"));
+    assert!(openapi.contains("operationId: deleteAccessPolicy"));
     assert!(openapi.contains("schema: {$ref: \"#/components/schemas/AccessPolicyObject\"}"));
     assert!(
         openapi

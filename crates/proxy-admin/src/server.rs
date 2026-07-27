@@ -685,7 +685,12 @@ pub async fn serve(
             "/v1/access-policies",
             get(access_policies).post(create_access_policy),
         )
-        .route("/v1/access-policies/{id}", get(access_policy))
+        .route(
+            "/v1/access-policies/{id}",
+            get(access_policy)
+                .put(update_access_policy)
+                .delete(delete_access_policy),
+        )
         .route(
             "/v1/proxy-hosts/{id}",
             get(proxy_host)
