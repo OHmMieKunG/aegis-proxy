@@ -44,9 +44,9 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    Action, ApiObject, AuditEvent, AuditLog, AuditOutcome, ObjectId, PreparedProxyHost,
-    ProxyHostPreparationError, ProxyHostPreviewSummary, ProxyHostSpec, ProxyHostStore,
-    ProxyHostStoreError, Role, StoredProxyHost, TokenScopes, TokenStore,
+    AccessPolicyStore, Action, ApiObject, AuditEvent, AuditLog, AuditOutcome, ObjectId,
+    PreparedProxyHost, ProxyHostPreparationError, ProxyHostPreviewSummary, ProxyHostSpec,
+    ProxyHostStore, ProxyHostStoreError, Role, StoredProxyHost, TokenScopes, TokenStore,
 };
 use handlers::*;
 use support::*;
@@ -71,6 +71,9 @@ pub enum AdminServerError {
     /// Typed Proxy Host desired state could not be loaded safely.
     #[error("administrative Proxy Host store failed")]
     ProxyHosts,
+    /// Typed Access Policy desired state could not be loaded safely.
+    #[error("administrative Access Policy store failed")]
+    AccessPolicies,
     /// Blocking initialization task failed.
     #[error("administrative initialization task failed: {0}")]
     Initialization(String),
@@ -81,6 +84,7 @@ struct AppState {
     control: ManagedControl,
     tokens: Arc<TokenStore>,
     proxy_hosts: Arc<ProxyHostStore>,
+    _access_policies: Arc<AccessPolicyStore>,
     audit: Option<Arc<AuditLog>>,
     allowed_uids: Arc<[u32]>,
     auth_permits: Arc<Semaphore>,
@@ -617,6 +621,8 @@ pub async fn serve(
     .await
     .map_err(|error| AdminServerError::Initialization(error.to_string()))?
     .map_err(|_| AdminServerError::ProxyHosts)?;
+    let access_policy_store =
+        open_access_policy_store(state_dir.join("admin/access-policies.json")).await?;
     let audit = match config.admin.audit_key.clone() {
         Some(reference) => {
             let audit_path = state_dir.join("audit/admin.jsonl");
@@ -644,6 +650,7 @@ pub async fn serve(
         control,
         tokens: Arc::new(tokens),
         proxy_hosts: Arc::new(proxy_host_store),
+        _access_policies: Arc::new(access_policy_store),
         audit,
         allowed_uids: Arc::from(config.admin.allowed_uids.clone()),
         auth_permits: Arc::new(Semaphore::new(config.admin.max_auth_in_flight)),
@@ -724,6 +731,13 @@ pub async fn serve(
     .await;
     drop(guard);
     result.map_err(AdminServerError::Io)
+}
+
+async fn open_access_policy_store(path: PathBuf) -> Result<AccessPolicyStore, AdminServerError> {
+    tokio::task::spawn_blocking(move || AccessPolicyStore::open(path))
+        .await
+        .map_err(|error| AdminServerError::Initialization(error.to_string()))?
+        .map_err(|_| AdminServerError::AccessPolicies)
 }
 
 async fn bound_request(

@@ -84,7 +84,68 @@ fn checked_openapi_contains_every_private_route() {
     assert!(!openapi.contains("0.0.0.0"));
     assert!(!openapi.contains("private_key"));
     assert!(!openapi.contains("password_hash"));
-    assert!(openapi.contains("TokenScope:"));
+    let scopes = [
+        "read_status",
+        "read_config",
+        "validate_config",
+        "preview_config",
+        "create_candidate",
+        "activate_config",
+        "rollback_config",
+        "read_revisions",
+        "read_proxy_hosts",
+        "create_proxy_host",
+        "update_proxy_host",
+        "delete_proxy_host",
+        "activate_proxy_host",
+        "rollback_proxy_host",
+        "read_access_policies",
+        "create_access_policy",
+        "update_access_policy",
+        "delete_access_policy",
+        "read_routes",
+        "read_upstreams",
+        "drain",
+        "read_certificates",
+        "renew_certificate",
+        "read_audit",
+        "create_backup",
+        "validate_restore",
+        "manage_identities",
+    ];
+    let scope_line = openapi
+        .lines()
+        .find(|line| line.trim_start().starts_with("enum: [read_status,"))
+        .expect("TokenScope enum");
+    assert_eq!(
+        scope_line
+            .split_once('[')
+            .expect("scope start")
+            .1
+            .trim_end_matches(']')
+            .split(',')
+            .map(str::trim)
+            .collect::<Vec<_>>(),
+        scopes
+    );
+    assert_eq!(openapi.matches("maxItems: 27").count(), 2);
+}
+
+#[tokio::test]
+async fn invalid_access_policy_state_fails_admin_initialization_closed() {
+    let root = temporary_directory("access-policy-init");
+    let parent = root.join("admin");
+    fs::create_dir_all(&parent).expect("admin state");
+    fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).expect("private admin state");
+    let path = parent.join("access-policies.json");
+    fs::write(&path, b"{\"schema_version\":2,\"policies\":[]}").expect("invalid store");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("private store");
+    assert!(matches!(
+        open_access_policy_store(path).await,
+        Err(AdminServerError::AccessPolicies)
+    ));
+    assert!(!parent.join("admin.sock").exists());
+    fs::remove_dir_all(root).expect("cleanup");
 }
 
 #[test]

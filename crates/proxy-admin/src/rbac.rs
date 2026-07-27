@@ -49,6 +49,14 @@ pub enum Action {
     ActivateProxyHost,
     /// Restore bound typed Proxy Host desired state through a forward revision.
     RollbackProxyHost,
+    /// Read typed Access Policies within authenticated owner scope.
+    ReadAccessPolicies,
+    /// Create an owned typed Access Policy.
+    CreateAccessPolicy,
+    /// Update an owned typed Access Policy.
+    UpdateAccessPolicy,
+    /// Delete an owned typed Access Policy.
+    DeleteAccessPolicy,
     /// Read effective routes.
     ReadRoutes,
     /// Read upstream health state.
@@ -155,6 +163,10 @@ impl Role {
                     | Action::CreateProxyHost
                     | Action::UpdateProxyHost
                     | Action::DeleteProxyHost
+                    | Action::ReadAccessPolicies
+                    | Action::CreateAccessPolicy
+                    | Action::UpdateAccessPolicy
+                    | Action::DeleteAccessPolicy
                     | Action::ReadRoutes
                     | Action::ReadUpstreams
                     | Action::Drain
@@ -167,6 +179,7 @@ impl Role {
                     | Action::ReadConfig
                     | Action::ReadRevisions
                     | Action::ReadProxyHosts
+                    | Action::ReadAccessPolicies
                     | Action::ReadRoutes
                     | Action::ReadUpstreams
                     | Action::ReadCertificates
@@ -178,6 +191,7 @@ impl Role {
                     | Action::ReadConfig
                     | Action::ReadRevisions
                     | Action::ReadProxyHosts
+                    | Action::ReadAccessPolicies
                     | Action::ReadRoutes
                     | Action::ReadUpstreams
                     | Action::ReadCertificates
@@ -190,7 +204,7 @@ impl Role {
 mod tests {
     use super::{Action, Role, TokenScopeError, TokenScopes};
 
-    const ACTIONS: [Action; 23] = [
+    const ACTIONS: [Action; 27] = [
         Action::ReadStatus,
         Action::ReadConfig,
         Action::ValidateConfig,
@@ -205,6 +219,10 @@ mod tests {
         Action::DeleteProxyHost,
         Action::ActivateProxyHost,
         Action::RollbackProxyHost,
+        Action::ReadAccessPolicies,
+        Action::CreateAccessPolicy,
+        Action::UpdateAccessPolicy,
+        Action::DeleteAccessPolicy,
         Action::ReadRoutes,
         Action::ReadUpstreams,
         Action::Drain,
@@ -219,9 +237,9 @@ mod tests {
     #[test]
     fn role_matrix_is_deny_by_default() {
         let expected = [
-            (Role::Viewer, 7),
-            (Role::Auditor, 8),
-            (Role::Operator, 15),
+            (Role::Viewer, 8),
+            (Role::Auditor, 9),
+            (Role::Operator, 19),
             (Role::Admin, ACTIONS.len()),
         ];
         for (role, count) in expected {
@@ -236,6 +254,9 @@ mod tests {
         }
         assert!(!Role::Viewer.allows(Action::ValidateConfig));
         assert!(Role::Viewer.allows(Action::ReadProxyHosts));
+        assert!(Role::Viewer.allows(Action::ReadAccessPolicies));
+        assert!(!Role::Viewer.allows(Action::CreateAccessPolicy));
+        assert!(Role::Operator.allows(Action::DeleteAccessPolicy));
         assert!(!Role::Auditor.allows(Action::CreateCandidate));
         assert!(!Role::Operator.allows(Action::ActivateConfig));
         assert!(!Role::Operator.allows(Action::ReadAudit));

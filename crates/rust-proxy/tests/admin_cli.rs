@@ -406,6 +406,10 @@ upstream_group = "app"
             "preview-config",
             "--scope",
             "read-proxy-hosts",
+            "--scope",
+            "read-access-policies",
+            "--scope",
+            "create-access-policy",
             "--ttl-secs",
             "600",
         ]);
@@ -415,6 +419,16 @@ upstream_group = "app"
         let plaintext = token_json["token"].as_str().expect("plaintext token");
         let token_id = token_json["metadata"]["id"].as_str().expect("token ID");
         assert_eq!(token_json["metadata"]["owner_id"], owner);
+        assert_eq!(
+            token_json["metadata"]["scopes"],
+            serde_json::json!([
+                "read_status",
+                "preview_config",
+                "read_proxy_hosts",
+                "read_access_policies",
+                "create_access_policy"
+            ])
+        );
         let token_file = daemon.root.join("operator.token");
         fs::write(&token_file, plaintext).expect("token file");
         fs::set_permissions(&token_file, fs::Permissions::from_mode(0o600)).expect("token mode");
