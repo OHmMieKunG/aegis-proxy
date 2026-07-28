@@ -1,6 +1,6 @@
 # Phase 15 independent API/security review request
 
-Status: **awaiting independent reviewer**
+Status: **waived for phase progression; still required for production release**
 
 Prepared: 2026-07-28
 
@@ -30,8 +30,9 @@ Candidates `5a32495` and `f1bfd08` are retired. Maintainer reviews found:
   response classes; and
 - User store hard limits were returned as invalid requests instead of capacity exhaustion.
 
-Candidate `efcd0c3` remediates these maintainer findings. Reproduce them rather than accepting the
-maintainer assessment.
+Candidate `efcd0c3` remediates these maintainer findings. The project owner approved phase
+progression on 2026-07-28 without representing maintainer review as independent evidence. This
+request remains available for the production-release review.
 
 ## Required qualifications and independence
 

@@ -78,7 +78,8 @@ available gate passes.
 
 ## Phase 15 — Stable typed control plane
 
-**Status:** closeout pending independent API/security review. Baseline:
+**Status:** complete on 2026-07-28 under the recorded project-owner phase-progression exception.
+Evidence: [`docs/reviews/phase-15-completion.md`](docs/reviews/phase-15-completion.md). Baseline:
 [`docs/reviews/phase-15-baseline.md`](docs/reviews/phase-15-baseline.md). Initial strict `v1` object
 envelope, Proxy Host contract, and deterministic canonical compiler exist. Compiler evidence:
 [`docs/reviews/phase-15-proxy-host-compiler.md`](docs/reviews/phase-15-proxy-host-compiler.md).
@@ -165,9 +166,8 @@ state plus exact referenced Access Policy and Certificate records. Canonical typ
 Admin-only activation, and forward rollback routes reject dependency drift; schema-1 snapshots
 remain readable and are limited to deprecated Proxy-Host-only aliases.
 
-**Remaining units:** independent API/security review and immutable completion evidence. The
-authorization/migration freeze and production-module split are implemented; Phase 16 remains
-blocked until the independent review closes without unresolved critical/high findings.
+**Remaining release evidence:** independent application-security review remains required before
+production release; the project owner waived it only for Phase 16 progression.
 
 **Objective:** provide versioned high-level objects usable by GUI and advanced automation.
 
@@ -206,6 +206,8 @@ traces, audits, previews, or backups; field-level diff and exact revision checks
 compatibility policy.
 
 ## Phase 16 — NPMPlus-style GUI MVP
+
+**Status:** ready to begin from the validated Phase 15 merge.
 
 **Objective:** make common reverse-proxy administration safe without low-level proxy knowledge.
 

@@ -4,8 +4,8 @@ Updated: 2026-07-28
 
 - Current branch: `chore/phase-15-closeout`
 - Baseline: `dev@eb107ec`
-- Current phase: Phase 15 closeout
-- Phase 16 status: blocked by the Phase 15 independent-review exit gate
+- Current phase: Phase 15 completion
+- Phase 16 status: approved to begin after merge
 - Expected working tree after closeout commit: clean
 
 ## Completed closeout work
@@ -31,21 +31,16 @@ Administration documentation now describes all implemented Phase 15 typed domain
 certificate route separation, compatibility, and downgrade rules. No frontend dependency, TCP
 listener, browser route, OIDC state, or session code has entered the branch.
 
-## Remaining Phase 15 gate
+## Phase 15 decision
 
-An independent reviewer must approve API versioning, RBAC, ownership, secret isolation,
-authorization ordering, migration/downgrade behavior, and candidate recovery with no unresolved
-critical/high finding. The exact scope, required attacks, local evidence, and report format are
-prepared in
-[`phase-15-independent-review-request.md`](../reviews/phase-15-independent-review-request.md).
-Only after approval may `docs/reviews/phase-15-completion.md` be created and this branch merged
-into `dev`.
+The project owner approved merging and Phase 16 progression on 2026-07-28, waiving the independent
+review prerequisite for phase progression only. The completion report records the exception.
+Independent application-security review remains required for production release.
 
 ## Exact next task
 
-Obtain and record the independent Phase 15 API/security review of `efcd0c3`. If it passes, create
-immutable completion evidence, merge closeout to `dev`, and branch `feat/phase-16-gui-mvp` from
-that merge.
+Merge closeout to `dev`, branch `feat/phase-16-gui-mvp`, and begin the frontend/packaging ADR plus
+default-disabled loopback web configuration.
 
 ## Known risks
 

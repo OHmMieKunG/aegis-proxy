@@ -38,7 +38,7 @@ legacy subjectless automation tokens remain parseable without gaining new scopes
 Unified candidate preview now emits stable add/update/remove records for every typed domain and
 bound dependency. Updates expose only closed per-kind field-name allowlists; object values,
 configuration secrets, ciphertext, and internal paths cannot enter the diff.
-Phase 15 closeout candidate `efcd0c3` keeps accepted requests running under their bounded in-flight
+Phase 15 candidate `efcd0c3` keeps accepted requests running under their bounded in-flight
 permits after a response deadline so blocking mutations cannot outlive
 serialization or terminal audit, and shutdown drains those permits before the administrative
 service exits. Token, backup, and restore JSON now passes exact action
@@ -147,15 +147,10 @@ evidence.
 
 ## Immediate phase
 
-[Phase 15 stable typed control plane](PLAN.md#phase-15--stable-typed-control-plane). Phase 14
-completed behavior-preserving modularization: inline tests are focused and production ownership is
-split by domain. Phase 15 closeout has split the expanded handlers, candidate store, compilers,
-Access Policy tests, and CLI administration dispatch; no production Rust module exceeds 1,200
-measured lines. The 52-action matrix, authorization-before-deserialization ordering, owner hiding,
-schema-1/schema-2 route separation, legacy-token behavior, and candidate recovery are covered.
-The original maintainer-review findings plus the follow-up shutdown-drain and
-capacity-classification findings are fixed in `efcd0c3`. Phase 15 remains open for independent
-review of that exact candidate and final immutable evidence. Phase 16 browser work has not started.
+[Phase 16 NPMPlus-style GUI MVP](PLAN.md#phase-16--npmplus-style-gui-mvp). Phase 15 is complete for
+roadmap progression under the project-owner exception recorded in
+[the completion report](docs/reviews/phase-15-completion.md). Independent application-security
+review remains a production-release blocker. Phase 16 browser work has not started.
 
 ## Release blockers
 
@@ -204,6 +199,7 @@ release. Dated exception: [dependency review](docs/security/dependency-unsafe-re
 ## Evidence
 
 - [Repository documentation audit](docs/reviews/repository-documentation-audit.md)
+- [Phase 15 completion](docs/reviews/phase-15-completion.md)
 - [Architecture](docs/architecture/overview.md)
 - [Testing](docs/development/testing.md)
 - [Threat/control matrix](docs/security/threat-control-matrix.md)
