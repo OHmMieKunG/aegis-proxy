@@ -30,8 +30,11 @@ listener, browser route, OIDC state, or session code has entered the branch.
 
 An independent reviewer must approve API versioning, RBAC, ownership, secret isolation,
 authorization ordering, migration/downgrade behavior, and candidate recovery with no unresolved
-critical/high finding. Only then may `docs/reviews/phase-15-completion.md` be created and this
-branch merged into `dev`.
+critical/high finding. The immutable candidate, exact scope, required attacks, local evidence, and
+report format are prepared in
+[`phase-15-independent-review-request.md`](../reviews/phase-15-independent-review-request.md).
+Only after approval may `docs/reviews/phase-15-completion.md` be created and this branch merged
+into `dev`.
 
 ## Exact next task
 
