@@ -111,6 +111,9 @@ pub enum AdminServerError {
     /// Blocking initialization task failed.
     #[error("administrative initialization task failed: {0}")]
     Initialization(String),
+    /// Accepted administrative requests could not be drained safely.
+    #[error("administrative request drain failed")]
+    RequestDrain,
 }
 
 #[derive(Clone, Debug)]
@@ -728,6 +731,10 @@ pub async fn serve(
         tokio::task::spawn_blocking(move || bind_private_socket(&socket_path_for_bind))
             .await
             .map_err(|error| AdminServerError::Initialization(error.to_string()))??;
+    let request_capacity = u32::try_from(config.admin.max_in_flight).map_err(|_| {
+        AdminServerError::Initialization("administrative request capacity is too large".into())
+    })?;
+    let request_permits = Arc::new(Semaphore::new(config.admin.max_in_flight));
     let state = AppState {
         control,
         tokens: Arc::new(tokens),
@@ -741,7 +748,7 @@ pub async fn serve(
         audit,
         allowed_uids: Arc::from(config.admin.allowed_uids.clone()),
         auth_permits: Arc::new(Semaphore::new(config.admin.max_auth_in_flight)),
-        request_permits: Arc::new(Semaphore::new(config.admin.max_in_flight)),
+        request_permits: Arc::clone(&request_permits),
         mutation_permits: Arc::new(Semaphore::new(1)),
         rate_limiter: Arc::new(RateLimiter::new(
             config.admin.requests_per_second,
@@ -895,6 +902,7 @@ pub async fn serve(
     )
     .with_graceful_shutdown(shutdown.cancelled_owned())
     .await;
+    drain_requests(request_permits, request_capacity).await?;
     drop(guard);
     result.map_err(AdminServerError::Io)
 }
@@ -976,6 +984,14 @@ async fn run_request_to_completion(
         Ok(Err(_)) => Err(ApiError::Internal),
         Err(_) => Err(ApiError::Timeout),
     }
+}
+
+async fn drain_requests(permits: Arc<Semaphore>, capacity: u32) -> Result<(), AdminServerError> {
+    let _permits = permits
+        .acquire_many_owned(capacity)
+        .await
+        .map_err(|_| AdminServerError::RequestDrain)?;
+    Ok(())
 }
 
 fn error_contract(mut response: Response, request_id: &str) -> Response {

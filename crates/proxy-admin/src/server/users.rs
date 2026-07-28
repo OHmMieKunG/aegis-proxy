@@ -162,9 +162,8 @@ async fn map_user_store_error(audit: &MutationAudit, error: UserStoreError) -> A
 pub(super) fn user_store_error_contract(error: &UserStoreError) -> (&'static str, ApiError) {
     match error {
         UserStoreError::Conflict => ("object_conflict", ApiError::ObjectConflict),
-        UserStoreError::Invalid | UserStoreError::Limit => {
-            ("invalid_user", ApiError::InvalidRequest)
-        }
+        UserStoreError::Invalid => ("invalid_user", ApiError::InvalidRequest),
+        UserStoreError::Limit => ("user_store_limit", ApiError::Busy),
         UserStoreError::Io(_)
         | UserStoreError::Indeterminate(_)
         | UserStoreError::RecoveryRequired

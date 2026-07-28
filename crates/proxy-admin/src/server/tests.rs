@@ -337,7 +337,7 @@ fn body_deserialization_remains_behind_authorization() {
 }
 
 #[tokio::test]
-async fn timed_out_requests_finish_while_holding_capacity() {
+async fn timed_out_requests_finish_before_shutdown_drain() {
     let permits = Arc::new(Semaphore::new(1));
     let permit = Arc::clone(&permits)
         .acquire_owned()
@@ -353,18 +353,22 @@ async fn timed_out_requests_finish_while_holding_capacity() {
     .await;
     assert!(matches!(result, Err(ApiError::Timeout)));
     assert_eq!(permits.available_permits(), 0);
+    let mut drain = Box::pin(drain_requests(Arc::clone(&permits), 1));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(10), &mut drain)
+            .await
+            .is_err()
+    );
     release.send(()).expect("release request");
     tokio::time::timeout(Duration::from_secs(1), completion)
         .await
         .expect("request completion")
         .expect("completion signal");
-    tokio::time::timeout(Duration::from_secs(1), async {
-        while permits.available_permits() == 0 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("permit release");
+    tokio::time::timeout(Duration::from_secs(1), drain)
+        .await
+        .expect("request drain")
+        .expect("drain result");
+    assert_eq!(permits.available_permits(), 1);
 }
 
 #[test]
@@ -382,8 +386,8 @@ fn user_store_errors_preserve_client_contracts() {
         ),
         (
             UserStoreError::Limit,
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
+            StatusCode::SERVICE_UNAVAILABLE,
+            "capacity_exhausted",
         ),
         (
             UserStoreError::RecoveryRequired,

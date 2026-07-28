@@ -38,11 +38,12 @@ legacy subjectless automation tokens remain parseable without gaining new scopes
 Unified candidate preview now emits stable add/update/remove records for every typed domain and
 bound dependency. Updates expose only closed per-kind field-name allowlists; object values,
 configuration secrets, ciphertext, and internal paths cannot enter the diff.
-Maintainer security review remediation `f1bfd08` keeps accepted requests running under their
-bounded in-flight permits after a response deadline so blocking mutations cannot outlive
-serialization or terminal audit. Token, backup, and restore JSON now passes exact action
+Current Phase 15 closeout work keeps accepted requests running under their bounded in-flight
+permits after a response deadline so blocking mutations cannot outlive
+serialization or terminal audit, and shutdown drains those permits before the administrative
+service exits. Token, backup, and restore JSON now passes exact action
 authorization, durable audit intent, and exact content-type validation before deserialization.
-User mutations preserve missing, invalid, stale, and unavailable error classes.
+User mutations preserve missing, invalid, stale, capacity, and unavailable error classes.
 
 Working tree at Phase 14 start: clean at `10aae8c`
 
@@ -152,9 +153,10 @@ split by domain. Phase 15 closeout has split the expanded handlers, candidate st
 Access Policy tests, and CLI administration dispatch; no production Rust module exceeds 1,200
 measured lines. The 52-action matrix, authorization-before-deserialization ordering, owner hiding,
 schema-1/schema-2 route separation, legacy-token behavior, and candidate recovery are covered.
-The high, medium, and low maintainer-review findings are fixed in `f1bfd08`; Phase 15 remains open
-for independent review of that replacement candidate and final immutable evidence. Phase 16
-browser work has not started.
+The original maintainer-review findings plus the follow-up shutdown-drain and
+capacity-classification findings are fixed in the current working tree. Phase 15 remains open for a
+replacement commit, independent review of that exact candidate, and final immutable evidence.
+Phase 16 browser work has not started.
 
 ## Release blockers
 
