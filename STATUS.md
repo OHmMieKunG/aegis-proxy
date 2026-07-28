@@ -1,7 +1,7 @@
 # AegisProxy verified status
 
-Verification date: 2026-07-27
-Branch: `work/autonomous-roadmap`
+Verification date: 2026-07-28
+Branch: `feat/phase-15-control-plane-completion`
 Verification basis: Phase 14 plus Phase 15 compiler `fa7913f`, preview service `d3de105`, typed diff
 `2617f0e`, API-token scopes `81bd500`, owned Proxy Host endpoints `00cfa32`, typed object store
 `5c8898b`, owner-scoped typed reads `d1514dd`, aggregate compiler `35d7d38`, mutation-scope fix
@@ -18,6 +18,8 @@ without persistence (`c12f1c3`). Typed candidates bind exact referenced policy g
 content; activation and rollback revalidate current policy state (`20449a3`).
 Library-only typed certificate ownership and managed-HTTPS selection metadata now exist
 (`edcb53b`).
+Low-level configuration activation and rollback reject typed-bound revisions, preventing broad
+configuration scopes from bypassing typed authorization.
 
 Working tree at Phase 14 start: clean at `10aae8c`
 

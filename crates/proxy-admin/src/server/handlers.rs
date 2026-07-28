@@ -1762,6 +1762,24 @@ pub(super) async fn activate_candidate(
         Ok(expected) => expected,
         Err(error) => return Err(audited_failure(&audit, "invalid_if_match", error).await),
     };
+    let store = state.control.revisions();
+    let candidate_id = id.clone();
+    match tokio::task::spawn_blocking(move || store.metadata(&candidate_id)).await {
+        Ok(Ok(metadata)) if metadata.binding_hash.is_some() => {
+            return Err(
+                audited_failure(&audit, "typed_candidate", ApiError::CandidateConflict).await,
+            );
+        }
+        Ok(Ok(_)) => {}
+        Ok(Err(RevisionError::InvalidStored(_))) => {
+            return Err(audited_failure(&audit, "candidate_not_found", ApiError::NotFound).await);
+        }
+        Ok(Err(_)) | Err(_) => {
+            return Err(
+                audited_failure(&audit, "storage_unavailable", ApiError::Unavailable).await,
+            );
+        }
+    }
     let result = match state
         .control
         .coordinator()
@@ -1819,6 +1837,9 @@ pub(super) async fn rollback_revision(
     let store = state.control.revisions();
     let rollback_id = id.clone();
     let forward = match tokio::task::spawn_blocking(move || {
+        if store.metadata(&rollback_id)?.binding_hash.is_some() {
+            return Err(RevisionError::Conflict);
+        }
         let config = store.load(&rollback_id)?;
         store.create_forward_revision(&config, &format!("rollback:{rollback_id}"))
     })
@@ -1827,6 +1848,11 @@ pub(super) async fn rollback_revision(
         Ok(Ok(metadata)) => metadata,
         Ok(Err(RevisionError::InvalidStored(_))) => {
             return Err(audited_failure(&audit, "revision_not_found", ApiError::NotFound).await);
+        }
+        Ok(Err(RevisionError::Conflict)) => {
+            return Err(
+                audited_failure(&audit, "typed_revision", ApiError::CandidateConflict).await,
+            );
         }
         Ok(Err(_)) | Err(_) => {
             return Err(

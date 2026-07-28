@@ -140,6 +140,18 @@ allow = ["127.0.0.1/32"]
         response
     }
 
+    fn raw_post(socket: &str, path: &str, expected_revision: &str) -> String {
+        let mut stream = UnixStream::connect(socket).expect("connect admin socket");
+        write!(
+            stream,
+            "POST {path} HTTP/1.1\r\nHost: localhost\r\nIf-Match: \"{expected_revision}\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+        .expect("write request");
+        let mut response = String::new();
+        stream.read_to_string(&mut response).expect("read response");
+        response
+    }
+
     #[test]
     fn private_cli_enforces_cas_rbac_token_and_audit_contracts() {
         let root = root();
@@ -1320,6 +1332,14 @@ allow = ["127.0.0.1/32"]
         );
         assert_eq!(candidate_binding["access_policies"][0]["generation"], 2);
         assert_eq!(active_revision(&state), current);
+        for path in [
+            format!("/v1/config/candidates/{candidate_id}/activate"),
+            format!("/v1/config/revisions/{candidate_id}/rollback"),
+        ] {
+            let bypass = raw_post(socket, &path, &current);
+            assert!(bypass.starts_with("HTTP/1.1 409 "), "{bypass}");
+            assert_eq!(active_revision(&state), current);
+        }
         let created_list = run(&["proxy-host", "list", "--socket", socket]);
         assert!(created_list.status.success(), "{:?}", created_list.stderr);
         let created_list_json: serde_json::Value =

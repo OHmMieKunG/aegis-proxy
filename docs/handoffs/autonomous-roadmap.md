@@ -2,7 +2,7 @@
 
 Updated: 2026-07-28
 
-- Current branch: `work/autonomous-roadmap`
+- Current branch: `feat/phase-15-control-plane-completion`
 - Current completed-unit commit: `edcb53b`
 - Current phase: Phase 15, in progress
 - Completed unit: library-only typed certificate ownership metadata

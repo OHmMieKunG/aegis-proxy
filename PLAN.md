@@ -152,6 +152,8 @@ A strict library-only Certificate object now binds owner/shares to an opaque exi
 ID. Its metadata compiler resolves only canonical hosts and exactly one HTTPS listener, copies no
 private-key or chain reference, and selects exact or single-label wildcard coverage with explicit
 ownership and ambiguity checks.
+Low-level configuration activation and rollback reject typed-bound revisions so broad
+configuration scopes cannot bypass typed authorization.
 
 **Remaining units:** certificate persistence/RBAC/endpoints and Proxy Host wiring; remaining domain
 objects; remaining OpenAPI and CLI contracts; migration/compatibility policy and tests; transport
