@@ -1,5 +1,14 @@
 use super::*;
 
+#[derive(Debug, Serialize)]
+pub(super) struct TypedCandidateChange {
+    kind: &'static str,
+    owner_id: ObjectId,
+    id: ObjectId,
+    operation: &'static str,
+    fields: Vec<&'static str>,
+}
+
 pub(super) enum DesiredOverride {
     ProxyHosts(Vec<ApiObject<ProxyHostSpec>>),
     StreamHosts(Vec<ApiObject<StreamHostSpec>>),
@@ -10,6 +19,185 @@ struct DesiredState {
     proxy_hosts: Vec<ApiObject<ProxyHostSpec>>,
     stream_hosts: Vec<ApiObject<StreamHostSpec>>,
     discovery_sources: Vec<ApiObject<DiscoverySourceSpec>>,
+}
+
+pub(super) fn typed_candidate_changes(
+    current: Option<&crate::BoundProxyHostCandidate>,
+    desired: &crate::BoundProxyHostCandidate,
+) -> Vec<TypedCandidateChange> {
+    let mut changes = Vec::new();
+    object_changes(
+        "proxy_host",
+        current.map_or(&[], crate::BoundProxyHostCandidate::objects),
+        desired.objects(),
+        &[
+            "domain",
+            "forward_host",
+            "forward_port",
+            "forward_protocol",
+            "automatic_https",
+            "access_policy_ref",
+            "enabled",
+        ],
+        &mut changes,
+    );
+    object_changes(
+        "stream_host",
+        current.map_or(&[], crate::BoundProxyHostCandidate::stream_hosts),
+        desired.stream_hosts(),
+        &[
+            "listen_port",
+            "protocol",
+            "forward_host",
+            "forward_port",
+            "sni_hosts",
+            "enabled",
+        ],
+        &mut changes,
+    );
+    object_changes(
+        "discovery_source",
+        current.map_or(&[], crate::BoundProxyHostCandidate::discovery_sources),
+        desired.discovery_sources(),
+        &[
+            "kind",
+            "enabled",
+            "upstream_group",
+            "source",
+            "transport",
+            "refresh",
+            "stale_policy",
+            "bounds",
+        ],
+        &mut changes,
+    );
+    dependency_changes(
+        "access_policy",
+        current.map_or(&[], crate::BoundProxyHostCandidate::access_policies),
+        desired.access_policies(),
+        &[
+            "generation",
+            "owner_id",
+            "enabled",
+            "shared_with",
+            "middlewares",
+        ],
+        |stored| (&stored.object.metadata.owner_id, &stored.object.metadata.id),
+        &mut changes,
+    );
+    dependency_changes(
+        "certificate",
+        current.map_or(&[], crate::BoundProxyHostCandidate::certificates),
+        desired.certificates(),
+        &[
+            "generation",
+            "owner_id",
+            "enabled",
+            "shared_with",
+            "certificate_ref",
+        ],
+        |stored| (&stored.object.metadata.owner_id, &stored.object.metadata.id),
+        &mut changes,
+    );
+    changes.sort_by(|left, right| {
+        (left.kind, &left.owner_id, &left.id).cmp(&(right.kind, &right.owner_id, &right.id))
+    });
+    changes
+}
+
+fn object_changes<T: Eq>(
+    kind: &'static str,
+    current: &[ApiObject<T>],
+    desired: &[ApiObject<T>],
+    fields: &[&'static str],
+    changes: &mut Vec<TypedCandidateChange>,
+) {
+    let current = current
+        .iter()
+        .map(|object| ((&object.metadata.owner_id, &object.metadata.id), object))
+        .collect::<BTreeMap<_, _>>();
+    let desired = desired
+        .iter()
+        .map(|object| ((&object.metadata.owner_id, &object.metadata.id), object))
+        .collect::<BTreeMap<_, _>>();
+    for (identity, object) in &desired {
+        let operation = match current.get(identity) {
+            None => "add",
+            Some(previous) if *previous != *object => "update",
+            Some(_) => continue,
+        };
+        changes.push(TypedCandidateChange {
+            kind,
+            owner_id: identity.0.clone(),
+            id: identity.1.clone(),
+            operation,
+            fields: if operation == "update" {
+                fields.to_vec()
+            } else {
+                Vec::new()
+            },
+        });
+    }
+    for identity in current
+        .keys()
+        .filter(|identity| !desired.contains_key(*identity))
+    {
+        changes.push(TypedCandidateChange {
+            kind,
+            owner_id: identity.0.clone(),
+            id: identity.1.clone(),
+            operation: "remove",
+            fields: Vec::new(),
+        });
+    }
+}
+
+fn dependency_changes<T: Eq>(
+    kind: &'static str,
+    current: &[T],
+    desired: &[T],
+    fields: &[&'static str],
+    identity: fn(&T) -> (&ObjectId, &ObjectId),
+    changes: &mut Vec<TypedCandidateChange>,
+) {
+    let current = current
+        .iter()
+        .map(|stored| (identity(stored), stored))
+        .collect::<BTreeMap<_, _>>();
+    let desired = desired
+        .iter()
+        .map(|stored| (identity(stored), stored))
+        .collect::<BTreeMap<_, _>>();
+    for (object_identity, stored) in &desired {
+        let operation = match current.get(object_identity) {
+            None => "add",
+            Some(previous) if *previous != *stored => "update",
+            Some(_) => continue,
+        };
+        changes.push(TypedCandidateChange {
+            kind,
+            owner_id: object_identity.0.clone(),
+            id: object_identity.1.clone(),
+            operation,
+            fields: if operation == "update" {
+                fields.to_vec()
+            } else {
+                Vec::new()
+            },
+        });
+    }
+    for (object_identity, _) in current
+        .iter()
+        .filter(|(identity, _)| !desired.contains_key(*identity))
+    {
+        changes.push(TypedCandidateChange {
+            kind,
+            owner_id: object_identity.0.clone(),
+            id: object_identity.1.clone(),
+            operation: "remove",
+            fields: Vec::new(),
+        });
+    }
 }
 
 pub(super) async fn create_unified_candidate(
@@ -464,5 +652,44 @@ async fn certificate_dependencies(
         Ok(Ok(result)) => Ok(result),
         Ok(Err(error)) => Err(audited_failure(audit, "certificate_unavailable", error).await),
         Err(_) => Err(audited_failure(audit, "certificate_unavailable", ApiError::Internal).await),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn proxy(enabled: bool) -> ApiObject<ProxyHostSpec> {
+        serde_json::from_value(serde_json::json!({
+            "api_version": "v1",
+            "metadata": {"id": "proxy-a", "owner_id": "alice"},
+            "spec": {
+                "domain": "a.example.test",
+                "forward_host": "127.0.0.1",
+                "forward_port": 8080,
+                "forward_protocol": "http",
+                "automatic_https": "disabled",
+                "access_policy_ref": null,
+                "enabled": enabled
+            }
+        }))
+        .expect("proxy")
+    }
+
+    #[test]
+    fn typed_change_uses_only_the_closed_field_allowlist() {
+        let mut changes = Vec::new();
+        object_changes(
+            "proxy_host",
+            &[proxy(true)],
+            &[proxy(false)],
+            &["enabled"],
+            &mut changes,
+        );
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].fields, ["enabled"]);
+        let json = serde_json::to_string(&changes).expect("changes");
+        assert!(!json.contains("127.0.0.1"));
+        assert!(!json.contains("a.example.test"));
     }
 }

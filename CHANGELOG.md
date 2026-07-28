@@ -82,6 +82,8 @@ AegisProxy has not published a supported release.
   owner-scoped metadata, exact scopes, CLI lifecycle, and ciphertext removal on revoke.
 - Added durable Users, read-only built-in Roles, exact identity/token scopes, and subject-bound
   token issuance; disabled users cannot authenticate and legacy subjectless tokens gain nothing.
+- Generalized schema-2 candidate preview differences across every typed object and dependency using
+  closed field-name allowlists with no raw values or secret-bearing representation.
 - Prevented low-level configuration activation and rollback from accepting typed-bound revisions.
 - Fixed token revocation CLI parsing for valid generated token IDs that begin with a hyphen.
 

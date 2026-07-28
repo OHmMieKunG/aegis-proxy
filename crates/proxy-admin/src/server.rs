@@ -544,6 +544,16 @@ struct PreviewResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct TypedPreviewResponse {
+    active_revision: String,
+    active_route_fingerprint: String,
+    candidate_route_fingerprint: String,
+    activation_class: &'static str,
+    changes: Vec<TypedCandidateChange>,
+    config: Config,
+}
+
+#[derive(Debug, Serialize)]
 struct ProxyHostValidationResponse {
     valid: bool,
     summary: ProxyHostPreviewSummary,

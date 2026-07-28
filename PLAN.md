@@ -165,8 +165,8 @@ state plus exact referenced Access Policy and Certificate records. Canonical typ
 Admin-only activation, and forward rollback routes reject dependency drift; schema-1 snapshots
 remain readable and are limited to deprecated Proxy-Host-only aliases.
 
-**Remaining units:** generalized typed diff; remaining authorization and migration contracts;
-module split; full authorization/security review.
+**Remaining units:** remaining authorization and migration contracts; module split; full
+authorization/security review.
 
 **Objective:** provide versioned high-level objects usable by GUI and advanced automation.
 

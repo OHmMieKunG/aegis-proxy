@@ -735,12 +735,13 @@ pub(super) async fn preview_typed_candidate(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
     principal: Principal,
-) -> Result<axum::Json<PreviewResponse>, ApiError> {
+) -> Result<axum::Json<TypedPreviewResponse>, ApiError> {
     authorize(&principal, Action::PreviewConfig)?;
     let revisions = state.control.revisions();
     let store = Arc::clone(&state.proxy_hosts);
     let candidate_id = id;
-    let candidate = tokio::task::spawn_blocking(move || {
+    let active_id = state.control.runtime().revision().to_string();
+    let (candidate, bound, current) = tokio::task::spawn_blocking(move || {
         let metadata = revisions.metadata(&candidate_id)?;
         let binding_hash = metadata
             .binding_hash
@@ -753,7 +754,13 @@ pub(super) async fn preview_typed_candidate(
                 "candidate is not unified".into(),
             ));
         }
-        revisions.load(&candidate_id)
+        let current = revisions
+            .metadata(&active_id)?
+            .binding_hash
+            .map(|hash| store.load_candidate(&active_id, &hash))
+            .transpose()
+            .map_err(|_| RevisionError::InvalidStored("active typed binding is invalid".into()))?;
+        Ok::<_, RevisionError>((revisions.load(&candidate_id)?, bound, current))
     })
     .await
     .map_err(|_| ApiError::Internal)?
@@ -766,7 +773,7 @@ pub(super) async fn preview_typed_candidate(
     })?;
     let runtime = state.control.runtime();
     let active = runtime.config();
-    Ok(axum::Json(PreviewResponse {
+    Ok(axum::Json(TypedPreviewResponse {
         active_revision: runtime.revision().to_string(),
         active_route_fingerprint: format!("{:016x}", RouteIndex::compile(&active).fingerprint()),
         candidate_route_fingerprint: format!(
@@ -778,6 +785,7 @@ pub(super) async fn preview_typed_candidate(
         } else {
             "restart_required"
         },
+        changes: typed_candidate_changes(current.as_ref(), &bound),
         config: aegisproxy_config::redacted(&candidate),
     }))
 }

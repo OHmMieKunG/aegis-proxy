@@ -35,6 +35,9 @@ Durable Users now bind identity/owner equality to a fixed built-in role and enab
 are read-only. New tokens require an enabled `user_ref`, inherit that user's role and owner, and
 accept only an explicit role-bounded scope subset. Disabling a user blocks its subject tokens while
 legacy subjectless automation tokens remain parseable without gaining new scopes.
+Unified candidate preview now emits stable add/update/remove records for every typed domain and
+bound dependency. Updates expose only closed per-kind field-name allowlists; object values,
+configuration secrets, ciphertext, and internal paths cannot enter the diff.
 
 Working tree at Phase 14 start: clean at `10aae8c`
 
