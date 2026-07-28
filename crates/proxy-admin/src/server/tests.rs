@@ -65,6 +65,9 @@ fn checked_openapi_contains_every_private_route() {
         "/v1/proxy-hosts/preview:",
         "/v1/proxy-hosts/candidates/{id}/activate:",
         "/v1/proxy-hosts/revisions/{id}/rollback:",
+        "/v1/config/typed-candidates/{id}/preview:",
+        "/v1/config/typed-candidates/{id}/activate:",
+        "/v1/config/typed-revisions/{id}/rollback:",
         "/v1/stream-hosts:",
         "/v1/stream-hosts/{id}:",
         "/v1/stream-hosts/validate:",
@@ -113,6 +116,8 @@ fn checked_openapi_contains_every_private_route() {
         "delete_proxy_host",
         "activate_proxy_host",
         "rollback_proxy_host",
+        "activate_typed_candidate",
+        "rollback_typed_revision",
         "read_access_policies",
         "create_access_policy",
         "update_access_policy",
@@ -154,7 +159,7 @@ fn checked_openapi_contains_every_private_route() {
             .collect::<Vec<_>>(),
         scopes
     );
-    assert_eq!(openapi.matches("maxItems: 39").count(), 2);
+    assert_eq!(openapi.matches("maxItems: 41").count(), 2);
     assert!(openapi.contains("operationId: createAccessPolicy"));
     assert!(openapi.contains("operationId: updateAccessPolicy"));
     assert!(openapi.contains("operationId: deleteAccessPolicy"));

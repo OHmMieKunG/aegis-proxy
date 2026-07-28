@@ -49,6 +49,10 @@ pub enum Action {
     ActivateProxyHost,
     /// Restore bound typed Proxy Host desired state through a forward revision.
     RollbackProxyHost,
+    /// Activate a verified unified typed candidate.
+    ActivateTypedCandidate,
+    /// Restore a unified typed snapshot through a forward revision.
+    RollbackTypedRevision,
     /// Read typed Access Policies within authenticated owner scope.
     ReadAccessPolicies,
     /// Create an owned typed Access Policy.
@@ -246,7 +250,7 @@ impl Role {
 mod tests {
     use super::{Action, Role, TokenScopeError, TokenScopes};
 
-    const ACTIONS: [Action; 39] = [
+    const ACTIONS: [Action; 41] = [
         Action::ReadStatus,
         Action::ReadConfig,
         Action::ValidateConfig,
@@ -261,6 +265,8 @@ mod tests {
         Action::DeleteProxyHost,
         Action::ActivateProxyHost,
         Action::RollbackProxyHost,
+        Action::ActivateTypedCandidate,
+        Action::RollbackTypedRevision,
         Action::ReadAccessPolicies,
         Action::CreateAccessPolicy,
         Action::UpdateAccessPolicy,

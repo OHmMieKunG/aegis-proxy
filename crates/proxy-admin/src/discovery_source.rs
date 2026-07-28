@@ -84,6 +84,20 @@ impl DiscoverySourceStore {
     pub fn all(&self) -> Result<Vec<StoredDiscoverySource>, DiscoverySourceStoreError> {
         self.0.all()
     }
+
+    pub(crate) fn replace_all(
+        &self,
+        objects: Vec<ApiObject<DiscoverySourceSpec>>,
+    ) -> Result<Vec<StoredDiscoverySource>, DiscoverySourceStoreError> {
+        self.0.replace_all(objects)
+    }
+
+    pub(crate) fn restore_all(
+        &self,
+        objects: Vec<StoredDiscoverySource>,
+    ) -> Result<(), DiscoverySourceStoreError> {
+        self.0.restore_all(objects)
+    }
 }
 
 /// Stable fail-closed Discovery Source compilation error.

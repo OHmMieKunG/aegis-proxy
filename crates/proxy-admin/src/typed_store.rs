@@ -285,6 +285,72 @@ where
             .collect())
     }
 
+    pub(crate) fn replace_all(
+        &self,
+        mut desired: Vec<ApiObject<T>>,
+    ) -> Result<Vec<StoredObject<T>>, TypedStoreError> {
+        if desired.len() > self.max_objects {
+            return Err(TypedStoreError::Limit);
+        }
+        let mut objects = self
+            .objects
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.ensure_mutable()?;
+        let previous = objects.clone();
+        let mut replacement = BTreeMap::new();
+        for mut object in desired.drain(..) {
+            if !(self.canonicalize)(&mut object) {
+                return Err(TypedStoreError::Invalid);
+            }
+            let id = object.metadata.id.clone();
+            let generation = match objects.get(&id) {
+                Some(stored) if stored.object == object => stored.generation,
+                Some(stored) => stored
+                    .generation
+                    .checked_add(1)
+                    .ok_or(TypedStoreError::Limit)?,
+                None => 1,
+            };
+            if replacement
+                .insert(id, StoredObject { generation, object })
+                .is_some()
+            {
+                return Err(TypedStoreError::Conflict);
+            }
+        }
+        persist_store(&self.path, &replacement, self.max_bytes)?;
+        *objects = replacement;
+        Ok(previous.into_values().collect())
+    }
+
+    pub(crate) fn restore_all(
+        &self,
+        previous: Vec<StoredObject<T>>,
+    ) -> Result<(), TypedStoreError> {
+        let mut replacement = BTreeMap::new();
+        for stored in previous {
+            let mut canonical = stored.object.clone();
+            if stored.generation == 0
+                || !(self.canonicalize)(&mut canonical)
+                || canonical != stored.object
+                || replacement
+                    .insert(stored.object.metadata.id.clone(), stored)
+                    .is_some()
+            {
+                return Err(TypedStoreError::Invalid);
+            }
+        }
+        let mut objects = self
+            .objects
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.ensure_mutable()?;
+        persist_store(&self.path, &replacement, self.max_bytes)?;
+        *objects = replacement;
+        Ok(())
+    }
+
     fn ensure_mutable(&self) -> Result<(), TypedStoreError> {
         if self.recovery_required.load(Ordering::Acquire) {
             Err(TypedStoreError::RecoveryRequired)

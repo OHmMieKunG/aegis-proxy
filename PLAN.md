@@ -159,11 +159,15 @@ owner-scoped API/CLI operations, managed-HTTPS selection, and typed renewal. Obs
 status and direct runtime-ID renewal are isolated under `/v1/runtime/certificates`.
 Strict Stream Host and file/DNS Discovery Source objects now have deterministic compilers, bounded
 private stores, exact CRUD scopes, owner-scoped API/CLI operations, side-effect-free previews, and
-typed-bound non-active candidate creation. Unified schema-2 activation remains pending.
+typed-bound non-active candidate creation.
+Schema-2 unified candidates now bind complete Proxy Host, Stream Host, and Discovery Source desired
+state plus exact referenced Access Policy and Certificate records. Canonical typed preview,
+Admin-only activation, and forward rollback routes reject dependency drift; schema-1 snapshots
+remain readable and are limited to deprecated Proxy-Host-only aliases.
 
-**Remaining units:** certificate persistence/RBAC/endpoints and Proxy Host wiring; remaining domain
-objects; remaining OpenAPI and CLI contracts; migration/compatibility policy and tests; transport
-module split; full authorization/security review.
+**Remaining units:** Stored Credentials; Users/Roles and subject-bound token issuance; generalized
+typed diff; remaining authorization, migration, OpenAPI, and CLI contracts; module split; full
+authorization/security review.
 
 **Objective:** provide versioned high-level objects usable by GUI and advanced automation.
 

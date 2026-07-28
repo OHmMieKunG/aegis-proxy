@@ -271,6 +271,31 @@ paths:
         "200":
           description: Bound typed desired state restored through a new active forward revision
         default: {$ref: "#/components/responses/Error"}
+  /v1/config/typed-candidates/{id}/preview:
+    get:
+      operationId: previewTypedCandidate
+      parameters: [{$ref: "#/components/parameters/RevisionId"}]
+      responses:
+        "200": {description: Redacted unified typed candidate preview}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/config/typed-candidates/{id}/activate:
+    post:
+      operationId: activateTypedCandidate
+      parameters:
+        - {$ref: "#/components/parameters/RevisionId"}
+        - {$ref: "#/components/parameters/IfMatch"}
+      responses:
+        "200": {description: Verified schema-2 typed candidate activated}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/config/typed-revisions/{id}/rollback:
+    post:
+      operationId: rollbackTypedRevision
+      parameters:
+        - {$ref: "#/components/parameters/RevisionId"}
+        - {$ref: "#/components/parameters/IfMatch"}
+      responses:
+        "200": {description: Unified typed state restored through a forward revision}
+        default: {$ref: "#/components/responses/Error"}
   /v1/stream-hosts:
     get:
       operationId: listStreamHosts
@@ -538,7 +563,7 @@ paths:
                 scopes:
                   type: array
                   minItems: 1
-                  maxItems: 39
+                  maxItems: 41
                   uniqueItems: true
                   items:
                     $ref: "#/components/schemas/TokenScope"
@@ -941,7 +966,7 @@ components:
             changes: {type: array, minItems: 7, maxItems: 8, items: {type: object}}
     TokenScope:
       type: string
-      enum: [read_status, read_config, validate_config, preview_config, create_candidate, activate_config, rollback_config, read_revisions, read_proxy_hosts, create_proxy_host, update_proxy_host, delete_proxy_host, activate_proxy_host, rollback_proxy_host, read_access_policies, create_access_policy, update_access_policy, delete_access_policy, read_routes, read_upstreams, drain, read_certificates, read_certificate_objects, create_certificate, update_certificate, delete_certificate, read_stream_hosts, create_stream_host, update_stream_host, delete_stream_host, read_discovery_sources, create_discovery_source, update_discovery_source, delete_discovery_source, renew_certificate, read_audit, create_backup, validate_restore, manage_identities]
+      enum: [read_status, read_config, validate_config, preview_config, create_candidate, activate_config, rollback_config, read_revisions, read_proxy_hosts, create_proxy_host, update_proxy_host, delete_proxy_host, activate_proxy_host, rollback_proxy_host, activate_typed_candidate, rollback_typed_revision, read_access_policies, create_access_policy, update_access_policy, delete_access_policy, read_routes, read_upstreams, drain, read_certificates, read_certificate_objects, create_certificate, update_certificate, delete_certificate, read_stream_hosts, create_stream_host, update_stream_host, delete_stream_host, read_discovery_sources, create_discovery_source, update_discovery_source, delete_discovery_source, renew_certificate, read_audit, create_backup, validate_restore, manage_identities]
     TokenMetadata:
       type: object
       additionalProperties: false
@@ -955,7 +980,7 @@ components:
             - {type: "null"}
         scopes:
           type: array
-          maxItems: 39
+          maxItems: 41
           uniqueItems: true
           items: {$ref: "#/components/schemas/TokenScope"}
         expires_unix_secs: {type: integer, minimum: 1}

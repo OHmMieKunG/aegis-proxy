@@ -21,7 +21,10 @@ private persistence, exact owner-scoped CRUD permissions, API/CLI operations, an
 status and direct-renewal routes.
 Strict typed Stream Hosts and file/DNS Discovery Sources now compile deterministically without
 source I/O, persist in bounded owner-scoped stores, expose exact CRUD/preview/CLI contracts, and
-create typed-bound non-active candidates.
+create schema-2 unified typed-bound non-active candidates. Unified snapshots cover complete Proxy
+Hosts, Stream Hosts, Discovery Sources, and exact referenced Access Policy and Certificate records;
+canonical typed preview, Admin-only activation, and forward rollback are available while the old
+Proxy Host routes accept only schema-1 snapshots.
 Low-level configuration activation and rollback reject typed-bound revisions, preventing broad
 configuration scopes from bypassing typed authorization.
 

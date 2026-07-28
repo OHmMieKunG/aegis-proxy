@@ -49,7 +49,7 @@ pub use discovery_source::{
 };
 pub use object_store::{
     BoundProxyHostCandidate, ProxyHostClaims, ProxyHostSnapshot, ProxyHostStore,
-    ProxyHostStoreError, StoredProxyHost,
+    ProxyHostStoreError, StoredProxyHost, UnifiedCandidateState,
 };
 pub use preview::{
     CandidateActivation, GeneratedProxyHostPreview, ProxyHostCandidatePreview,

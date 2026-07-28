@@ -19,14 +19,17 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
-    ApiObject, ObjectId, ProxyHostSpec, StoredAccessPolicy, access_policy::MAX_ACCESS_POLICIES,
+    ApiObject, DiscoverySourceSpec, ObjectId, ProxyHostSpec, StoredAccessPolicy, StoredCertificate,
+    StreamHostSpec, access_policy::MAX_ACCESS_POLICIES,
 };
 
 const STORE_SCHEMA_VERSION: u32 = 1;
 pub(crate) const MAX_PROXY_HOSTS: usize = 4_096;
 const MAX_STORE_BYTES: u64 = 2 * 1024 * 1024;
-const MAX_TRANSACTION_BYTES: u64 = 4 * 1024 * 1024 + 64 * 1024;
+const MAX_TRANSACTION_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_CANDIDATE_SNAPSHOTS: usize = 1_000;
+const CANDIDATE_SCHEMA_V1: u32 = 1;
+const CANDIDATE_SCHEMA_V2: u32 = 2;
 
 /// One persisted Proxy Host desired-state generation.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -57,23 +60,37 @@ pub struct ProxyHostSnapshot {
 /// Immutable typed desired state bound to one configuration revision.
 #[derive(Clone, Eq, PartialEq)]
 pub struct BoundProxyHostCandidate {
+    schema_version: u32,
     binding_hash: String,
     objects: Vec<ApiObject<ProxyHostSpec>>,
+    stream_hosts: Vec<ApiObject<StreamHostSpec>>,
+    discovery_sources: Vec<ApiObject<DiscoverySourceSpec>>,
     access_policies: Vec<StoredAccessPolicy>,
+    certificates: Vec<StoredCertificate>,
 }
 
 impl fmt::Debug for BoundProxyHostCandidate {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("BoundProxyHostCandidate")
+            .field("schema_version", &self.schema_version)
             .field("binding_hash", &self.binding_hash)
             .field("object_count", &self.objects.len())
             .field("access_policy_count", &self.access_policies.len())
+            .field("stream_host_count", &self.stream_hosts.len())
+            .field("discovery_source_count", &self.discovery_sources.len())
+            .field("certificate_count", &self.certificates.len())
             .finish()
     }
 }
 
 impl BoundProxyHostCandidate {
+    /// Return private typed snapshot schema version.
+    #[must_use]
+    pub const fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
     /// Return the canonical desired-state binding hash.
     #[must_use]
     pub fn binding_hash(&self) -> &str {
@@ -90,6 +107,24 @@ impl BoundProxyHostCandidate {
     #[must_use]
     pub fn access_policies(&self) -> &[StoredAccessPolicy] {
         &self.access_policies
+    }
+
+    /// Return stable complete Stream Host desired state.
+    #[must_use]
+    pub fn stream_hosts(&self) -> &[ApiObject<StreamHostSpec>] {
+        &self.stream_hosts
+    }
+
+    /// Return stable complete Discovery Source desired state.
+    #[must_use]
+    pub fn discovery_sources(&self) -> &[ApiObject<DiscoverySourceSpec>] {
+        &self.discovery_sources
+    }
+
+    /// Return canonical referenced Certificate generations.
+    #[must_use]
+    pub fn certificates(&self) -> &[StoredCertificate] {
+        &self.certificates
     }
 }
 
@@ -150,6 +185,12 @@ struct ProxyHostCandidateFile {
     objects: Vec<ApiObject<ProxyHostSpec>>,
     #[serde(default)]
     access_policies: Vec<StoredAccessPolicy>,
+    #[serde(default)]
+    stream_hosts: Vec<ApiObject<StreamHostSpec>>,
+    #[serde(default)]
+    discovery_sources: Vec<ApiObject<DiscoverySourceSpec>>,
+    #[serde(default)]
+    certificates: Vec<StoredCertificate>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -172,6 +213,31 @@ struct ProxyHostPolicyBinding<'a> {
     schema_version: u32,
     objects: &'a [ApiObject<ProxyHostSpec>],
     access_policies: &'a [StoredAccessPolicy],
+}
+
+#[derive(Serialize)]
+struct UnifiedBinding<'a> {
+    schema_version: u32,
+    proxy_hosts: &'a [ApiObject<ProxyHostSpec>],
+    stream_hosts: &'a [ApiObject<StreamHostSpec>],
+    discovery_sources: &'a [ApiObject<DiscoverySourceSpec>],
+    access_policies: &'a [StoredAccessPolicy],
+    certificates: &'a [StoredCertificate],
+}
+
+/// Complete schema-2 typed desired state and exact dependencies.
+#[derive(Debug)]
+pub struct UnifiedCandidateState<'a> {
+    /// Complete Proxy Host desired state.
+    pub proxy_hosts: &'a [ApiObject<ProxyHostSpec>],
+    /// Complete Stream Host desired state.
+    pub stream_hosts: &'a [ApiObject<StreamHostSpec>],
+    /// Complete Discovery Source desired state.
+    pub discovery_sources: &'a [ApiObject<DiscoverySourceSpec>],
+    /// Exact referenced Access Policy records.
+    pub access_policies: &'a [StoredAccessPolicy],
+    /// Exact referenced Certificate records.
+    pub certificates: &'a [StoredCertificate],
 }
 
 type ObjectIndex = BTreeMap<ObjectId, BTreeMap<ObjectId, StoredProxyHost>>;
@@ -516,6 +582,34 @@ impl ProxyHostStore {
         Ok(format!("{:x}", Sha256::digest(bytes)))
     }
 
+    /// Return canonical schema-2 hash across every typed desired-state domain and dependency.
+    pub fn unified_binding_hash(
+        proxy_hosts: &[ApiObject<ProxyHostSpec>],
+        stream_hosts: &[ApiObject<StreamHostSpec>],
+        discovery_sources: &[ApiObject<DiscoverySourceSpec>],
+        access_policies: &[StoredAccessPolicy],
+        certificates: &[StoredCertificate],
+    ) -> Result<String, ProxyHostStoreError> {
+        let proxy_hosts = canonical_objects(proxy_hosts)?;
+        let stream_hosts = canonical_stream_hosts(stream_hosts)?;
+        let discovery_sources = canonical_discovery_sources(discovery_sources)?;
+        let access_policies = canonical_access_policies(access_policies)?;
+        let certificates = canonical_certificates(certificates)?;
+        let bytes = serde_json::to_vec(&UnifiedBinding {
+            schema_version: CANDIDATE_SCHEMA_V2,
+            proxy_hosts: &proxy_hosts,
+            stream_hosts: &stream_hosts,
+            discovery_sources: &discovery_sources,
+            access_policies: &access_policies,
+            certificates: &certificates,
+        })
+        .map_err(|_| ProxyHostStoreError::Invalid)?;
+        if bytes.len() as u64 > MAX_TRANSACTION_BYTES {
+            return Err(ProxyHostStoreError::Limit);
+        }
+        Ok(format!("{:x}", Sha256::digest(bytes)))
+    }
+
     /// Persist one immutable typed desired-state snapshot for a revision.
     pub fn bind_candidate(
         &self,
@@ -554,11 +648,14 @@ impl ProxyHostStore {
             return Err(ProxyHostStoreError::Limit);
         }
         let bytes = serde_json::to_vec_pretty(&ProxyHostCandidateFile {
-            schema_version: STORE_SCHEMA_VERSION,
+            schema_version: CANDIDATE_SCHEMA_V1,
             revision_id: revision_id.to_owned(),
             binding_hash: binding_hash.clone(),
             objects: objects.clone(),
             access_policies: access_policies.clone(),
+            stream_hosts: Vec::new(),
+            discovery_sources: Vec::new(),
+            certificates: Vec::new(),
         })
         .map_err(|_| ProxyHostStoreError::Invalid)?;
         if bytes.len() as u64 > MAX_TRANSACTION_BYTES {
@@ -567,9 +664,81 @@ impl ProxyHostStore {
         write_private_file(&path, &bytes)?;
         File::open(&self.candidate_dir)?.sync_all()?;
         Ok(BoundProxyHostCandidate {
+            schema_version: CANDIDATE_SCHEMA_V1,
             binding_hash,
             objects,
+            stream_hosts: Vec::new(),
+            discovery_sources: Vec::new(),
             access_policies,
+            certificates: Vec::new(),
+        })
+    }
+
+    /// Persist one immutable schema-2 snapshot across every typed domain.
+    pub fn bind_unified_candidate(
+        &self,
+        revision_id: &str,
+        expected_hash: &str,
+        state: UnifiedCandidateState<'_>,
+    ) -> Result<BoundProxyHostCandidate, ProxyHostStoreError> {
+        validate_revision_id(revision_id)?;
+        let proxy_hosts = canonical_objects(state.proxy_hosts)?;
+        let stream_hosts = canonical_stream_hosts(state.stream_hosts)?;
+        let discovery_sources = canonical_discovery_sources(state.discovery_sources)?;
+        let access_policies = canonical_access_policies(state.access_policies)?;
+        let certificates = canonical_certificates(state.certificates)?;
+        let binding_hash = Self::unified_binding_hash(
+            &proxy_hosts,
+            &stream_hosts,
+            &discovery_sources,
+            &access_policies,
+            &certificates,
+        )?;
+        if binding_hash != expected_hash {
+            return Err(ProxyHostStoreError::Invalid);
+        }
+        create_private_directory(&self.candidate_dir)?;
+        let path = self.candidate_path(revision_id);
+        if path.exists() {
+            let existing = self.load_candidate(revision_id, expected_hash)?;
+            if existing.schema_version == CANDIDATE_SCHEMA_V2
+                && existing.objects == proxy_hosts
+                && existing.stream_hosts == stream_hosts
+                && existing.discovery_sources == discovery_sources
+                && existing.access_policies == access_policies
+                && existing.certificates == certificates
+            {
+                return Ok(existing);
+            }
+            return Err(ProxyHostStoreError::Conflict);
+        }
+        if directory_entry_count(&self.candidate_dir)? >= MAX_CANDIDATE_SNAPSHOTS {
+            return Err(ProxyHostStoreError::Limit);
+        }
+        let bytes = serde_json::to_vec_pretty(&ProxyHostCandidateFile {
+            schema_version: CANDIDATE_SCHEMA_V2,
+            revision_id: revision_id.into(),
+            binding_hash: binding_hash.clone(),
+            objects: proxy_hosts.clone(),
+            access_policies: access_policies.clone(),
+            stream_hosts: stream_hosts.clone(),
+            discovery_sources: discovery_sources.clone(),
+            certificates: certificates.clone(),
+        })
+        .map_err(|_| ProxyHostStoreError::Invalid)?;
+        if bytes.len() as u64 > MAX_TRANSACTION_BYTES {
+            return Err(ProxyHostStoreError::Limit);
+        }
+        write_private_file(&path, &bytes)?;
+        File::open(&self.candidate_dir)?.sync_all()?;
+        Ok(BoundProxyHostCandidate {
+            schema_version: CANDIDATE_SCHEMA_V2,
+            binding_hash,
+            objects: proxy_hosts,
+            stream_hosts,
+            discovery_sources,
+            access_policies,
+            certificates,
         })
     }
 
@@ -676,17 +845,37 @@ impl ProxyHostStore {
             serde_json::from_slice(&bytes).map_err(|_| ProxyHostStoreError::Invalid)?;
         let objects = canonical_objects(&file.objects)?;
         let access_policies = canonical_access_policies(&file.access_policies)?;
-        let binding_hash = Self::binding_hash_with_access_policies(&objects, &access_policies)?;
-        if file.schema_version != STORE_SCHEMA_VERSION
-            || file.revision_id != revision_id
-            || file.binding_hash != binding_hash
-        {
+        let stream_hosts = canonical_stream_hosts(&file.stream_hosts)?;
+        let discovery_sources = canonical_discovery_sources(&file.discovery_sources)?;
+        let certificates = canonical_certificates(&file.certificates)?;
+        let binding_hash = match file.schema_version {
+            CANDIDATE_SCHEMA_V1
+                if stream_hosts.is_empty()
+                    && discovery_sources.is_empty()
+                    && certificates.is_empty() =>
+            {
+                Self::binding_hash_with_access_policies(&objects, &access_policies)?
+            }
+            CANDIDATE_SCHEMA_V2 => Self::unified_binding_hash(
+                &objects,
+                &stream_hosts,
+                &discovery_sources,
+                &access_policies,
+                &certificates,
+            )?,
+            _ => return Err(ProxyHostStoreError::Invalid),
+        };
+        if file.revision_id != revision_id || file.binding_hash != binding_hash {
             return Err(ProxyHostStoreError::Invalid);
         }
         Ok(BoundProxyHostCandidate {
+            schema_version: file.schema_version,
             binding_hash,
             objects,
+            stream_hosts,
+            discovery_sources,
             access_policies,
+            certificates,
         })
     }
 
@@ -895,6 +1084,76 @@ fn canonical_access_policies(
         }
     }
     Ok(policies)
+}
+
+fn canonical_stream_hosts(
+    objects: &[ApiObject<StreamHostSpec>],
+) -> Result<Vec<ApiObject<StreamHostSpec>>, ProxyHostStoreError> {
+    if objects.len() > 128 {
+        return Err(ProxyHostStoreError::Limit);
+    }
+    let mut objects = objects.to_vec();
+    objects.sort_by(|left, right| {
+        (&left.metadata.owner_id, &left.metadata.id)
+            .cmp(&(&right.metadata.owner_id, &right.metadata.id))
+    });
+    let mut identities = BTreeSet::new();
+    for object in &objects {
+        if object.spec.validate_shape().is_err()
+            || !object.spec.sni_hosts.is_sorted()
+            || !identities.insert((&object.metadata.owner_id, &object.metadata.id))
+        {
+            return Err(ProxyHostStoreError::Invalid);
+        }
+    }
+    Ok(objects)
+}
+
+fn canonical_discovery_sources(
+    objects: &[ApiObject<DiscoverySourceSpec>],
+) -> Result<Vec<ApiObject<DiscoverySourceSpec>>, ProxyHostStoreError> {
+    if objects.len() > 64 {
+        return Err(ProxyHostStoreError::Limit);
+    }
+    let mut objects = objects.to_vec();
+    objects.sort_by(|left, right| {
+        (&left.metadata.owner_id, &left.metadata.id)
+            .cmp(&(&right.metadata.owner_id, &right.metadata.id))
+    });
+    let mut identities = BTreeSet::new();
+    for object in &objects {
+        if object.spec.validate_shape().is_err()
+            || !identities.insert((&object.metadata.owner_id, &object.metadata.id))
+        {
+            return Err(ProxyHostStoreError::Invalid);
+        }
+    }
+    Ok(objects)
+}
+
+fn canonical_certificates(
+    certificates: &[StoredCertificate],
+) -> Result<Vec<StoredCertificate>, ProxyHostStoreError> {
+    if certificates.len() > 1_024 {
+        return Err(ProxyHostStoreError::Limit);
+    }
+    let mut certificates = certificates.to_vec();
+    certificates.sort_by(|left, right| left.object.metadata.id.cmp(&right.object.metadata.id));
+    let mut ids = BTreeSet::new();
+    for stored in &certificates {
+        if stored.generation == 0
+            || stored
+                .object
+                .spec
+                .validate_shape(&stored.object.metadata.owner_id)
+                .is_err()
+            || !stored.object.spec.shared_with.is_sorted()
+            || !ids.insert(&stored.object.metadata.id)
+        {
+            return Err(ProxyHostStoreError::Invalid);
+        }
+    }
+    Ok(certificates)
 }
 
 fn validate_revision_id(id: &str) -> Result<(), ProxyHostStoreError> {
@@ -1242,6 +1501,22 @@ mod tests {
         }
     }
 
+    fn stream_host(id: &str, owner: &str) -> ApiObject<StreamHostSpec> {
+        serde_json::from_value(serde_json::json!({
+            "api_version": "v1",
+            "metadata": {"id": id, "owner_id": owner},
+            "spec": {
+                "listen_port": 8443,
+                "protocol": "tcp",
+                "forward_host": "127.0.0.1",
+                "forward_port": 9443,
+                "sni_hosts": [],
+                "enabled": false
+            }
+        }))
+        .expect("Stream Host")
+    }
+
     fn revision_metadata(id: &str, binding_hash: Option<&str>) -> RevisionMetadata {
         RevisionMetadata {
             id: id.into(),
@@ -1537,6 +1812,63 @@ mod tests {
             serde_json::from_slice(&fs::read(&candidate_path).expect("candidate bytes"))
                 .expect("candidate JSON");
         value["access_policies"][0]["generation"] = serde_json::json!(3);
+        fs::write(
+            &candidate_path,
+            serde_json::to_vec(&value).expect("tampered JSON"),
+        )
+        .expect("tamper candidate");
+        assert!(matches!(
+            store.load_candidate(&revision, &hash),
+            Err(ProxyHostStoreError::Invalid)
+        ));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn unified_candidate_is_schema_two_ordered_and_tamper_evident() {
+        let (path, root) = temporary_store("unified-binding");
+        let store = ProxyHostStore::open(&path).expect("store");
+        let revision = format!("{:020}-{}", 1, "ab".repeat(32));
+        let proxy_hosts = vec![object("proxy-a", "alice", "a.example.test")];
+        let stream_hosts = vec![
+            stream_host("stream-z", "bob"),
+            stream_host("stream-a", "alice"),
+        ];
+        let reversed = stream_hosts.iter().cloned().rev().collect::<Vec<_>>();
+        let hash = ProxyHostStore::unified_binding_hash(&proxy_hosts, &stream_hosts, &[], &[], &[])
+            .expect("schema-2 hash");
+        assert_eq!(
+            hash,
+            ProxyHostStore::unified_binding_hash(&proxy_hosts, &reversed, &[], &[], &[])
+                .expect("stable hash")
+        );
+        let bound = store
+            .bind_unified_candidate(
+                &revision,
+                &hash,
+                UnifiedCandidateState {
+                    proxy_hosts: &proxy_hosts,
+                    stream_hosts: &stream_hosts,
+                    discovery_sources: &[],
+                    access_policies: &[],
+                    certificates: &[],
+                },
+            )
+            .expect("bind unified candidate");
+        assert_eq!(bound.schema_version(), 2);
+        assert_eq!(bound.stream_hosts()[0].metadata.id.as_str(), "stream-a");
+        assert_ne!(
+            hash,
+            ProxyHostStore::binding_hash(&proxy_hosts).expect("schema-1 hash")
+        );
+
+        let candidate_path = root
+            .join("admin/proxy-host-candidates")
+            .join(format!("{revision}.json"));
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&candidate_path).expect("candidate bytes"))
+                .expect("candidate JSON");
+        value["stream_hosts"][0]["spec"]["enabled"] = serde_json::json!(true);
         fs::write(
             &candidate_path,
             serde_json::to_vec(&value).expect("tampered JSON"),

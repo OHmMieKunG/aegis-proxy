@@ -79,6 +79,11 @@ impl CertificateStore {
         self.0.list(owner_id)
     }
 
+    /// Return complete canonical Certificate desired state.
+    pub fn all(&self) -> Result<Vec<StoredCertificate>, CertificateStoreError> {
+        self.0.all()
+    }
+
     /// Compile all stored Certificate objects into selection metadata.
     pub fn metadata(
         &self,
@@ -126,6 +131,14 @@ impl fmt::Debug for CertificateMetadata {
             .field("shared_owner_count", &self.shared_with.len())
             .field("host_count", &self.hosts.len())
             .finish()
+    }
+}
+
+impl CertificateMetadata {
+    /// Return the resolved runtime certificate policy.
+    #[must_use]
+    pub fn policy(&self) -> &ManagedHttpsPolicy {
+        &self.policy
     }
 }
 

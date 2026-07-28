@@ -20,7 +20,7 @@ async fn access_policy_metadata(
     }
 }
 
-async fn access_policy_dependencies(
+pub(super) async fn access_policy_dependencies(
     state: &AppState,
     config: Arc<Config>,
     objects: &[ApiObject<ProxyHostSpec>],
@@ -717,122 +717,69 @@ async fn create_proxy_host_candidate_revision(
     principal: &Principal,
     audit: &MutationAudit,
     expected_revision: &str,
-    current_objects: Vec<ApiObject<ProxyHostSpec>>,
+    _current_objects: Vec<ApiObject<ProxyHostSpec>>,
     desired_objects: Vec<ApiObject<ProxyHostSpec>>,
 ) -> Result<RevisionMetadata, ApiError> {
-    let active = state.control.runtime().config();
-    let (access_policy_records, access_policies) =
-        match access_policy_dependencies(state, Arc::clone(&active), &desired_objects).await {
-            Ok(dependencies) => dependencies,
-            Err(error) => {
-                return Err(audited_failure(audit, "access_policy_unavailable", error).await);
-            }
-        };
-    let certificates = match certificate_metadata(
+    create_unified_candidate(
         state,
-        Arc::clone(&active),
-        desired_objects
-            .iter()
-            .any(|object| object.spec.automatic_https == crate::AutomaticHttps::Managed),
+        principal,
+        audit,
+        expected_revision,
+        DesiredOverride::ProxyHosts(desired_objects),
+        "proxy-host",
     )
     .await
-    {
-        Ok(certificates) => certificates,
-        Err(error) => {
-            return Err(audited_failure(audit, "certificate_unavailable", error).await);
-        }
-    };
-    let (config, desired_objects) = match tokio::task::spawn_blocking(move || {
-        crate::proxy_host::prepare_proxy_host_set(
-            &current_objects,
-            &desired_objects,
-            &active,
-            &access_policies,
-            &certificates,
-        )
-        .map(|candidate| (candidate.config().clone(), candidate.objects().to_vec()))
-    })
-    .await
-    {
-        Ok(Ok(candidate)) => candidate,
-        Ok(Err(_)) => {
-            return Err(
-                audited_failure(audit, "invalid_proxy_host", ApiError::InvalidRequest).await,
-            );
-        }
-        Err(_) => return Err(audited_failure(audit, "compile_failed", ApiError::Internal).await),
-    };
-    if state.control.runtime().revision().as_ref() != expected_revision {
-        return Err(audited_failure(audit, "revision_conflict", ApiError::Conflict).await);
-    }
+}
+
+pub(super) async fn preview_typed_candidate(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    principal: Principal,
+) -> Result<axum::Json<PreviewResponse>, ApiError> {
+    authorize(&principal, Action::PreviewConfig)?;
     let revisions = state.control.revisions();
-    let binding_hash = match ProxyHostStore::binding_hash_with_access_policies(
-        &desired_objects,
-        &access_policy_records,
-    ) {
-        Ok(hash) => hash,
-        Err(_) => {
-            return Err(
-                audited_failure(audit, "invalid_proxy_host", ApiError::InvalidRequest).await,
-            );
-        }
-    };
-    let source = format!(
-        "admin:{}:{}:proxy-host",
-        principal.actor_type, principal.actor_id
-    );
-    let revision_binding = binding_hash.clone();
-    let (metadata, retained) = match tokio::task::spawn_blocking(move || {
-        let metadata = revisions.create_bound_candidate(&config, &source, &revision_binding)?;
-        Ok::<_, RevisionError>((metadata, revisions.list()?))
-    })
-    .await
-    {
-        Ok(Ok(metadata)) => metadata,
-        Ok(Err(RevisionError::InvalidConfig(_))) => {
-            return Err(
-                audited_failure(audit, "invalid_candidate", ApiError::InvalidRequest).await,
-            );
-        }
-        Ok(Err(_)) | Err(_) => {
-            return Err(
-                audited_failure(audit, "revision_store_failed", ApiError::Unavailable).await,
-            );
-        }
-    };
     let store = Arc::clone(&state.proxy_hosts);
-    let candidate_id = metadata.id.clone();
-    let snapshot_binding = binding_hash;
-    let bound_access_policies = access_policy_records;
-    match tokio::task::spawn_blocking(move || {
-        store.reconcile_candidates(&retained)?;
-        store.bind_candidate_with_access_policies(
-            &candidate_id,
-            &snapshot_binding,
-            &desired_objects,
-            &bound_access_policies,
-        )
+    let candidate_id = id;
+    let candidate = tokio::task::spawn_blocking(move || {
+        let metadata = revisions.metadata(&candidate_id)?;
+        let binding_hash = metadata
+            .binding_hash
+            .ok_or_else(|| RevisionError::InvalidStored("candidate is not typed".into()))?;
+        let bound = store
+            .load_candidate(&candidate_id, &binding_hash)
+            .map_err(|_| RevisionError::InvalidStored("typed binding is invalid".into()))?;
+        if bound.schema_version() != 2 {
+            return Err(RevisionError::InvalidStored(
+                "candidate is not unified".into(),
+            ));
+        }
+        revisions.load(&candidate_id)
     })
     .await
-    {
-        Ok(Ok(_)) => {}
-        Ok(Err(_)) | Err(_) => {
-            return Err(
-                audited_failure(audit, "candidate_binding_failed", ApiError::Unavailable).await,
-            );
+    .map_err(|_| ApiError::Internal)?
+    .map_err(|error| match error {
+        RevisionError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            ApiError::NotFound
         }
-    }
-    if state.control.runtime().revision().as_ref() != expected_revision {
-        audit
-            .record(
-                AuditOutcome::Failed,
-                Some(metadata.id.clone()),
-                Some("revision_conflict"),
-            )
-            .await?;
-        return Err(ApiError::Conflict);
-    }
-    Ok(metadata)
+        RevisionError::InvalidStored(_) => ApiError::CandidateConflict,
+        _ => ApiError::Unavailable,
+    })?;
+    let runtime = state.control.runtime();
+    let active = runtime.config();
+    Ok(axum::Json(PreviewResponse {
+        active_revision: runtime.revision().to_string(),
+        active_route_fingerprint: format!("{:016x}", RouteIndex::compile(&active).fingerprint()),
+        candidate_route_fingerprint: format!(
+            "{:016x}",
+            RouteIndex::compile(&candidate).fingerprint()
+        ),
+        activation_class: if runtime.can_hot_reload(&candidate) {
+            "hot_reload"
+        } else {
+            "restart_required"
+        },
+        config: aegisproxy_config::redacted(&candidate),
+    }))
 }
 
 pub(super) async fn create_proxy_host(
@@ -1214,6 +1161,27 @@ pub(super) async fn activate_proxy_host_candidate(
     headers: HeaderMap,
     principal: Principal,
 ) -> Result<Response, ApiError> {
+    activate_bound_candidate(state, request_id, id, headers, principal, true).await
+}
+
+pub(super) async fn activate_typed_candidate(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+    principal: Principal,
+) -> Result<Response, ApiError> {
+    activate_bound_candidate(state, request_id, id, headers, principal, false).await
+}
+
+async fn activate_bound_candidate(
+    state: AppState,
+    request_id: RequestId,
+    id: String,
+    headers: HeaderMap,
+    principal: Principal,
+    legacy: bool,
+) -> Result<Response, ApiError> {
     let current_revision = state.control.runtime().revision().to_string();
     let audit = begin_mutation(
         &state,
@@ -1221,8 +1189,16 @@ pub(super) async fn activate_proxy_host_candidate(
         &request_id,
         Some(current_revision.clone()),
         MutationSpec {
-            permission: Action::ActivateProxyHost,
-            action: "proxy_host_activate",
+            permission: if legacy {
+                Action::ActivateProxyHost
+            } else {
+                Action::ActivateTypedCandidate
+            },
+            action: if legacy {
+                "proxy_host_activate"
+            } else {
+                "typed_candidate_activate"
+            },
             resource_id: &id,
             new_revision: Some(id.clone()),
         },
@@ -1327,11 +1303,6 @@ pub(super) async fn activate_proxy_host_candidate(
             );
         }
     };
-    if candidate_hash != expected_hash {
-        return Err(
-            audited_failure(&audit, "candidate_conflict", ApiError::CandidateConflict).await,
-        );
-    }
     let store = Arc::clone(&state.proxy_hosts);
     let bound_id = id.clone();
     let bound =
@@ -1358,10 +1329,22 @@ pub(super) async fn activate_proxy_host_candidate(
                 .await);
             }
         };
-    if bound.objects() != objects || bound.access_policies() != access_policy_records {
+    if bound.schema_version() != if legacy { 1 } else { 2 } {
         return Err(
             audited_failure(&audit, "candidate_conflict", ApiError::CandidateConflict).await,
         );
+    }
+    if legacy
+        && (candidate_hash != expected_hash
+            || bound.objects() != objects
+            || bound.access_policies() != access_policy_records)
+    {
+        return Err(
+            audited_failure(&audit, "candidate_conflict", ApiError::CandidateConflict).await,
+        );
+    }
+    if !legacy {
+        verify_unified_binding(&state, &bound, &audit).await?;
     }
     let store = Arc::clone(&state.proxy_hosts);
     let current_epoch = match tokio::task::spawn_blocking(move || store.snapshot().epoch()).await {
@@ -1406,6 +1389,27 @@ pub(super) async fn rollback_proxy_hosts(
     headers: HeaderMap,
     principal: Principal,
 ) -> Result<Response, ApiError> {
+    rollback_bound_revision(state, request_id, id, headers, principal, true).await
+}
+
+pub(super) async fn rollback_typed_revision(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+    principal: Principal,
+) -> Result<Response, ApiError> {
+    rollback_bound_revision(state, request_id, id, headers, principal, false).await
+}
+
+async fn rollback_bound_revision(
+    state: AppState,
+    request_id: RequestId,
+    id: String,
+    headers: HeaderMap,
+    principal: Principal,
+    legacy: bool,
+) -> Result<Response, ApiError> {
     let current_revision = state.control.runtime().revision().to_string();
     let audit = begin_mutation(
         &state,
@@ -1413,8 +1417,16 @@ pub(super) async fn rollback_proxy_hosts(
         &request_id,
         Some(current_revision.clone()),
         MutationSpec {
-            permission: Action::RollbackProxyHost,
-            action: "proxy_host_rollback",
+            permission: if legacy {
+                Action::RollbackProxyHost
+            } else {
+                Action::RollbackTypedRevision
+            },
+            action: if legacy {
+                "proxy_host_rollback"
+            } else {
+                "typed_revision_rollback"
+            },
             resource_id: &id,
             new_revision: None,
         },
@@ -1488,6 +1500,14 @@ pub(super) async fn rollback_proxy_hosts(
                 .await);
             }
         };
+    if target.schema_version() != if legacy { 1 } else { 2 } {
+        return Err(
+            audited_failure(&audit, "rollback_conflict", ApiError::CandidateConflict).await,
+        );
+    }
+    if !legacy {
+        return rollback_unified_snapshot(&state, &audit, &expected_revision, &id, target).await;
+    }
     let store = Arc::clone(&state.proxy_hosts);
     let current = match tokio::task::spawn_blocking(move || store.snapshot()).await {
         Ok(snapshot) => snapshot,

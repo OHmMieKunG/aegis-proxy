@@ -75,6 +75,9 @@ AegisProxy has not published a supported release.
   managed-HTTPS selection, typed renewal, and separate runtime certificate status routes.
 - Added strict Stream Host and file/DNS Discovery Source contracts, deterministic no-I/O compilers,
   bounded owner-scoped stores, exact scopes, previews, non-active candidates, and CLI commands.
+- Added deterministic schema-2 unified typed snapshots, canonical preview/activation/rollback
+  routes, exact Access Policy and Certificate dependency binding, and schema-1 compatibility
+  limited to deprecated Proxy Host aliases.
 - Prevented low-level configuration activation and rollback from accepting typed-bound revisions.
 - Fixed token revocation CLI parsing for valid generated token IDs that begin with a hyphen.
 

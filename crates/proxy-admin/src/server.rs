@@ -4,6 +4,7 @@ mod certificates;
 mod domains;
 mod handlers;
 mod support;
+mod unified;
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -57,6 +58,7 @@ use certificates::*;
 use domains::*;
 use handlers::*;
 use support::*;
+use unified::*;
 
 const AUDIT_KEY_BYTES: usize = 64;
 const REQUEST_ID_BYTES: usize = 16;
@@ -763,6 +765,18 @@ pub async fn serve(
         .route(
             "/v1/proxy-hosts/revisions/{id}/rollback",
             post(rollback_proxy_hosts),
+        )
+        .route(
+            "/v1/config/typed-candidates/{id}/preview",
+            get(preview_typed_candidate),
+        )
+        .route(
+            "/v1/config/typed-candidates/{id}/activate",
+            post(activate_typed_candidate),
+        )
+        .route(
+            "/v1/config/typed-revisions/{id}/rollback",
+            post(rollback_typed_revision),
         )
         .route("/v1/config/candidates", post(create_candidate))
         .route(

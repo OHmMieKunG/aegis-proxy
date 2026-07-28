@@ -1,10 +1,8 @@
 use std::fmt::Debug;
 
-use serde::de::DeserializeOwned;
-use sha2::{Digest, Sha256};
-
 use super::*;
 use crate::typed_store::{StoredObject, TypedStoreError};
+use serde::de::DeserializeOwned;
 
 trait Domain {
     type Spec: Clone + Debug + DeserializeOwned + Eq + Serialize + Send + 'static;
@@ -34,6 +32,7 @@ trait Domain {
         generation: u64,
     ) -> Result<StoredObject<Self::Spec>, TypedStoreError>;
     fn compile(base: &Config, desired: &[ApiObject<Self::Spec>]) -> Result<Config, ApiError>;
+    fn desired_override(desired: Vec<ApiObject<Self::Spec>>) -> DesiredOverride;
 }
 
 struct StreamDomain;
@@ -85,6 +84,10 @@ impl Domain for StreamDomain {
 
     fn compile(base: &Config, desired: &[ApiObject<StreamHostSpec>]) -> Result<Config, ApiError> {
         crate::compile_stream_hosts(base, &[], desired).map_err(|_| ApiError::InvalidRequest)
+    }
+
+    fn desired_override(desired: Vec<ApiObject<StreamHostSpec>>) -> DesiredOverride {
+        DesiredOverride::StreamHosts(desired)
     }
 }
 
@@ -140,6 +143,10 @@ impl Domain for DiscoveryDomain {
         desired: &[ApiObject<DiscoverySourceSpec>],
     ) -> Result<Config, ApiError> {
         crate::compile_discovery_sources(base, &[], desired).map_err(|_| ApiError::InvalidRequest)
+    }
+
+    fn desired_override(desired: Vec<ApiObject<DiscoverySourceSpec>>) -> DesiredOverride {
+        DesiredOverride::DiscoverySources(desired)
     }
 }
 
@@ -530,35 +537,15 @@ async fn create_candidate<D: Domain>(
         (&left.metadata.owner_id, &left.metadata.id)
             .cmp(&(&right.metadata.owner_id, &right.metadata.id))
     });
-    let active = state.control.runtime().config();
-    let desired_for_compile = desired.clone();
-    let (config, binding_hash) = tokio::task::spawn_blocking(move || {
-        let config = D::compile(&active, &desired_for_compile)?;
-        let mut digest = Sha256::new();
-        digest.update(D::NAME.as_bytes());
-        digest.update([0]);
-        digest.update(serde_json::to_vec(&desired_for_compile).map_err(|_| ApiError::Internal)?);
-        Ok::<_, ApiError>((config, format!("{:x}", digest.finalize())))
-    })
-    .await
-    .map_err(|_| ApiError::Internal)??;
-    if state.control.runtime().revision().as_ref() != expected {
-        return Err(audited_failure(audit, "revision_conflict", ApiError::Conflict).await);
-    }
-    let store = state.control.revisions();
-    let source = format!("typed:{}:{}", D::NAME, principal.actor_id);
-    let metadata = match tokio::task::spawn_blocking(move || {
-        store.create_bound_candidate(&config, &source, &binding_hash)
-    })
-    .await
-    {
-        Ok(Ok(metadata)) => metadata,
-        Ok(Err(_)) | Err(_) => {
-            return Err(
-                audited_failure(audit, "revision_store_failed", ApiError::Unavailable).await,
-            );
-        }
-    };
+    let metadata = create_unified_candidate(
+        state,
+        principal,
+        audit,
+        expected,
+        D::desired_override(desired),
+        D::NAME,
+    )
+    .await?;
     Ok(CandidateResponse {
         id: metadata.id,
         hash: metadata.hash,

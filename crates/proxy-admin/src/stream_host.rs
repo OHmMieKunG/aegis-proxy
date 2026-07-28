@@ -83,6 +83,20 @@ impl StreamHostStore {
     pub fn all(&self) -> Result<Vec<StoredStreamHost>, StreamHostStoreError> {
         self.0.all()
     }
+
+    pub(crate) fn replace_all(
+        &self,
+        objects: Vec<ApiObject<StreamHostSpec>>,
+    ) -> Result<Vec<StoredStreamHost>, StreamHostStoreError> {
+        self.0.replace_all(objects)
+    }
+
+    pub(crate) fn restore_all(
+        &self,
+        objects: Vec<StoredStreamHost>,
+    ) -> Result<(), StreamHostStoreError> {
+        self.0.restore_all(objects)
+    }
 }
 
 /// Stable fail-closed Stream Host compilation error.
@@ -152,7 +166,8 @@ pub fn compile_stream_hosts(
     };
     let template = {
         let mut templates = config.upstream_groups.iter().filter(|group| {
-            !group.endpoints.is_empty()
+            !group.id.starts_with("ph-")
+                && !group.endpoints.is_empty()
                 && group
                     .endpoints
                     .iter()
