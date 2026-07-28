@@ -148,10 +148,14 @@ Proxy Host validation/preview now resolves one owned or explicitly shared Access
 recovery-safe metadata snapshot. Persisted candidate creation/update/delete bind exact referenced
 policy generations and canonical content. Activation and rollback revalidate current records and
 fail closed on missing, changed, disabled, or unauthorized dependencies before runtime publication.
+A strict library-only Certificate object now binds owner/shares to an opaque existing certificate
+ID. Its metadata compiler resolves only canonical hosts and exactly one HTTPS listener, copies no
+private-key or chain reference, and selects exact or single-label wildcard coverage with explicit
+ownership and ambiguity checks.
 
-**Remaining units:** certificate objects; remaining domain objects; remaining OpenAPI and CLI
-contracts; migration/compatibility policy and tests; transport module split; full
-authorization/security review.
+**Remaining units:** certificate persistence/RBAC/endpoints and Proxy Host wiring; remaining domain
+objects; remaining OpenAPI and CLI contracts; migration/compatibility policy and tests; transport
+module split; full authorization/security review.
 
 **Objective:** provide versioned high-level objects usable by GUI and advanced automation.
 

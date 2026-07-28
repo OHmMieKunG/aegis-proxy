@@ -50,6 +50,9 @@ revisions. Validation/preview and persisted candidate creation consume only poli
 metadata after owner/share checks. Candidate bindings retain exact policy records; activation and
 rollback require current records to match before publication.
 Managed-HTTPS preparation and remaining stored-credential contracts are still Phase 15 work.
+The library-only Certificate ownership object contains only owner/share IDs, enabled state, and an
+opaque certificate ID. Compiled metadata retains public host coverage and listener/certificate IDs;
+it never copies chain/key references. Redacted `Debug` reports only enabled state and counts.
 
 Typed Proxy Host desired-state persistence contains no secret-bearing field. Its private parent is
 mode `0700`, file is mode `0600`, symlink and broad-permission inputs fail closed, bytes and object

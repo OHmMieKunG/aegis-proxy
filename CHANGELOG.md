@@ -69,6 +69,8 @@ AegisProxy has not published a supported release.
 - Bound referenced Access Policy generations and canonical content into typed Proxy Host candidate
   snapshots; activation and rollback reject missing or changed dependencies before runtime
   publication.
+- Added a strict secret-free Certificate ownership contract and deterministic managed-HTTPS
+  selection metadata for existing certificate identities and HTTPS listeners.
 - Fixed token revocation CLI parsing for valid generated token IDs that begin with a hyphen.
 
 See [`STATUS.md`](STATUS.md) and [`docs/history/`](docs/history/README.md).

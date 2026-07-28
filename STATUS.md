@@ -16,6 +16,8 @@ available through the API and CLI (`926eb68`), with dual-concurrency update/dele
 `334916d`. Proxy Host validation/preview can now resolve one owned or explicitly shared policy
 without persistence (`c12f1c3`). Typed candidates bind exact referenced policy generations and
 content; activation and rollback revalidate current policy state (`20449a3`).
+Library-only typed certificate ownership and managed-HTTPS selection metadata now exist
+(`edcb53b`).
 
 Working tree at Phase 14 start: clean at `10aae8c`
 
@@ -76,8 +78,11 @@ evidence.
   uses a private recovery journal to converge desired state with the durably active revision after
   interruption. Typed snapshot reconciliation now follows the authoritative retained configuration
   revisions at Admin startup and before new snapshot binding; it removes only fully validated
-  orphan snapshots and fails closed on malformed or tampered state. Typed certificate ownership
-  and a complete ownership matrix do not exist yet. A strict Access Policy
+  orphan snapshots and fails closed on malformed or tampered state. A strict library-only
+  certificate object now binds an owner and explicit shares to one opaque existing certificate ID.
+  Metadata compilation copies no key/chain references, requires exactly one HTTPS listener, and
+  selects exact or single-label wildcard coverage fail closed. Persistence, endpoints, and Proxy
+  Host endpoint wiring do not exist yet. A strict Access Policy
   contract now compiles owner/share/enable metadata and canonical access-control middleware IDs,
   rejecting missing, duplicate-stage, incompatible, invalid, or secret-bearing shapes. Its bounded
   private store provides global IDs, owner-scoped reads, canonical serialization, generation CAS,
@@ -138,7 +143,7 @@ split after Phase 15 contracts stabilize. See the [completion evidence](docs/rev
 | `cargo fmt --all -- --check` | passed |
 | `cargo check --workspace --all-targets --all-features` | passed; transitive warning below |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | passed |
-| `cargo test --workspace --all-features` | passed: 319 passed, 2 intentionally ignored |
+| `cargo test --workspace --all-features` | passed: 322 passed, 2 intentionally ignored |
 | `cargo test --workspace --doc` | passed; no doctests defined |
 | valid configuration corpus | seven accepted |
 | invalid configuration corpus | three rejected as expected |
@@ -181,6 +186,7 @@ release. Dated exception: [dependency review](docs/security/dependency-unsafe-re
 - [Typed Access Policy update/delete review](docs/reviews/phase-15-access-policy-update-delete.md)
 - [Typed Access Policy preview wiring review](docs/reviews/phase-15-access-policy-preview-wiring.md)
 - [Typed Access Policy candidate-binding review](docs/reviews/phase-15-access-policy-candidate-binding.md)
+- [Typed certificate ownership review](docs/reviews/phase-15-certificate-ownership.md)
 - [Historical evidence](docs/history/README.md)
 
 High-level user guides remain absent until Phase 15 defines stable objects and Phase 16 implements

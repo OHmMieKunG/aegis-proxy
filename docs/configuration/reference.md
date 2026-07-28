@@ -75,7 +75,14 @@ rust-proxy proxy-host preview --socket SOCKET proxy-host.json
 Local peer ownership is `uid-<uid>`; new bearer tokens inherit their creator's owner. Endpoint
 preparation supports `automatic_https = "disabled"` and an owned or explicitly shared Access
 Policy, and requires exactly one HTTP listener and one all-HTTP upstream template in active
-configuration. Managed HTTPS fails closed until typed certificate ownership metadata exists.
+configuration. Managed HTTPS endpoints fail closed until certificate persistence and wiring exist.
+
+The library-only typed Certificate contract contains `enabled`, bounded explicit `shared_with`, and
+one opaque `certificate_ref` naming an existing canonical certificate identity. Metadata
+compilation requires that identity on exactly one HTTPS listener and retains only public host
+coverage and IDs. It never copies certificate-chain or private-key references. Exact and
+single-label wildcard selection requires owner/share authorization and fails on no or multiple
+matches. Persistence and administrative endpoints remain Phase 15 work.
 
 Create requires exact active-revision and complete desired-state optimistic concurrency. It writes
 the canonical immutable candidate before generation-one object state, then returns both metadata

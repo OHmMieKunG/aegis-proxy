@@ -108,6 +108,13 @@ before publication. Policy owners may update or revoke policies; consumers canno
 The process-wide administrative mutation permit serializes policy mutation with candidate creation
 and activation.
 
+`ApiObject<CertificateSpec>` is currently library-only. It binds owner, explicit shares, enabled
+state, and one opaque existing certificate ID. Metadata compilation validates canonical
+configuration, retains only covered hosts plus exactly one HTTPS listener/certificate ID pair, and
+copies no certificate-chain or private-key reference. Selection requires enabled exact or
+single-label wildcard coverage, owner/share authorization, and one unambiguous match. Persistence,
+RBAC/endpoints, and Proxy Host endpoint integration remain incomplete.
+
 `PUT` and `DELETE /v1/proxy-hosts/{id}` follow the same ordering. They require
 `X-Aegis-Object-Generation` in addition to active-revision `If-Match`. Update enforces path/body
 identity and owner equality; delete resolves only within authenticated owner. Stale generation or

@@ -55,6 +55,8 @@
   secret-free owner/share resolution for non-persistent Proxy Host validation and preview.
 - [Phase 15 Access Policy candidate binding](reviews/phase-15-access-policy-candidate-binding.md):
   exact dependency generations, activation/rollback revalidation, and compatibility evidence.
+- [Phase 15 certificate ownership](reviews/phase-15-certificate-ownership.md): secret-free existing
+  certificate binding and fail-closed managed-HTTPS selection evidence.
 
 ## Operators
 

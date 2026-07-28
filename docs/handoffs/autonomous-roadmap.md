@@ -3,17 +3,17 @@
 Updated: 2026-07-28
 
 - Current branch: `work/autonomous-roadmap`
-- Current completed-unit commit: `20449a3`
+- Current completed-unit commit: `edcb53b`
 - Current phase: Phase 15, in progress
-- Completed unit: revision-bound Proxy Host Access Policy candidates/activation/rollback
-- Implementation commit: `20449a3`
+- Completed unit: library-only typed certificate ownership metadata
+- Implementation commit: `edcb53b`
 - Documentation commit: this handoff's documentation commit
 - Remote target: `origin/work/autonomous-roadmap`
 - Expected working tree after documentation commit: clean
 
 ## Validation status
 
-Format, all-target/all-feature workspace check, Clippy with denied warnings, 319 workspace tests,
+Format, all-target/all-feature workspace check, Clippy with denied warnings, 322 workspace tests,
 doc tests, Rustdoc, feature tree, fuzz-manifest check, targeted revision/object-store/Admin CLI
 tests, repository documentation links, added-line secret review, and `git diff --check` passed. Two
 intentional ignored tests remain:
@@ -46,19 +46,19 @@ older binaries cannot consume new policy-bearing private candidate files.
 
 ## Remaining Phase 15 work
 
-Certificate ownership; remaining domain objects and contracts; migration/compatibility tests;
-transport module split; full authorization/security review.
+Certificate persistence/RBAC/endpoints and Proxy Host wiring; remaining domain objects and
+contracts; migration/compatibility tests; transport module split; full authorization/security
+review.
 
 ## Exact next task
 
-Define strict secret-reference-only certificate ownership metadata and compile managed HTTPS
-without exposing key material or claiming issuance.
+Add bounded private Certificate ownership persistence without copying certificate secrets.
 
 ## Known risks
 
 - Activation is intentionally global and Admin-only until candidate ownership/approval metadata
   supports safe narrower authority.
-- Managed HTTPS remains blocked on certificate ownership.
+- Managed HTTPS endpoints remain blocked until Certificate ownership persistence and wiring land.
 - Local Unix peer identity maps to stable `uid-<uid>`; user/session identity remains Phase 15/16.
 - Transitive `proc-macro-error2 2.0.1` has a pre-existing future-incompatibility warning.
 - Product remains production NO-GO pending later phases and independent review.
