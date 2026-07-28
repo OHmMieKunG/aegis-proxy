@@ -76,6 +76,10 @@ Typed candidate snapshots use strict schema version 1 under
 old low-level revisions without it still load and remain usable through low-level configuration
 operations, but typed activation rejects them. No automatic binding is inferred from runtime
 configuration because disabled typed objects cannot be recovered from generated routes.
+Current binaries also read earlier typed snapshots without `access_policies`; their original hash
+remains valid. New policy-bearing snapshots add that field and bind its canonical records. Older
+binaries cannot read those newer private derived-state files, so downgrade requires restoring the
+matching binary/state backup rather than reusing a policy-bearing candidate directory.
 The configuration revision list is authoritative for snapshot retention. Admin startup and
 pre-bind reconciliation remove valid snapshots only after their revision metadata has been pruned.
 Operators must not manually add, edit, or remove entries: malformed, symlinked, insecure, or

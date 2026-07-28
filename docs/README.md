@@ -53,6 +53,8 @@
   concurrency, owner isolation, semantic update validation, and non-activation evidence.
 - [Phase 15 Access Policy preview wiring](reviews/phase-15-access-policy-preview-wiring.md):
   secret-free owner/share resolution for non-persistent Proxy Host validation and preview.
+- [Phase 15 Access Policy candidate binding](reviews/phase-15-access-policy-candidate-binding.md):
+  exact dependency generations, activation/rollback revalidation, and compatibility evidence.
 
 ## Operators
 

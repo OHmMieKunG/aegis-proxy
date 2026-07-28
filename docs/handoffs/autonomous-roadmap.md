@@ -1,19 +1,19 @@
 # Autonomous roadmap handoff
 
-Updated: 2026-07-27
+Updated: 2026-07-28
 
 - Current branch: `work/autonomous-roadmap`
-- Current completed-unit commit: `c12f1c3`
+- Current completed-unit commit: `20449a3`
 - Current phase: Phase 15, in progress
-- Completed unit: non-persistent Proxy Host Access Policy validation/preview
-- Implementation commit: `c12f1c3`
+- Completed unit: revision-bound Proxy Host Access Policy candidates/activation/rollback
+- Implementation commit: `20449a3`
 - Documentation commit: this handoff's documentation commit
 - Remote target: `origin/work/autonomous-roadmap`
 - Expected working tree after documentation commit: clean
 
 ## Validation status
 
-Format, all-target/all-feature workspace check, Clippy with denied warnings, 318 workspace tests,
+Format, all-target/all-feature workspace check, Clippy with denied warnings, 319 workspace tests,
 doc tests, Rustdoc, feature tree, fuzz-manifest check, targeted revision/object-store/Admin CLI
 tests, repository documentation links, added-line secret review, and `git diff --check` passed. Two
 intentional ignored tests remain:
@@ -39,22 +39,26 @@ configuration revision. Update/delete require their distinct scopes, exact activ
 exact object generation. Update validates replacement middleware before persistence; delete and
 update hide cross-owner existence. Both preserve runtime and configuration revisions.
 
+Candidate creation/update/delete now bind exact referenced policy generations and canonical
+secret-free content. Activation and rollback snapshot current dependencies and reject drift before
+semantic compilation or runtime publication. Legacy no-policy typed snapshots remain readable;
+older binaries cannot consume new policy-bearing private candidate files.
+
 ## Remaining Phase 15 work
 
-Revision-bound Proxy Host Access Policy candidates/activation; certificate ownership; remaining domain objects and contracts;
-migration/compatibility tests; transport module split; full authorization/security review.
+Certificate ownership; remaining domain objects and contracts; migration/compatibility tests;
+transport module split; full authorization/security review.
 
 ## Exact next task
 
-Extend typed Proxy Host candidate bindings with referenced Access Policy generation and
-authorization state, then revalidate that binding before activation and rollback.
+Define strict secret-reference-only certificate ownership metadata and compile managed HTTPS
+without exposing key material or claiming issuance.
 
 ## Known risks
 
 - Activation is intentionally global and Admin-only until candidate ownership/approval metadata
   supports safe narrower authority.
-- Proxy Host policy references remain blocked; managed HTTPS remains blocked on certificate
-  ownership.
+- Managed HTTPS remains blocked on certificate ownership.
 - Local Unix peer identity maps to stable `uid-<uid>`; user/session identity remains Phase 15/16.
 - Transitive `proc-macro-error2 2.0.1` has a pre-existing future-incompatibility warning.
 - Product remains production NO-GO pending later phases and independent review.

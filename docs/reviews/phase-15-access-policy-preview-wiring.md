@@ -12,9 +12,9 @@ the authenticated owner. Missing, disabled, and unauthorized references fail thr
 validation class. Recovery uncertainty returns unavailable. The redacted preview exposes only
 canonical middleware IDs already present in configuration.
 
-This unit cannot persist an object, create a revision, bind a candidate, activate runtime state, or
-perform rollback. Those paths intentionally keep passing an empty policy map until policy ID,
-generation, and authorization state are included in the immutable candidate binding.
+This unit itself cannot persist an object, create a revision, bind a candidate, activate runtime
+state, or perform rollback. Revision-bound dependency wiring subsequently landed in `20449a3`; see
+[`phase-15-access-policy-candidate-binding.md`](phase-15-access-policy-candidate-binding.md).
 
 Full workspace format, check, Clippy, 318 tests (2 intentionally ignored), doc tests, Rustdoc,
 feature-tree, Admin CLI integration, and `git diff --check` passed. One Rust 1.97 incremental ICE

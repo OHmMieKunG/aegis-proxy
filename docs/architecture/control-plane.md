@@ -96,13 +96,17 @@ intent, and semantic middleware validation before storage. It returns generation
 creates or activates a configuration revision. Update/delete use distinct exact scopes, additionally
 require `X-Aegis-Object-Generation`, preserve owner-scoped not-found behavior, and validate
 replacement middleware before generation CAS. They also create no configuration revision or
-runtime activation. Proxy Host endpoints still reject every policy reference.
+runtime activation.
 
-Proxy Host validation and preview are the first narrow exception: they load only the referenced
-policy's secret-free metadata, fail closed during policy-store recovery, and rely on the compiler's
-owner/share/enabled checks. They remain side-effect free. Candidate creation, mutation, activation,
-and rollback continue to reject policy references because current candidate bindings attest only
-to Proxy Host objects, not policy generation and authorization state.
+Proxy Host validation, preview, candidate creation, update, and delete load only referenced
+policies' secret-free metadata, fail closed during policy-store recovery, and rely on compiler
+owner/share/enabled checks. Candidate bindings include canonical exact policy records and
+generations alongside complete Proxy Host desired state. Activation and rollback snapshot current
+dependencies, require exact equality with the binding, then recompile through normal semantic
+validation. Missing, changed, disabled, or newly unauthorized policy state rejects stale work
+before publication. Policy owners may update or revoke policies; consumers cannot pin them.
+The process-wide administrative mutation permit serializes policy mutation with candidate creation
+and activation.
 
 `PUT` and `DELETE /v1/proxy-hosts/{id}` follow the same ordering. They require
 `X-Aegis-Object-Generation` in addition to active-revision `If-Match`. Update enforces path/body
@@ -114,15 +118,16 @@ Admin role plus exact `activate_proxy_host` scope for tokens and exact active-re
 While the durable mutation audit is open, a single bounded permit serializes administrative
 mutations. The handler snapshots every stored Proxy Host, recompiles the complete desired set
 against the active configuration, compares canonical content hashes with the immutable revision,
-requires the bound snapshot to equal complete current desired state, then invokes the existing
-activation coordinator. Missing, stale, orphaned, already-active, tampered, or unauthorized
+requires the bound snapshot and policy records to equal complete current state, then invokes the
+existing activation coordinator. Missing, stale, orphaned, already-active, tampered, or unauthorized
 candidates fail without publication. The compiler itself still has no activation or persistence
 capability. Operator activation stays disabled until candidates carry safe ownership and approval
 metadata.
 
 `POST /v1/proxy-hosts/revisions/{id}/rollback` is the separate typed rollback boundary. It requires
 Admin role, exact `rollback_proxy_host` token scope, and exact active-revision CAS. The target must
-have valid bound typed desired state. The handler compiles that historical object set against the
+have valid bound typed desired state and policy records equal to current dependencies. The handler
+compiles that historical object set against the
 current manual configuration, creates a new immutable bound forward revision, journals previous
 and target object records, then invokes the same activation coordinator. It never activates the
 historical revision directly or rewrites history. Activation failure restores previous objects;

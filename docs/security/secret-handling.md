@@ -46,8 +46,9 @@ require exact principal ownership, and reuse this redaction boundary. They retur
 envelopes and cannot expose or resolve secrets. Validation/preview cannot persist or activate.
 Create may persist only the secret-free seven-field object and a canonical immutable candidate; it
 cannot activate. Access-policy update/delete likewise cannot create or activate configuration
-revisions. Validation/preview may now consume one policy's secret-free metadata after owner/share
-checks, but persisted Proxy Host candidates remain blocked until policy state is revision-bound.
+revisions. Validation/preview and persisted candidate creation consume only policy secret-free
+metadata after owner/share checks. Candidate bindings retain exact policy records; activation and
+rollback require current records to match before publication.
 Managed-HTTPS preparation and remaining stored-credential contracts are still Phase 15 work.
 
 Typed Proxy Host desired-state persistence contains no secret-bearing field. Its private parent is
@@ -60,10 +61,11 @@ plaintext credential field.
 Typed activation accepts only an opaque revision ID and metadata-only desired-state snapshot. It
 recompiles and hashes the already validated configuration without resolving secret references;
 errors and audit records use fixed codes, not configuration or secret contents.
-Immutable typed candidate snapshots contain only strict seven-field Proxy Host objects. Their hash
-is bound into revision metadata, and activation verifies file schema, permissions, size, revision
-identity, hash, canonical object order, and equality with current desired state. The snapshot has no
-field capable of carrying secret plaintext.
+Immutable typed candidate snapshots contain strict seven-field Proxy Host objects plus referenced
+Access Policy records containing only IDs, ownership/sharing, enabled state, and opaque middleware
+IDs. Their hash is bound into revision metadata, and activation verifies file schema, permissions,
+size, revision identity, hash, canonical order, and equality with current desired and policy state.
+The snapshot has no field capable of carrying secret plaintext.
 Snapshot reconciliation consumes only revision IDs and binding hashes. It validates every bounded
 file before deleting valid snapshots whose authoritative revisions are absent; it never resolves
 credentials or exposes object content. Malformed, symlinked, insecure, or retained-but-mismatched

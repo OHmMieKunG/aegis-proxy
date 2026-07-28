@@ -128,8 +128,8 @@ only those whose revisions were already durably pruned.
 A strict library-only Access Policy object now binds owner, explicit sharing, enabled state, and
 canonical existing access-control middleware IDs. Metadata compilation validates the base
 configuration, rejects missing or incompatible fixed-stage combinations, and exposes no middleware
-contents or secret references. Proxy Host endpoints remain fail closed for policy references until
-authorization is wired. Bounded private persistence now enforces globally unique IDs, owner-scoped
+contents or secret references. Proxy Host policy use is owner/share authorized and revision-bound.
+Bounded private persistence now enforces globally unique IDs, owner-scoped
 reads, canonical order, exact generation CAS, exclusive store ownership, strict restart validation,
 private permissions, and atomic replacement without activation or revision side effects.
 Distinct deny-by-default read/create/update/delete actions now flow through role-and-explicit-token
@@ -145,12 +145,13 @@ Audited owner-scoped update/delete now additionally require exact object generat
 cross-owner existence, validate replacement middleware before persistence, and preserve the same
 non-activation boundary.
 Proxy Host validation/preview now resolves one owned or explicitly shared Access Policy from a
-recovery-safe metadata snapshot. Persisted candidates and activation remain fail closed until
-referenced policy generation and authorization state are included in the immutable binding.
+recovery-safe metadata snapshot. Persisted candidate creation/update/delete bind exact referenced
+policy generations and canonical content. Activation and rollback revalidate current records and
+fail closed on missing, changed, disabled, or unauthorized dependencies before runtime publication.
 
-**Remaining units:** revision-bound Proxy Host Access Policy candidates/activation; certificate objects; remaining domain
-objects; remaining OpenAPI and CLI contracts; migration/compatibility policy and tests; transport
-module split; full authorization/security review.
+**Remaining units:** certificate objects; remaining domain objects; remaining OpenAPI and CLI
+contracts; migration/compatibility policy and tests; transport module split; full
+authorization/security review.
 
 **Objective:** provide versioned high-level objects usable by GUI and advanced automation.
 

@@ -31,8 +31,9 @@ Metadata compilation accepts only existing IP policy, client/principal rate limi
 BasicAuth, and ForwardAuth definitions, applies fixed-stage compatibility rules, and sorts IDs.
 Policy IDs are globally unique. Proxy Host validation/preview may resolve one owned or explicitly
 shared enabled policy and show its canonical middleware IDs in the redacted non-active preview.
-Candidate creation, update/delete, activation, and rollback still fail closed on policy references
-until policy dependencies are included in immutable candidate bindings.
+Candidate creation and update/delete bind exact referenced policy generations and canonical
+content. Activation and rollback reject missing or changed bindings before compiling or publishing
+runtime state.
 
 Complete desired state may be compiled with explicit current and desired object sets. Current stored
 identities reserve deterministic generated namespaces; only complete compiler-shaped
@@ -71,22 +72,22 @@ rust-proxy proxy-host validate --socket SOCKET proxy-host.json
 rust-proxy proxy-host preview --socket SOCKET proxy-host.json
 ```
 
-Local peer ownership is `uid-<uid>`; new bearer tokens inherit their creator's owner. Current
-endpoint preparation supports `automatic_https = "disabled"` with no access-policy reference and
-requires exactly one HTTP listener and one all-HTTP upstream template in active configuration.
-Managed HTTPS and access policies fail closed until their typed ownership metadata exists. These
-restrictions apply to endpoints, not lower-level compiler contract.
+Local peer ownership is `uid-<uid>`; new bearer tokens inherit their creator's owner. Endpoint
+preparation supports `automatic_https = "disabled"` and an owned or explicitly shared Access
+Policy, and requires exactly one HTTP listener and one all-HTTP upstream template in active
+configuration. Managed HTTPS fails closed until typed certificate ownership metadata exists.
 
 Create requires exact active-revision and complete desired-state optimistic concurrency. It writes
 the canonical immutable candidate before generation-one object state, then returns both metadata
 records. Update replaces the exact owner/object identity; delete removes it. Both additionally
 require the current object generation, return candidate metadata, and never change active revision.
 Every typed candidate has a strict immutable snapshot of its complete owner/object-ordered desired
-state. Its SHA-256 binding is recorded in revision metadata. Snapshot files contain the seven-field
-objects but no object generations or secret plaintext, are capped at 2 MiB each, and the directory
-is capped at 1,000 entries. Admin startup and pre-bind reconciliation validate the complete bounded
-directory and remove only snapshots whose authoritative configuration revisions were already
-pruned. Missing, invalid, or retained-but-mismatched bindings fail closed.
+state plus exact referenced Access Policy records. Its SHA-256 binding is recorded in revision
+metadata. Snapshot files contain seven-field objects and secret-free policy ownership/middleware
+metadata but no plaintext credentials, are capped at the bounded transaction size, and the
+directory is capped at 1,000 entries. Admin startup and pre-bind reconciliation validate the
+complete bounded directory and remove only snapshots whose authoritative configuration revisions
+were already pruned. Missing, invalid, or retained-but-mismatched bindings fail closed.
 The Admin-only `proxy-host activate --expect REV CANDIDATE` command activates a candidate only after
 the server recompiles all stored Proxy Hosts and verifies exact canonical content. It uses the
 normal atomic activation coordinator and does not change desired objects. Stale, orphaned,
