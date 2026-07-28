@@ -65,6 +65,14 @@ pub enum Action {
     Drain,
     /// Read certificate metadata.
     ReadCertificates,
+    /// Read owned typed Certificate objects.
+    ReadCertificateObjects,
+    /// Create an owned typed Certificate object.
+    CreateCertificate,
+    /// Update an owned typed Certificate object.
+    UpdateCertificate,
+    /// Delete an owned typed Certificate object.
+    DeleteCertificate,
     /// Request managed certificate renewal.
     RenewCertificate,
     /// Read or export audit records.
@@ -171,6 +179,10 @@ impl Role {
                     | Action::ReadUpstreams
                     | Action::Drain
                     | Action::ReadCertificates
+                    | Action::ReadCertificateObjects
+                    | Action::CreateCertificate
+                    | Action::UpdateCertificate
+                    | Action::DeleteCertificate
                     | Action::RenewCertificate
             ),
             Self::Auditor => matches!(
@@ -183,6 +195,7 @@ impl Role {
                     | Action::ReadRoutes
                     | Action::ReadUpstreams
                     | Action::ReadCertificates
+                    | Action::ReadCertificateObjects
                     | Action::ReadAudit
             ),
             Self::Viewer => matches!(
@@ -195,6 +208,7 @@ impl Role {
                     | Action::ReadRoutes
                     | Action::ReadUpstreams
                     | Action::ReadCertificates
+                    | Action::ReadCertificateObjects
             ),
         }
     }
@@ -204,7 +218,7 @@ impl Role {
 mod tests {
     use super::{Action, Role, TokenScopeError, TokenScopes};
 
-    const ACTIONS: [Action; 27] = [
+    const ACTIONS: [Action; 31] = [
         Action::ReadStatus,
         Action::ReadConfig,
         Action::ValidateConfig,
@@ -227,6 +241,10 @@ mod tests {
         Action::ReadUpstreams,
         Action::Drain,
         Action::ReadCertificates,
+        Action::ReadCertificateObjects,
+        Action::CreateCertificate,
+        Action::UpdateCertificate,
+        Action::DeleteCertificate,
         Action::RenewCertificate,
         Action::ReadAudit,
         Action::CreateBackup,
@@ -237,9 +255,9 @@ mod tests {
     #[test]
     fn role_matrix_is_deny_by_default() {
         let expected = [
-            (Role::Viewer, 8),
-            (Role::Auditor, 9),
-            (Role::Operator, 19),
+            (Role::Viewer, 9),
+            (Role::Auditor, 10),
+            (Role::Operator, 23),
             (Role::Admin, ACTIONS.len()),
         ];
         for (role, count) in expected {

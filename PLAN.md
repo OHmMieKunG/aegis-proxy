@@ -154,6 +154,9 @@ private-key or chain reference, and selects exact or single-label wildcard cover
 ownership and ambiguity checks.
 Low-level configuration activation and rollback reject typed-bound revisions so broad
 configuration scopes cannot bypass typed authorization.
+Typed Certificate objects now have bounded private persistence, exact CRUD scopes, audited
+owner-scoped API/CLI operations, managed-HTTPS selection, and typed renewal. Observed certificate
+status and direct runtime-ID renewal are isolated under `/v1/runtime/certificates`.
 
 **Remaining units:** certificate persistence/RBAC/endpoints and Proxy Host wiring; remaining domain
 objects; remaining OpenAPI and CLI contracts; migration/compatibility policy and tests; transport

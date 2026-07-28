@@ -16,8 +16,9 @@ available through the API and CLI (`926eb68`), with dual-concurrency update/dele
 `334916d`. Proxy Host validation/preview can now resolve one owned or explicitly shared policy
 without persistence (`c12f1c3`). Typed candidates bind exact referenced policy generations and
 content; activation and rollback revalidate current policy state (`20449a3`).
-Library-only typed certificate ownership and managed-HTTPS selection metadata now exist
-(`edcb53b`).
+Typed certificate ownership and managed-HTTPS selection metadata (`edcb53b`) now have bounded
+private persistence, exact owner-scoped CRUD permissions, API/CLI operations, and separated runtime
+status and direct-renewal routes.
 Low-level configuration activation and rollback reject typed-bound revisions, preventing broad
 configuration scopes from bypassing typed authorization.
 

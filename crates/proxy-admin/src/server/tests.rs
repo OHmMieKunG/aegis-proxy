@@ -74,7 +74,10 @@ fn checked_openapi_contains_every_private_route() {
         "/v1/upstreams:",
         "/v1/providers:",
         "/v1/certificates:",
+        "/v1/certificates/{id}:",
         "/v1/certificates/{id}/renew:",
+        "/v1/runtime/certificates:",
+        "/v1/runtime/certificates/{id}/renew:",
         "/v1/audit:",
         "/v1/tokens:",
         "/v1/tokens/{id}/revoke:",
@@ -110,6 +113,10 @@ fn checked_openapi_contains_every_private_route() {
         "read_upstreams",
         "drain",
         "read_certificates",
+        "read_certificate_objects",
+        "create_certificate",
+        "update_certificate",
+        "delete_certificate",
         "renew_certificate",
         "read_audit",
         "create_backup",
@@ -131,10 +138,13 @@ fn checked_openapi_contains_every_private_route() {
             .collect::<Vec<_>>(),
         scopes
     );
-    assert_eq!(openapi.matches("maxItems: 27").count(), 2);
+    assert_eq!(openapi.matches("maxItems: 31").count(), 2);
     assert!(openapi.contains("operationId: createAccessPolicy"));
     assert!(openapi.contains("operationId: updateAccessPolicy"));
     assert!(openapi.contains("operationId: deleteAccessPolicy"));
+    assert!(openapi.contains("operationId: createCertificate"));
+    assert!(openapi.contains("operationId: updateCertificate"));
+    assert!(openapi.contains("operationId: deleteCertificate"));
     assert!(openapi.contains("schema: {$ref: \"#/components/schemas/AccessPolicyObject\"}"));
     assert!(
         openapi

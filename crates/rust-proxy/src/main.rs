@@ -71,6 +71,11 @@ enum Command {
         #[command(subcommand)]
         command: CertificateCommand,
     },
+    /// Manage typed Certificate objects through the private socket.
+    Certificate {
+        #[command(subcommand)]
+        command: CertificateObjectCommand,
+    },
     /// Manage hash-only administrative API tokens through the private socket.
     Token {
         #[command(subcommand)]
@@ -330,6 +335,58 @@ enum AccessPolicyCommand {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum CertificateObjectCommand {
+    /// List typed Certificates owned by authenticated principal.
+    List {
+        #[command(flatten)]
+        admin: AdminConnection,
+    },
+    /// Get one typed Certificate owned by authenticated principal.
+    Get {
+        #[command(flatten)]
+        admin: AdminConnection,
+        id: String,
+    },
+    /// Validate and persist one owned Certificate without activation.
+    Create {
+        #[command(flatten)]
+        admin: AdminConnection,
+        #[arg(long)]
+        expect: String,
+        file: PathBuf,
+    },
+    /// Replace one owned Certificate without activation.
+    Update {
+        #[command(flatten)]
+        admin: AdminConnection,
+        #[arg(long)]
+        expect: String,
+        #[arg(long)]
+        generation: u64,
+        id: String,
+        file: PathBuf,
+    },
+    /// Delete one owned Certificate without activation.
+    Delete {
+        #[command(flatten)]
+        admin: AdminConnection,
+        #[arg(long)]
+        expect: String,
+        #[arg(long)]
+        generation: u64,
+        id: String,
+    },
+    /// Request renewal by owned Certificate object ID.
+    Renew {
+        #[command(flatten)]
+        admin: AdminConnection,
+        #[arg(long)]
+        expect: String,
+        id: String,
+    },
+}
+
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum CliRole {
     Viewer,
@@ -362,6 +419,10 @@ enum CliScope {
     ReadUpstreams,
     Drain,
     ReadCertificates,
+    ReadCertificateObjects,
+    CreateCertificate,
+    UpdateCertificate,
+    DeleteCertificate,
     RenewCertificate,
     ReadAudit,
     CreateBackup,
@@ -394,6 +455,10 @@ impl CliScope {
             Self::ReadUpstreams => "read_upstreams",
             Self::Drain => "drain",
             Self::ReadCertificates => "read_certificates",
+            Self::ReadCertificateObjects => "read_certificate_objects",
+            Self::CreateCertificate => "create_certificate",
+            Self::UpdateCertificate => "update_certificate",
+            Self::DeleteCertificate => "delete_certificate",
             Self::RenewCertificate => "renew_certificate",
             Self::ReadAudit => "read_audit",
             Self::CreateBackup => "create_backup",
@@ -601,6 +666,7 @@ async fn run(cli: Cli) -> Result<(), BoxError> {
         Command::Cert { command } => {
             run_certificate_command(command).await?;
         }
+        Command::Certificate { command } => run_certificate_object_command(command).await?,
         Command::Token { command } => run_token_command(command).await?,
         Command::ProxyHost { command } => run_proxy_host_command(command).await?,
         Command::AccessPolicy { command } => run_access_policy_command(command).await?,
@@ -1074,6 +1140,101 @@ async fn run_access_policy_command(command: AccessPolicyCommand) -> Result<(), B
                 &format!("/v1/access-policies/{id}"),
                 Some(expect),
                 Some(generation),
+                None,
+                Vec::new(),
+            )
+            .await?
+        }
+    };
+    require_admin_success(&response)?;
+    io::stdout().lock().write_all(&response.body)?;
+    writeln!(io::stdout().lock())?;
+    Ok(())
+}
+
+async fn run_certificate_object_command(command: CertificateObjectCommand) -> Result<(), BoxError> {
+    let response = match command {
+        CertificateObjectCommand::List { admin } => {
+            admin_request(
+                &admin,
+                Method::GET,
+                "/v1/certificates",
+                None,
+                None,
+                Vec::new(),
+            )
+            .await?
+        }
+        CertificateObjectCommand::Get { admin, id } => {
+            let id = id.parse::<aegisproxy_admin::ObjectId>()?;
+            admin_request(
+                &admin,
+                Method::GET,
+                &format!("/v1/certificates/{id}"),
+                None,
+                None,
+                Vec::new(),
+            )
+            .await?
+        }
+        CertificateObjectCommand::Create {
+            admin,
+            expect,
+            file,
+        } => {
+            let body = read_bounded(file, aegisproxy_config::MAX_CONFIG_BYTES).await?;
+            admin_request(
+                &admin,
+                Method::POST,
+                "/v1/certificates",
+                Some(expect),
+                Some("application/json"),
+                body,
+            )
+            .await?
+        }
+        CertificateObjectCommand::Update {
+            admin,
+            expect,
+            generation,
+            id,
+            file,
+        } => {
+            let body = read_bounded(file, aegisproxy_config::MAX_CONFIG_BYTES).await?;
+            admin_request_with_generation(
+                &admin,
+                Method::PUT,
+                &format!("/v1/certificates/{id}"),
+                Some(expect),
+                Some(generation),
+                Some("application/json"),
+                body,
+            )
+            .await?
+        }
+        CertificateObjectCommand::Delete {
+            admin,
+            expect,
+            generation,
+            id,
+        } => {
+            admin_request_with_generation(
+                &admin,
+                Method::DELETE,
+                &format!("/v1/certificates/{id}"),
+                Some(expect),
+                Some(generation),
+                None,
+                Vec::new(),
+            )
+            .await?
+        }
+        CertificateObjectCommand::Renew { admin, expect, id } => {
+            admin_request(
+                &admin,
+                Method::POST,
+                &format!("/v1/certificates/{id}/renew"),
+                Some(expect),
                 None,
                 Vec::new(),
             )

@@ -3,12 +3,110 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
+    path::Path,
 };
 
 use aegisproxy_config::{Config, validate};
 use thiserror::Error;
 
-use crate::{ApiObject, CertificateSpec, ManagedHttpsPolicy, ObjectId};
+use crate::{
+    ApiObject, CertificateSpec, ManagedHttpsPolicy, ObjectId,
+    typed_store::{StoredObject, TypedStore, TypedStoreError},
+};
+
+const MAX_CERTIFICATES: usize = 1_024;
+const MAX_STORE_BYTES: u64 = 1024 * 1024;
+
+/// One persisted Certificate-object generation.
+pub type StoredCertificate = StoredObject<CertificateSpec>;
+
+/// Durable Certificate-object storage failure.
+pub type CertificateStoreError = TypedStoreError;
+
+/// Exclusively owned durable Certificate-object store.
+#[derive(Debug)]
+pub struct CertificateStore(TypedStore<CertificateSpec>);
+
+impl CertificateStore {
+    /// Open and strictly validate a private Certificate-object file.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, CertificateStoreError> {
+        TypedStore::open(
+            path,
+            ".certificate-objects-owner.lock",
+            MAX_CERTIFICATES,
+            MAX_STORE_BYTES,
+            canonicalize_certificate,
+        )
+        .map(Self)
+    }
+
+    /// Create one globally unique owned Certificate object.
+    pub fn create(
+        &self,
+        object: ApiObject<CertificateSpec>,
+    ) -> Result<StoredCertificate, CertificateStoreError> {
+        self.0.create(object)
+    }
+
+    /// Replace one owned Certificate object at its exact generation.
+    pub fn update(
+        &self,
+        object: ApiObject<CertificateSpec>,
+        expected_generation: u64,
+    ) -> Result<StoredCertificate, CertificateStoreError> {
+        self.0.update(object, expected_generation)
+    }
+
+    /// Delete one owned Certificate object at its exact generation.
+    pub fn delete(
+        &self,
+        owner_id: &ObjectId,
+        object_id: &ObjectId,
+        expected_generation: u64,
+    ) -> Result<StoredCertificate, CertificateStoreError> {
+        self.0.delete(owner_id, object_id, expected_generation)
+    }
+
+    /// Return one Certificate only within the requested owner namespace.
+    #[must_use]
+    pub fn get(&self, owner_id: &ObjectId, object_id: &ObjectId) -> Option<StoredCertificate> {
+        self.0.get(owner_id, object_id)
+    }
+
+    /// Return stable Certificate-ID ordering within one owner namespace.
+    #[must_use]
+    pub fn list(&self, owner_id: &ObjectId) -> Vec<StoredCertificate> {
+        self.0.list(owner_id)
+    }
+
+    /// Compile all stored Certificate objects into selection metadata.
+    pub fn metadata(
+        &self,
+        config: &Config,
+    ) -> Result<BTreeMap<ObjectId, CertificateMetadata>, CertificateStoreError> {
+        self.0
+            .all()?
+            .into_iter()
+            .map(|stored| {
+                compile_certificate_metadata(&stored.object, config)
+                    .map(|metadata| (stored.object.metadata.id, metadata))
+                    .map_err(|_| CertificateStoreError::Invalid)
+            })
+            .collect()
+    }
+}
+
+fn canonicalize_certificate(object: &mut ApiObject<CertificateSpec>) -> bool {
+    if object
+        .spec
+        .validate_shape(&object.metadata.owner_id)
+        .is_err()
+    {
+        return false;
+    }
+    object.spec.shared_with.sort_unstable();
+    true
+}
 
 /// Validated metadata allowed to influence managed-HTTPS selection.
 #[derive(Clone, Eq, PartialEq)]
@@ -152,6 +250,12 @@ fn host_matches(configured: &str, domain: &str) -> bool {
 mod tests {
     use super::*;
     use aegisproxy_config::{CertificateConfig, ListenerConfig};
+    use std::{
+        fs,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    static NONCE: AtomicU64 = AtomicU64::new(0);
 
     fn config() -> Config {
         let mut config =
@@ -240,5 +344,51 @@ mod tests {
             compile_certificate_metadata(&missing, &config),
             Err(CertificateCompileError::MissingCertificate)
         );
+    }
+
+    #[test]
+    fn store_is_private_canonical_owner_scoped_and_generation_checked() {
+        let root = std::env::temp_dir().join(format!(
+            "aegisproxy-certificate-store-{}-{}",
+            std::process::id(),
+            NONCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let path = root.join("admin/certificate-objects.json");
+        let store = CertificateStore::open(&path).expect("store");
+        let mut certificate = object("alice", &["carol", "bob"]);
+        let stored = store.create(certificate.clone()).expect("create");
+        assert_eq!(stored.generation, 1);
+        assert_eq!(
+            stored
+                .object
+                .spec
+                .shared_with
+                .iter()
+                .map(ObjectId::as_str)
+                .collect::<Vec<_>>(),
+            ["bob", "carol"]
+        );
+        let alice = "alice".parse().expect("owner");
+        let bob = "bob".parse().expect("owner");
+        let id = "public-cert".parse().expect("ID");
+        assert!(store.get(&bob, &id).is_none());
+        certificate.spec.enabled = false;
+        assert_eq!(store.update(certificate, 1).expect("update").generation, 2);
+        assert!(matches!(
+            store.delete(&alice, &id, 1),
+            Err(CertificateStoreError::Conflict)
+        ));
+        drop(store);
+        let reopened = CertificateStore::open(&path).expect("reopen");
+        assert_eq!(reopened.list(&alice).len(), 1);
+        reopened.delete(&alice, &id, 2).expect("delete");
+        drop(reopened);
+        assert!(
+            CertificateStore::open(&path)
+                .expect("reopen deleted")
+                .list(&alice)
+                .is_empty()
+        );
+        fs::remove_dir_all(root).expect("cleanup");
     }
 }

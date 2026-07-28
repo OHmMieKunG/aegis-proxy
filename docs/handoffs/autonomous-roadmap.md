@@ -3,10 +3,10 @@
 Updated: 2026-07-28
 
 - Current branch: `feat/phase-15-control-plane-completion`
-- Current completed-unit commit: `edcb53b`
+- Current completed-unit commit: pending
 - Current phase: Phase 15, in progress
-- Completed unit: library-only typed certificate ownership metadata
-- Implementation commit: `edcb53b`
+- Completed unit: durable typed Certificate objects and runtime route migration
+- Implementation commit: pending
 - Documentation commit: this handoff's documentation commit
 - Remote target: `origin/work/autonomous-roadmap`
 - Expected working tree after documentation commit: clean
@@ -46,19 +46,18 @@ older binaries cannot consume new policy-bearing private candidate files.
 
 ## Remaining Phase 15 work
 
-Certificate persistence/RBAC/endpoints and Proxy Host wiring; remaining domain objects and
-contracts; migration/compatibility tests; transport module split; full authorization/security
-review.
+Certificate candidate dependency binding; remaining domain objects and contracts;
+migration/compatibility tests; transport module split; full authorization/security review.
 
 ## Exact next task
 
-Add bounded private Certificate ownership persistence without copying certificate secrets.
+Add strict Stream Host and Discovery Source contracts, stores, compilers, and focused tests.
 
 ## Known risks
 
 - Activation is intentionally global and Admin-only until candidate ownership/approval metadata
   supports safe narrower authority.
-- Managed HTTPS endpoints remain blocked until Certificate ownership persistence and wiring land.
+- Managed HTTPS candidates still need schema-2 Certificate dependency binding before activation.
 - Local Unix peer identity maps to stable `uid-<uid>`; user/session identity remains Phase 15/16.
 - Transitive `proc-macro-error2 2.0.1` has a pre-existing future-incompatibility warning.
 - Product remains production NO-GO pending later phases and independent review.

@@ -2,9 +2,9 @@
 
 Date: 2026-07-28
 
-Status: library metadata unit complete; Phase 15 remains in progress
+Status: persistence/API unit complete; Phase 15 remains in progress
 
-Implementation commit: `edcb53b`
+Implementation commits: `edcb53b`, pending
 
 ## Scope
 
@@ -24,6 +24,13 @@ It returns the existing `ManagedHttpsPolicy` consumed by the Proxy Host compiler
 secret resolution, filesystem/network access, issuance, persistence, revision creation, or runtime
 activation.
 
+`CertificateStore` persists at most 1,024 canonical owner-scoped objects in a private 1 MiB
+schema-1 file with exclusive ownership, generation CAS, atomic replacement, and a recovery gate
+after indeterminate durability. CRUD is audited and authorized before deserialization under
+separate read/create/update/delete scopes. Observed status moved to `/v1/runtime/certificates`;
+typed renewal resolves the owned object ID to its opaque runtime certificate reference. Offline
+`rust-proxy cert` remains unchanged and private API operations use `rust-proxy certificate`.
+
 ## Evidence
 
 Tests cover strict secret-free JSON, unknown private-key fields, owner and shared-owner selection,
@@ -37,11 +44,11 @@ ambiguous selection, and redacted debug output.
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | passed |
 | `cargo test --workspace --all-features` | passed: 322 passed, 2 intentionally ignored |
 | `cargo test --workspace --doc` | passed; no doctests defined |
-| certificate-focused tests | passed: 4 |
+| certificate-focused tests | passed: 5 |
 | `git diff --check` | passed |
 
 ## Decision
 
-Secret-free ownership metadata and deterministic selection meet this library unit's gate. Phase 15
-remains in progress. Certificate persistence, dedicated RBAC, API/CLI contracts, Proxy Host
-candidate binding, and managed-HTTPS endpoint integration remain mandatory.
+Secret-free ownership, persistence, exact RBAC, route migration, CLI, and managed-HTTPS preparation
+meet this unit's gate. Phase 15 remains in progress. Schema-2 candidate dependency binding remains
+mandatory.

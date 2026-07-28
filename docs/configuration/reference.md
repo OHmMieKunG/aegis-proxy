@@ -75,14 +75,17 @@ rust-proxy proxy-host preview --socket SOCKET proxy-host.json
 Local peer ownership is `uid-<uid>`; new bearer tokens inherit their creator's owner. Endpoint
 preparation supports `automatic_https = "disabled"` and an owned or explicitly shared Access
 Policy, and requires exactly one HTTP listener and one all-HTTP upstream template in active
-configuration. Managed HTTPS endpoints fail closed until certificate persistence and wiring exist.
+configuration. Managed HTTPS resolves one owned or explicitly shared typed Certificate object.
 
-The library-only typed Certificate contract contains `enabled`, bounded explicit `shared_with`, and
+The typed Certificate contract contains `enabled`, bounded explicit `shared_with`, and
 one opaque `certificate_ref` naming an existing canonical certificate identity. Metadata
 compilation requires that identity on exactly one HTTPS listener and retains only public host
 coverage and IDs. It never copies certificate-chain or private-key references. Exact and
 single-label wildcard selection requires owner/share authorization and fails on no or multiple
-matches. Persistence and administrative endpoints remain Phase 15 work.
+matches. Owner-scoped CRUD uses `<state_dir>/admin/certificate-objects.json`, exact generation and
+active-revision concurrency, private permissions, and dedicated scopes. Runtime status is
+`/v1/runtime/certificates`; `rust-proxy certificate` manages typed objects while `rust-proxy cert`
+retains offline certificate-generation operations.
 
 Create requires exact active-revision and complete desired-state optimistic concurrency. It writes
 the canonical immutable candidate before generation-one object state, then returns both metadata
@@ -101,8 +104,8 @@ normal atomic activation coordinator and does not change desired objects. Stale,
 already-active, or unauthorized candidates fail closed. Admin-only typed rollback accepts only a
 retained bound historical revision, creates a new bound forward revision, journals and replaces
 desired objects, and invokes the same coordinator. Restart recovery reconciles the journal against
-the durable active revision before Admin starts. Access Policy persistence, dedicated token scopes,
-and owner-scoped read routes exist; certificate-policy objects remain unavailable.
+the durable active revision before Admin starts. Access Policy and Certificate persistence,
+dedicated scopes, and owner-scoped routes exist.
 
 Typed Proxy Host desired state has a separate internal schema-v1 JSON store. It is bounded to 4,096
 objects and 2 MiB, uses private directory/file permissions, stable owner/object ordering, globally

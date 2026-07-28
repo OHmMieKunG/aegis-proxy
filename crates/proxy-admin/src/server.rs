@@ -1,5 +1,6 @@
 //! Private Unix-socket administrative HTTP service.
 
+mod certificates;
 mod handlers;
 mod support;
 
@@ -45,10 +46,12 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     AccessPolicyMetadata, AccessPolicySpec, AccessPolicyStore, AccessPolicyStoreError, Action,
-    ApiObject, AuditEvent, AuditLog, AuditOutcome, ObjectId, PreparedProxyHost,
-    ProxyHostPreparationError, ProxyHostPreviewSummary, ProxyHostSpec, ProxyHostStore,
-    ProxyHostStoreError, Role, StoredAccessPolicy, StoredProxyHost, TokenScopes, TokenStore,
+    ApiObject, AuditEvent, AuditLog, AuditOutcome, CertificateSpec, CertificateStore,
+    CertificateStoreError, ObjectId, PreparedProxyHost, ProxyHostPreparationError,
+    ProxyHostPreviewSummary, ProxyHostSpec, ProxyHostStore, ProxyHostStoreError, Role,
+    StoredAccessPolicy, StoredCertificate, StoredProxyHost, TokenScopes, TokenStore,
 };
+use certificates::*;
 use handlers::*;
 use support::*;
 
@@ -75,6 +78,9 @@ pub enum AdminServerError {
     /// Typed Access Policy desired state could not be loaded safely.
     #[error("administrative Access Policy store failed")]
     AccessPolicies,
+    /// Typed Certificate desired state could not be loaded safely.
+    #[error("administrative Certificate store failed")]
+    Certificates,
     /// Blocking initialization task failed.
     #[error("administrative initialization task failed: {0}")]
     Initialization(String),
@@ -86,6 +92,7 @@ struct AppState {
     tokens: Arc<TokenStore>,
     proxy_hosts: Arc<ProxyHostStore>,
     access_policies: Arc<AccessPolicyStore>,
+    certificates: Arc<CertificateStore>,
     audit: Option<Arc<AuditLog>>,
     allowed_uids: Arc<[u32]>,
     auth_permits: Arc<Semaphore>,
@@ -624,6 +631,8 @@ pub async fn serve(
     .map_err(|_| AdminServerError::ProxyHosts)?;
     let access_policy_store =
         open_access_policy_store(state_dir.join("admin/access-policies.json")).await?;
+    let certificate_store =
+        open_certificate_store(state_dir.join("admin/certificate-objects.json")).await?;
     let audit = match config.admin.audit_key.clone() {
         Some(reference) => {
             let audit_path = state_dir.join("audit/admin.jsonl");
@@ -652,6 +661,7 @@ pub async fn serve(
         tokens: Arc::new(tokens),
         proxy_hosts: Arc::new(proxy_host_store),
         access_policies: Arc::new(access_policy_store),
+        certificates: Arc::new(certificate_store),
         audit,
         allowed_uids: Arc::from(config.admin.allowed_uids.clone()),
         auth_permits: Arc::new(Semaphore::new(config.admin.max_auth_in_flight)),
@@ -721,8 +731,25 @@ pub async fn serve(
         .route("/v1/routes", get(routes))
         .route("/v1/upstreams", get(upstreams))
         .route("/v1/providers", get(providers))
-        .route("/v1/certificates", get(certificates))
-        .route("/v1/certificates/{id}/renew", post(renew_certificate))
+        .route(
+            "/v1/certificates",
+            get(certificate_objects).post(create_certificate),
+        )
+        .route(
+            "/v1/certificates/{id}",
+            get(certificate_object)
+                .put(update_certificate)
+                .delete(delete_certificate),
+        )
+        .route(
+            "/v1/certificates/{id}/renew",
+            post(renew_certificate_object),
+        )
+        .route("/v1/runtime/certificates", get(runtime_certificates))
+        .route(
+            "/v1/runtime/certificates/{id}/renew",
+            post(renew_runtime_certificate),
+        )
         .route("/v1/audit", get(audit_records))
         .route("/v1/tokens", get(list_tokens).post(create_token))
         .route("/v1/tokens/{id}/revoke", post(revoke_token))
@@ -749,6 +776,13 @@ async fn open_access_policy_store(path: PathBuf) -> Result<AccessPolicyStore, Ad
         .await
         .map_err(|error| AdminServerError::Initialization(error.to_string()))?
         .map_err(|_| AdminServerError::AccessPolicies)
+}
+
+async fn open_certificate_store(path: PathBuf) -> Result<CertificateStore, AdminServerError> {
+    tokio::task::spawn_blocking(move || CertificateStore::open(path))
+        .await
+        .map_err(|error| AdminServerError::Initialization(error.to_string()))?
+        .map_err(|_| AdminServerError::Certificates)
 }
 
 async fn bound_request(

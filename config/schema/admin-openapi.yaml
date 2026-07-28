@@ -335,7 +335,40 @@ paths:
     get:
       operationId: listCertificates
       responses:
-        "200": {description: Certificate policy metadata}
+        "200": {description: Owner-scoped typed Certificate objects}
+        default: {$ref: "#/components/responses/Error"}
+    post:
+      operationId: createCertificate
+      parameters: [{$ref: "#/components/parameters/IfMatch"}]
+      requestBody: {$ref: "#/components/requestBodies/CertificateObject"}
+      responses:
+        "201": {description: Certificate object persisted}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/certificates/{id}:
+    get:
+      operationId: getCertificate
+      parameters: [{$ref: "#/components/parameters/TypedObjectId"}]
+      responses:
+        "200": {description: Owner-scoped typed Certificate object}
+        default: {$ref: "#/components/responses/Error"}
+    put:
+      operationId: updateCertificate
+      parameters:
+        - {$ref: "#/components/parameters/TypedObjectId"}
+        - {$ref: "#/components/parameters/IfMatch"}
+        - {$ref: "#/components/parameters/ObjectGeneration"}
+      requestBody: {$ref: "#/components/requestBodies/CertificateObject"}
+      responses:
+        "200": {description: Certificate object replaced}
+        default: {$ref: "#/components/responses/Error"}
+    delete:
+      operationId: deleteCertificate
+      parameters:
+        - {$ref: "#/components/parameters/TypedObjectId"}
+        - {$ref: "#/components/parameters/IfMatch"}
+        - {$ref: "#/components/parameters/ObjectGeneration"}
+      responses:
+        "200": {description: Certificate object deleted}
         default: {$ref: "#/components/responses/Error"}
   /v1/certificates/{id}/renew:
     post:
@@ -345,6 +378,21 @@ paths:
         - {$ref: "#/components/parameters/IfMatch"}
       responses:
         "200": {description: Renewal request persisted}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/runtime/certificates:
+    get:
+      operationId: listRuntimeCertificates
+      responses:
+        "200": {description: Observed runtime certificate status}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/runtime/certificates/{id}/renew:
+    post:
+      operationId: renewRuntimeCertificate
+      parameters:
+        - {$ref: "#/components/parameters/ObjectId"}
+        - {$ref: "#/components/parameters/IfMatch"}
+      responses:
+        "200": {description: Runtime certificate renewal request persisted}
         default: {$ref: "#/components/responses/Error"}
   /v1/audit:
     get:
@@ -384,7 +432,7 @@ paths:
                 scopes:
                   type: array
                   minItems: 1
-                  maxItems: 27
+                  maxItems: 31
                   uniqueItems: true
                   items:
                     $ref: "#/components/schemas/TokenScope"
@@ -493,6 +541,11 @@ components:
       content:
         application/json:
           schema: {$ref: "#/components/schemas/ProxyHostObject"}
+    CertificateObject:
+      required: true
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/CertificateObject"}
   responses:
     Error:
       description: Stable redacted error
@@ -579,6 +632,38 @@ components:
       properties:
         generation: {type: integer, minimum: 1}
         object: {$ref: "#/components/schemas/AccessPolicyObject"}
+    CertificateObject:
+      type: object
+      additionalProperties: false
+      required: [api_version, metadata, spec]
+      properties:
+        api_version: {const: v1}
+        metadata:
+          type: object
+          additionalProperties: false
+          required: [id, owner_id]
+          properties:
+            id: {$ref: "#/components/schemas/ObjectId"}
+            owner_id: {$ref: "#/components/schemas/ObjectId"}
+        spec:
+          type: object
+          additionalProperties: false
+          required: [enabled, certificate_ref]
+          properties:
+            enabled: {type: boolean}
+            shared_with:
+              type: array
+              maxItems: 128
+              uniqueItems: true
+              items: {$ref: "#/components/schemas/ObjectId"}
+            certificate_ref: {$ref: "#/components/schemas/ObjectId"}
+    StoredCertificate:
+      type: object
+      additionalProperties: false
+      required: [generation, object]
+      properties:
+        generation: {type: integer, minimum: 1}
+        object: {$ref: "#/components/schemas/CertificateObject"}
     Candidate:
       type: object
       additionalProperties: false
@@ -669,7 +754,7 @@ components:
             changes: {type: array, minItems: 7, maxItems: 8, items: {type: object}}
     TokenScope:
       type: string
-      enum: [read_status, read_config, validate_config, preview_config, create_candidate, activate_config, rollback_config, read_revisions, read_proxy_hosts, create_proxy_host, update_proxy_host, delete_proxy_host, activate_proxy_host, rollback_proxy_host, read_access_policies, create_access_policy, update_access_policy, delete_access_policy, read_routes, read_upstreams, drain, read_certificates, renew_certificate, read_audit, create_backup, validate_restore, manage_identities]
+      enum: [read_status, read_config, validate_config, preview_config, create_candidate, activate_config, rollback_config, read_revisions, read_proxy_hosts, create_proxy_host, update_proxy_host, delete_proxy_host, activate_proxy_host, rollback_proxy_host, read_access_policies, create_access_policy, update_access_policy, delete_access_policy, read_routes, read_upstreams, drain, read_certificates, read_certificate_objects, create_certificate, update_certificate, delete_certificate, renew_certificate, read_audit, create_backup, validate_restore, manage_identities]
     TokenMetadata:
       type: object
       additionalProperties: false
@@ -683,7 +768,7 @@ components:
             - {type: "null"}
         scopes:
           type: array
-          maxItems: 27
+          maxItems: 31
           uniqueItems: true
           items: {$ref: "#/components/schemas/TokenScope"}
         expires_unix_secs: {type: integer, minimum: 1}

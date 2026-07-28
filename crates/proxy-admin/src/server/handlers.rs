@@ -53,6 +53,23 @@ async fn access_policy_dependencies(
     }
 }
 
+async fn certificate_metadata(
+    state: &AppState,
+    config: Arc<Config>,
+    required: bool,
+) -> Result<BTreeMap<ObjectId, crate::CertificateMetadata>, ApiError> {
+    if !required {
+        return Ok(BTreeMap::new());
+    }
+    let store = Arc::clone(&state.certificates);
+    match tokio::task::spawn_blocking(move || store.metadata(&config)).await {
+        Ok(Ok(metadata)) => Ok(metadata),
+        Ok(Err(CertificateStoreError::RecoveryRequired)) => Err(ApiError::Unavailable),
+        Ok(Err(CertificateStoreError::Invalid)) => Err(ApiError::InvalidRequest),
+        Ok(Err(_)) | Err(_) => Err(ApiError::Internal),
+    }
+}
+
 pub(super) async fn live() -> axum::Json<HealthResponse> {
     axum::Json(HealthResponse { status: "live" })
 }
@@ -711,12 +728,27 @@ async fn create_proxy_host_candidate_revision(
                 return Err(audited_failure(audit, "access_policy_unavailable", error).await);
             }
         };
+    let certificates = match certificate_metadata(
+        state,
+        Arc::clone(&active),
+        desired_objects
+            .iter()
+            .any(|object| object.spec.automatic_https == crate::AutomaticHttps::Managed),
+    )
+    .await
+    {
+        Ok(certificates) => certificates,
+        Err(error) => {
+            return Err(audited_failure(audit, "certificate_unavailable", error).await);
+        }
+    };
     let (config, desired_objects) = match tokio::task::spawn_blocking(move || {
         crate::proxy_host::prepare_proxy_host_set(
             &current_objects,
             &desired_objects,
             &active,
             &access_policies,
+            &certificates,
         )
         .map(|candidate| (candidate.config().clone(), candidate.objects().to_vec()))
     })
@@ -1233,12 +1265,27 @@ pub(super) async fn activate_proxy_host_candidate(
                 return Err(audited_failure(&audit, "access_policy_unavailable", error).await);
             }
         };
+    let certificates = match certificate_metadata(
+        &state,
+        Arc::clone(&active),
+        objects
+            .iter()
+            .any(|object| object.spec.automatic_https == crate::AutomaticHttps::Managed),
+    )
+    .await
+    {
+        Ok(certificates) => certificates,
+        Err(error) => {
+            return Err(audited_failure(&audit, "certificate_unavailable", error).await);
+        }
+    };
     let (expected_hash, objects) = match tokio::task::spawn_blocking(move || {
         let candidate = crate::proxy_host::prepare_proxy_host_set(
             &objects,
             &objects,
             &active,
             &access_policies,
+            &certificates,
         )
         .map_err(|_| RevisionError::InvalidStored("typed candidate preparation failed".into()))?;
         Ok::<_, RevisionError>((content_hash(candidate.config())?, objects))
@@ -1462,6 +1509,20 @@ pub(super) async fn rollback_proxy_hosts(
                 return Err(audited_failure(&audit, "access_policy_unavailable", error).await);
             }
         };
+    let certificates = match certificate_metadata(
+        &state,
+        Arc::clone(&active),
+        target_objects
+            .iter()
+            .any(|object| object.spec.automatic_https == crate::AutomaticHttps::Managed),
+    )
+    .await
+    {
+        Ok(certificates) => certificates,
+        Err(error) => {
+            return Err(audited_failure(&audit, "certificate_unavailable", error).await);
+        }
+    };
     if target.access_policies() != access_policy_records {
         return Err(
             audited_failure(&audit, "rollback_conflict", ApiError::CandidateConflict).await,
@@ -1473,6 +1534,7 @@ pub(super) async fn rollback_proxy_hosts(
             &target_objects,
             &active,
             &access_policies,
+            &certificates,
         )
         .map(|candidate| (candidate.config().clone(), candidate.objects().to_vec()))
     })
@@ -1642,6 +1704,12 @@ async fn prepare_proxy_host_request(
         .as_ref()
         .map(|reference| reference.id().clone());
     let access_policies = access_policy_metadata(state, Arc::clone(&active), policy_id).await?;
+    let certificates = certificate_metadata(
+        state,
+        Arc::clone(&active),
+        object.spec.automatic_https == crate::AutomaticHttps::Managed,
+    )
+    .await?;
     let store = Arc::clone(&state.proxy_hosts);
     tokio::task::spawn_blocking(move || {
         let claims = store.claims();
@@ -1651,6 +1719,7 @@ async fn prepare_proxy_host_request(
             &owner,
             &claims,
             &access_policies,
+            &certificates,
         )
     })
     .await
@@ -2046,7 +2115,7 @@ pub(super) fn provider_summary(status: aegisproxy_core::ProviderStatus) -> Provi
     }
 }
 
-pub(super) async fn certificates(
+pub(super) async fn runtime_certificates(
     State(state): State<AppState>,
     principal: Principal,
 ) -> Result<axum::Json<Vec<CertificateSummary>>, ApiError> {
@@ -2274,7 +2343,7 @@ pub(super) async fn revoke_token(
     Ok(axum::Json(RevocationResponse { revoked }))
 }
 
-pub(super) async fn renew_certificate(
+pub(super) async fn renew_runtime_certificate(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
     AxumPath(id): AxumPath<String>,

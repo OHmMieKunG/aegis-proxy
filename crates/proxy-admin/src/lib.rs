@@ -15,6 +15,7 @@ mod preview;
 mod proxy_host;
 mod rbac;
 mod server;
+mod typed_store;
 
 pub use access_policy::{
     AccessPolicyCompileError, AccessPolicyMetadata, AccessPolicyStore, AccessPolicyStoreError,
@@ -29,8 +30,8 @@ pub use audit::{AuditError, AuditEvent, AuditLog, AuditOutcome, AuditRecord};
 pub use auth::{IssuedToken, TokenError, TokenMetadata, TokenRecord, TokenStore, TokenStoreError};
 pub use backup::{BackupError, BackupSummary, create_backup, validate_backup};
 pub use certificate::{
-    CertificateCompileError, CertificateMetadata, compile_certificate_metadata,
-    select_managed_https_policy,
+    CertificateCompileError, CertificateMetadata, CertificateStore, CertificateStoreError,
+    StoredCertificate, compile_certificate_metadata, select_managed_https_policy,
 };
 pub use compile::{
     CompileContext, ManagedHttpsPolicy, ProxyHostCandidate, ProxyHostCompileError,
