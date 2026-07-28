@@ -21,7 +21,7 @@ use thiserror::Error;
 use crate::{AccessPolicySpec, ApiObject, ContractError, ObjectId};
 
 const STORE_SCHEMA_VERSION: u32 = 1;
-const MAX_ACCESS_POLICIES: usize = 1_024;
+pub(crate) const MAX_ACCESS_POLICIES: usize = 1_024;
 const MAX_STORE_BYTES: u64 = 1024 * 1024;
 
 static OWNED_STORES: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
@@ -445,6 +445,39 @@ impl AccessPolicyStore {
                     .map_err(|_| AccessPolicyStoreError::Invalid)
             })
             .transpose()
+    }
+
+    pub(crate) fn candidate_dependencies(
+        &self,
+        config: &Config,
+        ids: &BTreeSet<ObjectId>,
+    ) -> Result<
+        (
+            Vec<StoredAccessPolicy>,
+            BTreeMap<ObjectId, AccessPolicyMetadata>,
+        ),
+        AccessPolicyStoreError,
+    > {
+        validate(config).map_err(|_| AccessPolicyStoreError::Invalid)?;
+        let policies = self
+            .policies
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.recovery_required() {
+            return Err(AccessPolicyStoreError::RecoveryRequired);
+        }
+        let mut records = Vec::with_capacity(ids.len());
+        let mut metadata = BTreeMap::new();
+        for id in ids {
+            let Some(stored) = policies.get(id) else {
+                continue;
+            };
+            let compiled = compile_access_policy_metadata_validated(&stored.object, config)
+                .map_err(|_| AccessPolicyStoreError::Invalid)?;
+            records.push(stored.clone());
+            metadata.insert(id.clone(), compiled);
+        }
+        Ok((records, metadata))
     }
 
     /// Whether a post-rename durability failure blocks further mutation until restart.

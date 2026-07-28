@@ -20,6 +20,39 @@ async fn access_policy_metadata(
     }
 }
 
+async fn access_policy_dependencies(
+    state: &AppState,
+    config: Arc<Config>,
+    objects: &[ApiObject<ProxyHostSpec>],
+) -> Result<
+    (
+        Vec<StoredAccessPolicy>,
+        BTreeMap<ObjectId, AccessPolicyMetadata>,
+    ),
+    ApiError,
+> {
+    let ids = objects
+        .iter()
+        .filter_map(|object| {
+            object
+                .spec
+                .access_policy_ref
+                .as_ref()
+                .map(|reference| reference.id().clone())
+        })
+        .collect::<BTreeSet<_>>();
+    if ids.is_empty() {
+        return Ok((Vec::new(), BTreeMap::new()));
+    }
+    let store = Arc::clone(&state.access_policies);
+    match tokio::task::spawn_blocking(move || store.candidate_dependencies(&config, &ids)).await {
+        Ok(Ok(dependencies)) => Ok(dependencies),
+        Ok(Err(AccessPolicyStoreError::RecoveryRequired)) => Err(ApiError::Unavailable),
+        Ok(Err(AccessPolicyStoreError::Invalid)) => Err(ApiError::InvalidRequest),
+        Ok(Err(_)) | Err(_) => Err(ApiError::Internal),
+    }
+}
+
 pub(super) async fn live() -> axum::Json<HealthResponse> {
     axum::Json(HealthResponse { status: "live" })
 }
@@ -492,7 +525,8 @@ pub(super) async fn update_access_policy(
         _ => return Err(audited_failure(&audit, "owner_denied", ApiError::Forbidden).await),
     };
     let store = Arc::clone(&state.access_policies);
-    let existing = match tokio::task::spawn_blocking(move || store.get(&owner, &object_id)).await {
+    let lookup_id = object_id.clone();
+    let existing = match tokio::task::spawn_blocking(move || store.get(&owner, &lookup_id)).await {
         Ok(Some(existing)) => existing,
         Ok(None) => {
             return Err(audited_failure(&audit, "object_not_found", ApiError::NotFound).await);
@@ -670,9 +704,21 @@ async fn create_proxy_host_candidate_revision(
     desired_objects: Vec<ApiObject<ProxyHostSpec>>,
 ) -> Result<RevisionMetadata, ApiError> {
     let active = state.control.runtime().config();
+    let (access_policy_records, access_policies) =
+        match access_policy_dependencies(state, Arc::clone(&active), &desired_objects).await {
+            Ok(dependencies) => dependencies,
+            Err(error) => {
+                return Err(audited_failure(audit, "access_policy_unavailable", error).await);
+            }
+        };
     let (config, desired_objects) = match tokio::task::spawn_blocking(move || {
-        crate::proxy_host::prepare_proxy_host_set(&current_objects, &desired_objects, &active)
-            .map(|candidate| (candidate.config().clone(), candidate.objects().to_vec()))
+        crate::proxy_host::prepare_proxy_host_set(
+            &current_objects,
+            &desired_objects,
+            &active,
+            &access_policies,
+        )
+        .map(|candidate| (candidate.config().clone(), candidate.objects().to_vec()))
     })
     .await
     {
@@ -688,7 +734,10 @@ async fn create_proxy_host_candidate_revision(
         return Err(audited_failure(audit, "revision_conflict", ApiError::Conflict).await);
     }
     let revisions = state.control.revisions();
-    let binding_hash = match ProxyHostStore::binding_hash(&desired_objects) {
+    let binding_hash = match ProxyHostStore::binding_hash_with_access_policies(
+        &desired_objects,
+        &access_policy_records,
+    ) {
         Ok(hash) => hash,
         Err(_) => {
             return Err(
@@ -722,9 +771,15 @@ async fn create_proxy_host_candidate_revision(
     let store = Arc::clone(&state.proxy_hosts);
     let candidate_id = metadata.id.clone();
     let snapshot_binding = binding_hash;
+    let bound_access_policies = access_policy_records;
     match tokio::task::spawn_blocking(move || {
         store.reconcile_candidates(&retained)?;
-        store.bind_candidate(&candidate_id, &snapshot_binding, &desired_objects)
+        store.bind_candidate_with_access_policies(
+            &candidate_id,
+            &snapshot_binding,
+            &desired_objects,
+            &bound_access_policies,
+        )
     })
     .await
     {
@@ -1171,11 +1226,21 @@ pub(super) async fn activate_proxy_host_candidate(
         .map(|stored| stored.object.clone())
         .collect::<Vec<_>>();
     let active = state.control.runtime().config();
+    let (access_policy_records, access_policies) =
+        match access_policy_dependencies(&state, Arc::clone(&active), &objects).await {
+            Ok(dependencies) => dependencies,
+            Err(error) => {
+                return Err(audited_failure(&audit, "access_policy_unavailable", error).await);
+            }
+        };
     let (expected_hash, objects) = match tokio::task::spawn_blocking(move || {
-        let candidate = crate::proxy_host::prepare_proxy_host_set(&objects, &objects, &active)
-            .map_err(|_| {
-                RevisionError::InvalidStored("typed candidate preparation failed".into())
-            })?;
+        let candidate = crate::proxy_host::prepare_proxy_host_set(
+            &objects,
+            &objects,
+            &active,
+            &access_policies,
+        )
+        .map_err(|_| RevisionError::InvalidStored("typed candidate preparation failed".into()))?;
         Ok::<_, RevisionError>((content_hash(candidate.config())?, objects))
     })
     .await
@@ -1246,7 +1311,7 @@ pub(super) async fn activate_proxy_host_candidate(
                 .await);
             }
         };
-    if bound.objects() != objects {
+    if bound.objects() != objects || bound.access_policies() != access_policy_records {
         return Err(
             audited_failure(&audit, "candidate_conflict", ApiError::CandidateConflict).await,
         );
@@ -1390,9 +1455,26 @@ pub(super) async fn rollback_proxy_hosts(
         .collect::<Vec<_>>();
     let target_objects = target.objects().to_vec();
     let active = state.control.runtime().config();
+    let (access_policy_records, access_policies) =
+        match access_policy_dependencies(&state, Arc::clone(&active), &target_objects).await {
+            Ok(dependencies) => dependencies,
+            Err(error) => {
+                return Err(audited_failure(&audit, "access_policy_unavailable", error).await);
+            }
+        };
+    if target.access_policies() != access_policy_records {
+        return Err(
+            audited_failure(&audit, "rollback_conflict", ApiError::CandidateConflict).await,
+        );
+    }
     let (config, target_objects) = match tokio::task::spawn_blocking(move || {
-        crate::proxy_host::prepare_proxy_host_set(&current_objects, &target_objects, &active)
-            .map(|candidate| (candidate.config().clone(), candidate.objects().to_vec()))
+        crate::proxy_host::prepare_proxy_host_set(
+            &current_objects,
+            &target_objects,
+            &active,
+            &access_policies,
+        )
+        .map(|candidate| (candidate.config().clone(), candidate.objects().to_vec()))
     })
     .await
     {
@@ -1404,7 +1486,10 @@ pub(super) async fn rollback_proxy_hosts(
         }
         Err(_) => return Err(audited_failure(&audit, "compile_failed", ApiError::Internal).await),
     };
-    let forward_binding = match ProxyHostStore::binding_hash(&target_objects) {
+    let forward_binding = match ProxyHostStore::binding_hash_with_access_policies(
+        &target_objects,
+        &access_policy_records,
+    ) {
         Ok(hash) => hash,
         Err(_) => {
             return Err(
@@ -1438,9 +1523,15 @@ pub(super) async fn rollback_proxy_hosts(
     let forward_id = forward.id.clone();
     let snapshot_binding = forward_binding;
     let bound_objects = target_objects.clone();
+    let bound_access_policies = access_policy_records;
     match tokio::task::spawn_blocking(move || {
         store.reconcile_candidates(&retained)?;
-        store.bind_candidate(&forward_id, &snapshot_binding, &bound_objects)
+        store.bind_candidate_with_access_policies(
+            &forward_id,
+            &snapshot_binding,
+            &bound_objects,
+            &bound_access_policies,
+        )
     })
     .await
     {

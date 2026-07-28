@@ -109,10 +109,10 @@ pub(crate) fn prepare_proxy_host_set(
     current: &[ApiObject<ProxyHostSpec>],
     desired: &[ApiObject<ProxyHostSpec>],
     active: &Config,
+    access_policies: &BTreeMap<ObjectId, AccessPolicyMetadata>,
 ) -> Result<ProxyHostSetCandidate, ProxyHostPreparationError> {
     let http_listener_id = single_http_listener(active)?;
     let upstream_template_id = single_http_upstream_template_for_set(active, current)?;
-    let access_policies = BTreeMap::new();
     let managed_https = BTreeMap::new();
     compile_proxy_hosts(
         current,
@@ -121,7 +121,7 @@ pub(crate) fn prepare_proxy_host_set(
             base_config: active,
             http_listener_id,
             upstream_template_id,
-            access_policies: &access_policies,
+            access_policies,
             managed_https: &managed_https,
         },
     )
@@ -293,8 +293,9 @@ mod tests {
             aegisproxy_config::load_bytes(include_bytes!("../../../config/examples/minimal.toml"))
                 .expect("active config");
         let current = vec![object("uid-1000")];
-        let activated = prepare_proxy_host_set(&[], &current, &base).expect("initial candidate");
-        let removed = prepare_proxy_host_set(&current, &[], activated.config())
+        let activated = prepare_proxy_host_set(&[], &current, &base, &BTreeMap::new())
+            .expect("initial candidate");
+        let removed = prepare_proxy_host_set(&current, &[], activated.config(), &BTreeMap::new())
             .expect("candidate after activation");
 
         assert_eq!(

@@ -396,7 +396,7 @@ allow = ["127.0.0.1/32"]
                 "forward_port": 9001,
                 "forward_protocol": "http",
                 "automatic_https": "disabled",
-                "access_policy_ref": null,
+                "access_policy_ref": "private-lan",
                 "enabled": true
             }
         });
@@ -431,7 +431,7 @@ allow = ["127.0.0.1/32"]
         assert_eq!(active_revision(&state), current);
 
         let mut protected_proxy_host = proxy_host.clone();
-        protected_proxy_host["spec"]["access_policy_ref"] = serde_json::json!("private-lan");
+        protected_proxy_host["spec"]["access_policy_ref"] = serde_json::json!("other-policy");
         let protected_proxy_host_path = daemon.root.join("protected-proxy-host.json");
         fs::write(
             &protected_proxy_host_path,
@@ -1123,6 +1123,137 @@ allow = ["127.0.0.1/32"]
                 .count(),
             revisions_before
         );
+        let enabled_z_policy = serde_json::json!({
+            "api_version": "v1",
+            "metadata": {"id": "z-policy", "owner_id": owner},
+            "spec": {
+                "enabled": true,
+                "shared_with": [],
+                "middlewares": ["edge-ip"]
+            }
+        });
+        let enabled_z_policy_path = daemon.root.join("enabled-z-policy.json");
+        fs::write(
+            &enabled_z_policy_path,
+            serde_json::to_vec_pretty(&enabled_z_policy).expect("enabled policy JSON"),
+        )
+        .expect("enabled policy file");
+        let enable_z_policy = Command::new(binary())
+            .args([
+                "access-policy",
+                "update",
+                "--socket",
+                socket,
+                "--expect",
+                &current,
+                "--generation",
+                "1",
+                "z-policy",
+            ])
+            .arg(&enabled_z_policy_path)
+            .output()
+            .expect("enable z policy");
+        assert!(
+            enable_z_policy.status.success(),
+            "{:?}",
+            enable_z_policy.stderr
+        );
+        let temporary_proxy = serde_json::json!({
+            "api_version": "v1",
+            "metadata": {"id": "policy-drift", "owner_id": owner},
+            "spec": {
+                "domain": "policy-drift.example.test",
+                "forward_host": "127.0.0.1",
+                "forward_port": 9001,
+                "forward_protocol": "http",
+                "automatic_https": "disabled",
+                "access_policy_ref": "z-policy",
+                "enabled": false
+            }
+        });
+        let temporary_proxy_path = daemon.root.join("policy-drift-proxy.json");
+        fs::write(
+            &temporary_proxy_path,
+            serde_json::to_vec_pretty(&temporary_proxy).expect("temporary Proxy Host JSON"),
+        )
+        .expect("temporary Proxy Host file");
+        let temporary_create = Command::new(binary())
+            .args([
+                "proxy-host",
+                "create",
+                "--socket",
+                socket,
+                "--expect",
+                &current,
+            ])
+            .arg(&temporary_proxy_path)
+            .output()
+            .expect("temporary Proxy Host create");
+        assert!(
+            temporary_create.status.success(),
+            "{:?}",
+            temporary_create.stderr
+        );
+        let temporary_create: serde_json::Value =
+            serde_json::from_slice(&temporary_create.stdout).expect("temporary create JSON");
+        let stale_policy_candidate = temporary_create["candidate"]["id"]
+            .as_str()
+            .expect("temporary candidate ID");
+        let mut advanced_z_policy = enabled_z_policy.clone();
+        advanced_z_policy["spec"]["shared_with"] = serde_json::json!(["other"]);
+        fs::write(
+            &enabled_z_policy_path,
+            serde_json::to_vec_pretty(&advanced_z_policy).expect("advanced policy JSON"),
+        )
+        .expect("advanced policy file");
+        let advance_z_policy = Command::new(binary())
+            .args([
+                "access-policy",
+                "update",
+                "--socket",
+                socket,
+                "--expect",
+                &current,
+                "--generation",
+                "2",
+                "z-policy",
+            ])
+            .arg(&enabled_z_policy_path)
+            .output()
+            .expect("advance z policy generation");
+        assert!(
+            advance_z_policy.status.success(),
+            "{:?}",
+            advance_z_policy.stderr
+        );
+        let stale_policy_activation = run(&[
+            "proxy-host",
+            "activate",
+            "--socket",
+            socket,
+            "--expect",
+            &current,
+            stale_policy_candidate,
+        ]);
+        assert_eq!(stale_policy_activation.status.code(), Some(4));
+        assert_eq!(active_revision(&state), current);
+        let temporary_delete = run(&[
+            "proxy-host",
+            "delete",
+            "--socket",
+            socket,
+            "--expect",
+            &current,
+            "--generation",
+            "1",
+            "policy-drift",
+        ]);
+        assert!(
+            temporary_delete.status.success(),
+            "{:?}",
+            temporary_delete.stderr
+        );
+        assert_eq!(active_revision(&state), current);
         let create = Command::new(binary())
             .args([
                 "proxy-host",
@@ -1177,6 +1308,17 @@ allow = ["127.0.0.1/32"]
             candidate_binding["objects"].as_array().map(Vec::len),
             Some(3)
         );
+        assert_eq!(
+            candidate_binding["access_policies"]
+                .as_array()
+                .map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(
+            candidate_binding["access_policies"][0]["object"]["metadata"]["id"],
+            "private-lan"
+        );
+        assert_eq!(candidate_binding["access_policies"][0]["generation"], 2);
         assert_eq!(active_revision(&state), current);
         let created_list = run(&["proxy-host", "list", "--socket", socket]);
         assert!(created_list.status.success(), "{:?}", created_list.stderr);
@@ -1355,6 +1497,21 @@ allow = ["127.0.0.1/32"]
         assert!(activation.status.success(), "{:?}", activation.stderr);
         current = active_revision(&state);
         assert_eq!(current, updated_candidate_id);
+        let active_config = aegisproxy_config::load_bytes(
+            &fs::read(
+                state
+                    .join("config/revisions")
+                    .join(format!("{updated_candidate_id}.toml")),
+            )
+            .expect("active revision"),
+        )
+        .expect("active revision config");
+        let active_route = active_config
+            .routes
+            .iter()
+            .find(|route| route.hosts == ["updated.example.test"])
+            .expect("activated Proxy Host route");
+        assert_eq!(active_route.middlewares, ["edge-ip"]);
         let repeated_activation = run(&[
             "proxy-host",
             "activate",

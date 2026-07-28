@@ -18,7 +18,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::{ApiObject, ObjectId, ProxyHostSpec};
+use crate::{
+    ApiObject, ObjectId, ProxyHostSpec, StoredAccessPolicy, access_policy::MAX_ACCESS_POLICIES,
+};
 
 const STORE_SCHEMA_VERSION: u32 = 1;
 pub(crate) const MAX_PROXY_HOSTS: usize = 4_096;
@@ -57,6 +59,7 @@ pub struct ProxyHostSnapshot {
 pub struct BoundProxyHostCandidate {
     binding_hash: String,
     objects: Vec<ApiObject<ProxyHostSpec>>,
+    access_policies: Vec<StoredAccessPolicy>,
 }
 
 impl fmt::Debug for BoundProxyHostCandidate {
@@ -65,6 +68,7 @@ impl fmt::Debug for BoundProxyHostCandidate {
             .debug_struct("BoundProxyHostCandidate")
             .field("binding_hash", &self.binding_hash)
             .field("object_count", &self.objects.len())
+            .field("access_policy_count", &self.access_policies.len())
             .finish()
     }
 }
@@ -80,6 +84,12 @@ impl BoundProxyHostCandidate {
     #[must_use]
     pub fn objects(&self) -> &[ApiObject<ProxyHostSpec>] {
         &self.objects
+    }
+
+    /// Return canonical referenced Access Policy generations.
+    #[must_use]
+    pub fn access_policies(&self) -> &[StoredAccessPolicy] {
+        &self.access_policies
     }
 }
 
@@ -138,6 +148,8 @@ struct ProxyHostCandidateFile {
     revision_id: String,
     binding_hash: String,
     objects: Vec<ApiObject<ProxyHostSpec>>,
+    #[serde(default)]
+    access_policies: Vec<StoredAccessPolicy>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -153,6 +165,13 @@ struct ProxyHostTransactionFile {
 struct ProxyHostBinding<'a> {
     schema_version: u32,
     objects: &'a [ApiObject<ProxyHostSpec>],
+}
+
+#[derive(Serialize)]
+struct ProxyHostPolicyBinding<'a> {
+    schema_version: u32,
+    objects: &'a [ApiObject<ProxyHostSpec>],
+    access_policies: &'a [StoredAccessPolicy],
 }
 
 type ObjectIndex = BTreeMap<ObjectId, BTreeMap<ObjectId, StoredProxyHost>>;
@@ -475,6 +494,28 @@ impl ProxyHostStore {
         Ok(format!("{:x}", Sha256::digest(bytes)))
     }
 
+    /// Return canonical hash of desired Proxy Hosts and referenced Access Policy generations.
+    pub fn binding_hash_with_access_policies(
+        objects: &[ApiObject<ProxyHostSpec>],
+        access_policies: &[StoredAccessPolicy],
+    ) -> Result<String, ProxyHostStoreError> {
+        if access_policies.is_empty() {
+            return Self::binding_hash(objects);
+        }
+        let objects = canonical_objects(objects)?;
+        let access_policies = canonical_access_policies(access_policies)?;
+        let bytes = serde_json::to_vec(&ProxyHostPolicyBinding {
+            schema_version: STORE_SCHEMA_VERSION,
+            objects: &objects,
+            access_policies: &access_policies,
+        })
+        .map_err(|_| ProxyHostStoreError::Invalid)?;
+        if bytes.len() as u64 > MAX_TRANSACTION_BYTES {
+            return Err(ProxyHostStoreError::Limit);
+        }
+        Ok(format!("{:x}", Sha256::digest(bytes)))
+    }
+
     /// Persist one immutable typed desired-state snapshot for a revision.
     pub fn bind_candidate(
         &self,
@@ -482,9 +523,21 @@ impl ProxyHostStore {
         expected_hash: &str,
         objects: &[ApiObject<ProxyHostSpec>],
     ) -> Result<BoundProxyHostCandidate, ProxyHostStoreError> {
+        self.bind_candidate_with_access_policies(revision_id, expected_hash, objects, &[])
+    }
+
+    /// Persist one immutable desired-state snapshot with Access Policy dependencies.
+    pub fn bind_candidate_with_access_policies(
+        &self,
+        revision_id: &str,
+        expected_hash: &str,
+        objects: &[ApiObject<ProxyHostSpec>],
+        access_policies: &[StoredAccessPolicy],
+    ) -> Result<BoundProxyHostCandidate, ProxyHostStoreError> {
         validate_revision_id(revision_id)?;
         let objects = canonical_objects(objects)?;
-        let binding_hash = Self::binding_hash(&objects)?;
+        let access_policies = canonical_access_policies(access_policies)?;
+        let binding_hash = Self::binding_hash_with_access_policies(&objects, &access_policies)?;
         if binding_hash != expected_hash {
             return Err(ProxyHostStoreError::Invalid);
         }
@@ -492,7 +545,7 @@ impl ProxyHostStore {
         let path = self.candidate_path(revision_id);
         if path.exists() {
             let existing = self.load_candidate(revision_id, expected_hash)?;
-            if existing.objects == objects {
+            if existing.objects == objects && existing.access_policies == access_policies {
                 return Ok(existing);
             }
             return Err(ProxyHostStoreError::Conflict);
@@ -505,9 +558,10 @@ impl ProxyHostStore {
             revision_id: revision_id.to_owned(),
             binding_hash: binding_hash.clone(),
             objects: objects.clone(),
+            access_policies: access_policies.clone(),
         })
         .map_err(|_| ProxyHostStoreError::Invalid)?;
-        if bytes.len() as u64 > MAX_STORE_BYTES {
+        if bytes.len() as u64 > MAX_TRANSACTION_BYTES {
             return Err(ProxyHostStoreError::Limit);
         }
         write_private_file(&path, &bytes)?;
@@ -515,6 +569,7 @@ impl ProxyHostStore {
         Ok(BoundProxyHostCandidate {
             binding_hash,
             objects,
+            access_policies,
         })
     }
 
@@ -605,22 +660,23 @@ impl ProxyHostStore {
         let metadata = fs::symlink_metadata(&path)?;
         if !metadata.is_file()
             || metadata.file_type().is_symlink()
-            || metadata.len() > MAX_STORE_BYTES
+            || metadata.len() > MAX_TRANSACTION_BYTES
         {
             return Err(ProxyHostStoreError::Invalid);
         }
         reject_insecure_file_permissions(&metadata)?;
         let mut bytes = Vec::new();
         File::open(path)?
-            .take(MAX_STORE_BYTES.saturating_add(1))
+            .take(MAX_TRANSACTION_BYTES.saturating_add(1))
             .read_to_end(&mut bytes)?;
-        if bytes.len() as u64 > MAX_STORE_BYTES {
+        if bytes.len() as u64 > MAX_TRANSACTION_BYTES {
             return Err(ProxyHostStoreError::Limit);
         }
         let file: ProxyHostCandidateFile =
             serde_json::from_slice(&bytes).map_err(|_| ProxyHostStoreError::Invalid)?;
         let objects = canonical_objects(&file.objects)?;
-        let binding_hash = Self::binding_hash(&objects)?;
+        let access_policies = canonical_access_policies(&file.access_policies)?;
+        let binding_hash = Self::binding_hash_with_access_policies(&objects, &access_policies)?;
         if file.schema_version != STORE_SCHEMA_VERSION
             || file.revision_id != revision_id
             || file.binding_hash != binding_hash
@@ -630,6 +686,7 @@ impl ProxyHostStore {
         Ok(BoundProxyHostCandidate {
             binding_hash,
             objects,
+            access_policies,
         })
     }
 
@@ -814,6 +871,30 @@ fn canonical_objects(
         }
     }
     Ok(objects)
+}
+
+fn canonical_access_policies(
+    policies: &[StoredAccessPolicy],
+) -> Result<Vec<StoredAccessPolicy>, ProxyHostStoreError> {
+    if policies.len() > MAX_ACCESS_POLICIES {
+        return Err(ProxyHostStoreError::Limit);
+    }
+    let mut policies = policies.to_vec();
+    policies.sort_by(|left, right| left.object.metadata.id.cmp(&right.object.metadata.id));
+    let mut ids = BTreeSet::new();
+    for stored in &policies {
+        if stored.generation == 0
+            || stored
+                .object
+                .spec
+                .validate_shape(&stored.object.metadata.owner_id)
+                .is_err()
+            || !ids.insert(&stored.object.metadata.id)
+        {
+            return Err(ProxyHostStoreError::Invalid);
+        }
+    }
+    Ok(policies)
 }
 
 fn validate_revision_id(id: &str) -> Result<(), ProxyHostStoreError> {
@@ -1145,6 +1226,22 @@ mod tests {
         .expect("typed object")
     }
 
+    fn access_policy(id: &str, generation: u64) -> StoredAccessPolicy {
+        StoredAccessPolicy {
+            generation,
+            object: serde_json::from_value(serde_json::json!({
+                "api_version": "v1",
+                "metadata": {"id": id, "owner_id": "alice"},
+                "spec": {
+                    "enabled": true,
+                    "shared_with": [],
+                    "middlewares": ["edge-ip"]
+                }
+            }))
+            .expect("Access Policy"),
+        }
+    }
+
     fn revision_metadata(id: &str, binding_hash: Option<&str>) -> RevisionMetadata {
         RevisionMetadata {
             id: id.into(),
@@ -1333,6 +1430,22 @@ mod tests {
         );
         drop(store);
 
+        let candidate_path = root
+            .join("admin/proxy-host-candidates")
+            .join(format!("{revision}.json"));
+        let mut legacy: serde_json::Value =
+            serde_json::from_slice(&fs::read(&candidate_path).expect("candidate bytes"))
+                .expect("candidate JSON");
+        legacy
+            .as_object_mut()
+            .expect("candidate object")
+            .remove("access_policies");
+        fs::write(
+            &candidate_path,
+            serde_json::to_vec(&legacy).expect("legacy candidate JSON"),
+        )
+        .expect("legacy candidate");
+
         let reopened = ProxyHostStore::open(&path).expect("reopen");
         assert_eq!(
             reopened
@@ -1349,9 +1462,6 @@ mod tests {
             Err(ProxyHostStoreError::Invalid)
         ));
 
-        let candidate_path = root
-            .join("admin/proxy-host-candidates")
-            .join(format!("{revision}.json"));
         let mut value: serde_json::Value =
             serde_json::from_slice(&fs::read(&candidate_path).expect("candidate bytes"))
                 .expect("candidate JSON");
@@ -1366,6 +1476,76 @@ mod tests {
             Err(ProxyHostStoreError::Invalid)
         ));
 
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn candidate_binding_attests_access_policy_generation_and_content() {
+        let (path, root) = temporary_store("policy-binding");
+        let store = ProxyHostStore::open(&path).expect("store");
+        let revision = format!("{:020}-{}", 1, "ab".repeat(32));
+        let objects = vec![object("proxy-a", "alice", "a.example.test")];
+        let policy = access_policy("private-lan", 2);
+        let hash = ProxyHostStore::binding_hash_with_access_policies(
+            &objects,
+            std::slice::from_ref(&policy),
+        )
+        .expect("policy binding hash");
+        assert_ne!(
+            hash,
+            ProxyHostStore::binding_hash(&objects).expect("legacy binding")
+        );
+        let bound = store
+            .bind_candidate_with_access_policies(
+                &revision,
+                &hash,
+                &objects,
+                std::slice::from_ref(&policy),
+            )
+            .expect("bind policy candidate");
+        assert_eq!(bound.access_policies(), std::slice::from_ref(&policy));
+
+        let mut changed = policy.clone();
+        changed.generation += 1;
+        assert_ne!(
+            hash,
+            ProxyHostStore::binding_hash_with_access_policies(&objects, &[changed])
+                .expect("changed generation hash")
+        );
+        let mut changed = policy.clone();
+        changed.object.spec.enabled = false;
+        assert_ne!(
+            hash,
+            ProxyHostStore::binding_hash_with_access_policies(&objects, &[changed])
+                .expect("changed content hash")
+        );
+        let second = access_policy("second-policy", 1);
+        assert_eq!(
+            ProxyHostStore::binding_hash_with_access_policies(
+                &objects,
+                &[policy.clone(), second.clone()]
+            )
+            .expect("ordered policy hash"),
+            ProxyHostStore::binding_hash_with_access_policies(&objects, &[second, policy.clone()])
+                .expect("reversed policy hash")
+        );
+
+        let candidate_path = root
+            .join("admin/proxy-host-candidates")
+            .join(format!("{revision}.json"));
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&candidate_path).expect("candidate bytes"))
+                .expect("candidate JSON");
+        value["access_policies"][0]["generation"] = serde_json::json!(3);
+        fs::write(
+            &candidate_path,
+            serde_json::to_vec(&value).expect("tampered JSON"),
+        )
+        .expect("tamper candidate");
+        assert!(matches!(
+            store.load_candidate(&revision, &hash),
+            Err(ProxyHostStoreError::Invalid)
+        ));
         fs::remove_dir_all(root).expect("cleanup");
     }
 
