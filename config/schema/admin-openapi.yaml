@@ -525,6 +525,45 @@ paths:
       responses:
         "200": {description: Runtime certificate renewal request persisted}
         default: {$ref: "#/components/responses/Error"}
+  /v1/credentials:
+    get:
+      operationId: listCredentials
+      responses:
+        "200": {description: Owner-scoped secret-free Stored Credential metadata}
+        default: {$ref: "#/components/responses/Error"}
+    post:
+      operationId: createCredential
+      parameters: [{$ref: "#/components/parameters/IfMatch"}]
+      requestBody: {$ref: "#/components/requestBodies/CredentialObject"}
+      responses:
+        "201": {description: Credential encrypted and metadata returned}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/credentials/{id}:
+    get:
+      operationId: getCredential
+      parameters: [{$ref: "#/components/parameters/TypedObjectId"}]
+      responses:
+        "200": {description: Secret-free Stored Credential metadata}
+        default: {$ref: "#/components/responses/Error"}
+    put:
+      operationId: updateCredential
+      parameters:
+        - {$ref: "#/components/parameters/TypedObjectId"}
+        - {$ref: "#/components/parameters/IfMatch"}
+        - {$ref: "#/components/parameters/ObjectGeneration"}
+      requestBody: {$ref: "#/components/requestBodies/CredentialObject"}
+      responses:
+        "200": {description: Credential metadata updated or value rotated}
+        default: {$ref: "#/components/responses/Error"}
+    delete:
+      operationId: revokeCredential
+      parameters:
+        - {$ref: "#/components/parameters/TypedObjectId"}
+        - {$ref: "#/components/parameters/IfMatch"}
+        - {$ref: "#/components/parameters/ObjectGeneration"}
+      responses:
+        "200": {description: Usable ciphertext removed}
+        default: {$ref: "#/components/responses/Error"}
   /v1/audit:
     get:
       operationId: listAudit
@@ -563,7 +602,7 @@ paths:
                 scopes:
                   type: array
                   minItems: 1
-                  maxItems: 41
+                  maxItems: 45
                   uniqueItems: true
                   items:
                     $ref: "#/components/schemas/TokenScope"
@@ -687,6 +726,11 @@ components:
       content:
         application/json:
           schema: {$ref: "#/components/schemas/DiscoverySourceObject"}
+    CredentialObject:
+      required: true
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/CredentialObject"}
   responses:
     Error:
       description: Stable redacted error
@@ -698,6 +742,28 @@ components:
     ObjectId:
       type: string
       pattern: '^[a-z][a-z0-9_-]{0,63}$'
+    CredentialObject:
+      type: object
+      additionalProperties: false
+      required: [api_version, metadata, spec]
+      properties:
+        api_version: {const: v1}
+        metadata:
+          type: object
+          additionalProperties: false
+          required: [id, owner_id]
+          properties:
+            id: {$ref: "#/components/schemas/ObjectId"}
+            owner_id: {$ref: "#/components/schemas/ObjectId"}
+        spec:
+          type: object
+          additionalProperties: false
+          required: [label, enabled, expires_unix_secs]
+          properties:
+            label: {type: string, minLength: 1, maxLength: 128}
+            enabled: {type: boolean}
+            expires_unix_secs: {type: [integer, "null"], minimum: 1}
+            value: {type: string, minLength: 1, maxLength: 65536, writeOnly: true}
     MiddlewareRef:
       type: string
       pattern: '^[a-z][a-z0-9_-]{0,62}$'
@@ -966,7 +1032,7 @@ components:
             changes: {type: array, minItems: 7, maxItems: 8, items: {type: object}}
     TokenScope:
       type: string
-      enum: [read_status, read_config, validate_config, preview_config, create_candidate, activate_config, rollback_config, read_revisions, read_proxy_hosts, create_proxy_host, update_proxy_host, delete_proxy_host, activate_proxy_host, rollback_proxy_host, activate_typed_candidate, rollback_typed_revision, read_access_policies, create_access_policy, update_access_policy, delete_access_policy, read_routes, read_upstreams, drain, read_certificates, read_certificate_objects, create_certificate, update_certificate, delete_certificate, read_stream_hosts, create_stream_host, update_stream_host, delete_stream_host, read_discovery_sources, create_discovery_source, update_discovery_source, delete_discovery_source, renew_certificate, read_audit, create_backup, validate_restore, manage_identities]
+      enum: [read_status, read_config, validate_config, preview_config, create_candidate, activate_config, rollback_config, read_revisions, read_proxy_hosts, create_proxy_host, update_proxy_host, delete_proxy_host, activate_proxy_host, rollback_proxy_host, activate_typed_candidate, rollback_typed_revision, read_access_policies, create_access_policy, update_access_policy, delete_access_policy, read_routes, read_upstreams, drain, read_certificates, read_certificate_objects, create_certificate, update_certificate, delete_certificate, read_stream_hosts, create_stream_host, update_stream_host, delete_stream_host, read_discovery_sources, create_discovery_source, update_discovery_source, delete_discovery_source, read_credentials, create_credential, update_credential, revoke_credential, renew_certificate, read_audit, create_backup, validate_restore, manage_identities]
     TokenMetadata:
       type: object
       additionalProperties: false
@@ -980,7 +1046,7 @@ components:
             - {type: "null"}
         scopes:
           type: array
-          maxItems: 41
+          maxItems: 45
           uniqueItems: true
           items: {$ref: "#/components/schemas/TokenScope"}
         expires_unix_secs: {type: integer, minimum: 1}

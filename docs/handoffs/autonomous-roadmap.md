@@ -5,7 +5,7 @@ Updated: 2026-07-28
 - Current branch: `feat/phase-15-control-plane-completion`
 - Current completed-unit commit: `HEAD` (this handoff)
 - Current phase: Phase 15, in progress
-- Completed unit: unified schema-2 typed candidate boundary
+- Completed unit: encrypted Stored Credential lifecycle
 - Implementation commit: `HEAD`
 - Documentation commit: this handoff's documentation commit
 - Remote target: `origin/feat/phase-15-control-plane-completion`
@@ -44,12 +44,12 @@ older binaries cannot consume new policy-bearing private candidate files.
 
 ## Remaining Phase 15 work
 
-Stored Credentials; Users/Roles and subject-bound tokens; generalized typed diff; remaining
-migration/compatibility tests; transport module split; full authorization/security review.
+Users/Roles and subject-bound tokens; generalized typed diff; remaining migration/compatibility
+tests; transport module split; full authorization/security review.
 
 ## Exact next task
 
-Implement encrypted Stored Credential lifecycle with secret-canary tests.
+Implement Users/Roles and subject-bound token issuance.
 
 ## Known risks
 

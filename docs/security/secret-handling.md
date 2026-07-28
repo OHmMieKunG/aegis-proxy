@@ -49,7 +49,11 @@ cannot activate. Access-policy update/delete likewise cannot create or activate 
 revisions. Validation/preview and persisted candidate creation consume only policy secret-free
 metadata after owner/share checks. Candidate bindings retain exact policy records; activation and
 rollback require current records to match before publication.
-Managed-HTTPS preparation and remaining stored-credential contracts are still Phase 15 work.
+Stored Credential values are accepted only on create or optional rotation, bounded to 64 KiB,
+zeroized after encryption where practical, and encrypted independently to configured age
+recipients. The private bounded store persists ciphertext plus safe metadata. API, CLI, audit,
+errors, and `Debug` expose neither ciphertext nor plaintext; revocation removes usable ciphertext
+while retaining its fingerprint and lifecycle metadata.
 The library-only Certificate ownership object contains only owner/share IDs, enabled state, and an
 opaque certificate ID. Compiled metadata retains public host coverage and listener/certificate IDs;
 it never copies chain/key references. Redacted `Debug` reports only enabled state and counts.

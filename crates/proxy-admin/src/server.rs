@@ -1,6 +1,7 @@
 //! Private Unix-socket administrative HTTP service.
 
 mod certificates;
+mod credentials;
 mod domains;
 mod handlers;
 mod support;
@@ -49,12 +50,15 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     AccessPolicyMetadata, AccessPolicySpec, AccessPolicyStore, AccessPolicyStoreError, Action,
     ApiObject, AuditEvent, AuditLog, AuditOutcome, CertificateSpec, CertificateStore,
-    CertificateStoreError, DiscoverySourceSpec, DiscoverySourceStore, ObjectId, PreparedProxyHost,
+    CertificateStoreError, CredentialReplacement, CredentialStore, CredentialStoreError,
+    DiscoverySourceSpec, DiscoverySourceStore, ObjectId, PreparedProxyHost,
     ProxyHostPreparationError, ProxyHostPreviewSummary, ProxyHostSpec, ProxyHostStore,
-    ProxyHostStoreError, Role, StoredAccessPolicy, StoredCertificate, StoredDiscoverySource,
-    StoredProxyHost, StoredStreamHost, StreamHostSpec, StreamHostStore, TokenScopes, TokenStore,
+    ProxyHostStoreError, Role, StoredAccessPolicy, StoredCertificate, StoredCredential,
+    StoredDiscoverySource, StoredProxyHost, StoredStreamHost, StreamHostSpec, StreamHostStore,
+    TokenScopes, TokenStore,
 };
 use certificates::*;
+use credentials::*;
 use domains::*;
 use handlers::*;
 use support::*;
@@ -92,6 +96,9 @@ pub enum AdminServerError {
     /// Typed Discovery Source desired state could not be loaded safely.
     #[error("administrative Discovery Source store failed")]
     DiscoverySources,
+    /// Encrypted Stored Credential state could not be loaded safely.
+    #[error("administrative Stored Credential store failed")]
+    Credentials,
     /// Blocking initialization task failed.
     #[error("administrative initialization task failed: {0}")]
     Initialization(String),
@@ -106,6 +113,7 @@ struct AppState {
     certificates: Arc<CertificateStore>,
     stream_hosts: Arc<StreamHostStore>,
     discovery_sources: Arc<DiscoverySourceStore>,
+    credentials: Arc<CredentialStore>,
     audit: Option<Arc<AuditLog>>,
     allowed_uids: Arc<[u32]>,
     auth_permits: Arc<Semaphore>,
@@ -650,6 +658,14 @@ pub async fn serve(
         open_stream_host_store(state_dir.join("admin/stream-hosts.json")).await?;
     let discovery_source_store =
         open_discovery_source_store(state_dir.join("admin/discovery-sources.json")).await?;
+    let credential_path = state_dir.join("admin/credentials.json");
+    let credential_recipients = config.tls.state_encryption_recipients.clone();
+    let credential_store = tokio::task::spawn_blocking(move || {
+        CredentialStore::open(credential_path, credential_recipients)
+    })
+    .await
+    .map_err(|error| AdminServerError::Initialization(error.to_string()))?
+    .map_err(|_| AdminServerError::Credentials)?;
     let audit = match config.admin.audit_key.clone() {
         Some(reference) => {
             let audit_path = state_dir.join("audit/admin.jsonl");
@@ -681,6 +697,7 @@ pub async fn serve(
         certificates: Arc::new(certificate_store),
         stream_hosts: Arc::new(stream_host_store),
         discovery_sources: Arc::new(discovery_source_store),
+        credentials: Arc::new(credential_store),
         audit,
         allowed_uids: Arc::from(config.admin.allowed_uids.clone()),
         auth_permits: Arc::new(Semaphore::new(config.admin.max_auth_in_flight)),
@@ -810,6 +827,13 @@ pub async fn serve(
         .route(
             "/v1/runtime/certificates/{id}/renew",
             post(renew_runtime_certificate),
+        )
+        .route("/v1/credentials", get(credentials).post(create_credential))
+        .route(
+            "/v1/credentials/{id}",
+            get(credential)
+                .put(update_credential)
+                .delete(revoke_credential),
         )
         .route("/v1/audit", get(audit_records))
         .route("/v1/tokens", get(list_tokens).post(create_token))

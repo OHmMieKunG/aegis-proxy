@@ -78,6 +78,8 @@ AegisProxy has not published a supported release.
 - Added deterministic schema-2 unified typed snapshots, canonical preview/activation/rollback
   routes, exact Access Policy and Certificate dependency binding, and schema-1 compatibility
   limited to deprecated Proxy Host aliases.
+- Added bounded encrypted Stored Credentials with write-only create/rotation values, redacted
+  owner-scoped metadata, exact scopes, CLI lifecycle, and ciphertext removal on revoke.
 - Prevented low-level configuration activation and rollback from accepting typed-bound revisions.
 - Fixed token revocation CLI parsing for valid generated token IDs that begin with a hyphen.
 

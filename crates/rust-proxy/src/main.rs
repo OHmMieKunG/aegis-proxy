@@ -91,6 +91,11 @@ enum Command {
         #[command(subcommand)]
         command: AccessPolicyCommand,
     },
+    /// Manage encrypted Stored Credentials through the private socket.
+    Credential {
+        #[command(subcommand)]
+        command: AccessPolicyCommand,
+    },
     /// Manage typed Stream Hosts through the private socket.
     StreamHost {
         #[command(subcommand)]
@@ -499,6 +504,10 @@ enum CliScope {
     CreateDiscoverySource,
     UpdateDiscoverySource,
     DeleteDiscoverySource,
+    ReadCredentials,
+    CreateCredential,
+    UpdateCredential,
+    RevokeCredential,
     RenewCertificate,
     ReadAudit,
     CreateBackup,
@@ -545,6 +554,10 @@ impl CliScope {
             Self::CreateDiscoverySource => "create_discovery_source",
             Self::UpdateDiscoverySource => "update_discovery_source",
             Self::DeleteDiscoverySource => "delete_discovery_source",
+            Self::ReadCredentials => "read_credentials",
+            Self::CreateCredential => "create_credential",
+            Self::UpdateCredential => "update_credential",
+            Self::RevokeCredential => "revoke_credential",
             Self::RenewCertificate => "renew_certificate",
             Self::ReadAudit => "read_audit",
             Self::CreateBackup => "create_backup",
@@ -755,7 +768,10 @@ async fn run(cli: Cli) -> Result<(), BoxError> {
         Command::Certificate { command } => run_certificate_object_command(command).await?,
         Command::Token { command } => run_token_command(command).await?,
         Command::ProxyHost { command } => run_proxy_host_command(command).await?,
-        Command::AccessPolicy { command } => run_access_policy_command(command).await?,
+        Command::AccessPolicy { command } => {
+            run_owned_object_command(command, "access-policies").await?
+        }
+        Command::Credential { command } => run_owned_object_command(command, "credentials").await?,
         Command::StreamHost { command } => {
             run_typed_domain_command(command, "stream-hosts").await?
         }
@@ -1160,13 +1176,16 @@ async fn run_proxy_host_command(command: ProxyHostCommand) -> Result<(), BoxErro
     Ok(())
 }
 
-async fn run_access_policy_command(command: AccessPolicyCommand) -> Result<(), BoxError> {
+async fn run_owned_object_command(
+    command: AccessPolicyCommand,
+    resource: &str,
+) -> Result<(), BoxError> {
     let response = match command {
         AccessPolicyCommand::List { admin } => {
             admin_request(
                 &admin,
                 Method::GET,
-                "/v1/access-policies",
+                &format!("/v1/{resource}"),
                 None,
                 None,
                 Vec::new(),
@@ -1178,7 +1197,7 @@ async fn run_access_policy_command(command: AccessPolicyCommand) -> Result<(), B
             admin_request(
                 &admin,
                 Method::GET,
-                &format!("/v1/access-policies/{id}"),
+                &format!("/v1/{resource}/{id}"),
                 None,
                 None,
                 Vec::new(),
@@ -1194,7 +1213,7 @@ async fn run_access_policy_command(command: AccessPolicyCommand) -> Result<(), B
             admin_request(
                 &admin,
                 Method::POST,
-                "/v1/access-policies",
+                &format!("/v1/{resource}"),
                 Some(expect),
                 Some("application/json"),
                 body,
@@ -1212,7 +1231,7 @@ async fn run_access_policy_command(command: AccessPolicyCommand) -> Result<(), B
             admin_request_with_generation(
                 &admin,
                 Method::PUT,
-                &format!("/v1/access-policies/{id}"),
+                &format!("/v1/{resource}/{id}"),
                 Some(expect),
                 Some(generation),
                 Some("application/json"),
@@ -1229,7 +1248,7 @@ async fn run_access_policy_command(command: AccessPolicyCommand) -> Result<(), B
             admin_request_with_generation(
                 &admin,
                 Method::DELETE,
-                &format!("/v1/access-policies/{id}"),
+                &format!("/v1/{resource}/{id}"),
                 Some(expect),
                 Some(generation),
                 None,

@@ -89,6 +89,8 @@ fn checked_openapi_contains_every_private_route() {
         "/v1/certificates/{id}/renew:",
         "/v1/runtime/certificates:",
         "/v1/runtime/certificates/{id}/renew:",
+        "/v1/credentials:",
+        "/v1/credentials/{id}:",
         "/v1/audit:",
         "/v1/tokens:",
         "/v1/tokens/{id}/revoke:",
@@ -138,6 +140,10 @@ fn checked_openapi_contains_every_private_route() {
         "create_discovery_source",
         "update_discovery_source",
         "delete_discovery_source",
+        "read_credentials",
+        "create_credential",
+        "update_credential",
+        "revoke_credential",
         "renew_certificate",
         "read_audit",
         "create_backup",
@@ -159,7 +165,7 @@ fn checked_openapi_contains_every_private_route() {
             .collect::<Vec<_>>(),
         scopes
     );
-    assert_eq!(openapi.matches("maxItems: 41").count(), 2);
+    assert_eq!(openapi.matches("maxItems: 45").count(), 2);
     assert!(openapi.contains("operationId: createAccessPolicy"));
     assert!(openapi.contains("operationId: updateAccessPolicy"));
     assert!(openapi.contains("operationId: deleteAccessPolicy"));

@@ -9,6 +9,7 @@ mod auth;
 mod backup;
 mod certificate;
 mod compile;
+mod credential;
 mod diff;
 mod discovery_source;
 mod object_store;
@@ -38,6 +39,9 @@ pub use certificate::{
 pub use compile::{
     CompileContext, ManagedHttpsPolicy, ProxyHostCandidate, ProxyHostCompileError,
     ProxyHostSetCandidate, ProxyHostSetCompileContext, compile_proxy_host, compile_proxy_hosts,
+};
+pub use credential::{
+    CredentialReplacement, CredentialStore, CredentialStoreError, StoredCredential,
 };
 pub use diff::{
     DiffOperation, ProxyHostDiff, ProxyHostDiffError, ProxyHostDiffValue, ProxyHostField,

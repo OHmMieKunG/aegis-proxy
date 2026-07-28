@@ -93,6 +93,14 @@ pub enum Action {
     UpdateDiscoverySource,
     /// Delete an owned typed Discovery Source.
     DeleteDiscoverySource,
+    /// Read owned Stored Credential metadata.
+    ReadCredentials,
+    /// Create an encrypted owned Stored Credential.
+    CreateCredential,
+    /// Update or rotate an owned Stored Credential.
+    UpdateCredential,
+    /// Revoke an owned Stored Credential.
+    RevokeCredential,
     /// Request managed certificate renewal.
     RenewCertificate,
     /// Read or export audit records.
@@ -211,6 +219,10 @@ impl Role {
                     | Action::CreateDiscoverySource
                     | Action::UpdateDiscoverySource
                     | Action::DeleteDiscoverySource
+                    | Action::ReadCredentials
+                    | Action::CreateCredential
+                    | Action::UpdateCredential
+                    | Action::RevokeCredential
                     | Action::RenewCertificate
             ),
             Self::Auditor => matches!(
@@ -250,7 +262,7 @@ impl Role {
 mod tests {
     use super::{Action, Role, TokenScopeError, TokenScopes};
 
-    const ACTIONS: [Action; 41] = [
+    const ACTIONS: [Action; 45] = [
         Action::ReadStatus,
         Action::ReadConfig,
         Action::ValidateConfig,
@@ -287,6 +299,10 @@ mod tests {
         Action::CreateDiscoverySource,
         Action::UpdateDiscoverySource,
         Action::DeleteDiscoverySource,
+        Action::ReadCredentials,
+        Action::CreateCredential,
+        Action::UpdateCredential,
+        Action::RevokeCredential,
         Action::RenewCertificate,
         Action::ReadAudit,
         Action::CreateBackup,
@@ -299,7 +315,7 @@ mod tests {
         let expected = [
             (Role::Viewer, 11),
             (Role::Auditor, 12),
-            (Role::Operator, 31),
+            (Role::Operator, 35),
             (Role::Admin, ACTIONS.len()),
         ];
         for (role, count) in expected {

@@ -27,6 +27,10 @@ canonical typed preview, Admin-only activation, and forward rollback are availab
 Proxy Host routes accept only schema-1 snapshots.
 Low-level configuration activation and rollback reject typed-bound revisions, preventing broad
 configuration scopes from bypassing typed authorization.
+Stored Credentials now encrypt bounded write-only values to configured age recipients, persist
+only ciphertext and safe metadata, expose owner-scoped CRUD/rotation/revocation through exact
+scopes and CLI, and remove usable ciphertext on revoke. Responses never expose plaintext or
+ciphertext.
 
 Working tree at Phase 14 start: clean at `10aae8c`
 
