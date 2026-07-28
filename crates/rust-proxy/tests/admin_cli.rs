@@ -57,7 +57,7 @@ mod unix {
 
 [runtime]
 state_dir = {state:?}
-config_poll_secs = 60
+config_poll_secs = 300
 
 [admin]
 audit_key = {audit:?}
