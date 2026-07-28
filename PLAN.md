@@ -78,7 +78,7 @@ available gate passes.
 
 ## Phase 15 — Stable typed control plane
 
-**Status:** in progress. Baseline:
+**Status:** closeout pending independent API/security review. Baseline:
 [`docs/reviews/phase-15-baseline.md`](docs/reviews/phase-15-baseline.md). Initial strict `v1` object
 envelope, Proxy Host contract, and deterministic canonical compiler exist. Compiler evidence:
 [`docs/reviews/phase-15-proxy-host-compiler.md`](docs/reviews/phase-15-proxy-host-compiler.md).
@@ -165,8 +165,9 @@ state plus exact referenced Access Policy and Certificate records. Canonical typ
 Admin-only activation, and forward rollback routes reject dependency drift; schema-1 snapshots
 remain readable and are limited to deprecated Proxy-Host-only aliases.
 
-**Remaining units:** remaining authorization and migration contracts; module split; full
-authorization/security review.
+**Remaining units:** independent API/security review and immutable completion evidence. The
+authorization/migration freeze and production-module split are implemented; Phase 16 remains
+blocked until the independent review closes without unresolved critical/high findings.
 
 **Objective:** provide versioned high-level objects usable by GUI and advanced automation.
 

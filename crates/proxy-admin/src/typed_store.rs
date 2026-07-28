@@ -543,3 +543,7 @@ fn insecure_file_permissions(metadata: &fs::Metadata) -> bool {
 fn insecure_file_permissions(_metadata: &fs::Metadata) -> bool {
     false
 }
+
+#[cfg(test)]
+#[path = "typed_store_tests.rs"]
+mod tests;

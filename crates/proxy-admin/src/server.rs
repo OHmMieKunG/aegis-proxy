@@ -71,6 +71,10 @@ const REQUEST_ID_BYTES: usize = 16;
 const MAX_RATE_LIMIT_KEYS: usize = 2_048;
 const MAX_TOKEN_LIFETIME_SECS: u64 = 365 * 24 * 60 * 60;
 
+const fn candidate_schema_matches_route(schema_version: u32, legacy_alias: bool) -> bool {
+    schema_version == if legacy_alias { 1 } else { 2 }
+}
+
 /// Administrative service startup or listener failure.
 #[derive(Debug, Error)]
 pub enum AdminServerError {

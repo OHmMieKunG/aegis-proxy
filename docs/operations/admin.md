@@ -6,14 +6,13 @@ The socket parent is mode `0700`; the socket is mode `0660`. A configured
 `admin.allowed_uids` list further restricts peer credentials. No TCP, plaintext
 remote, public bind, browser session, or web UI exists in v1.
 
-A strict Proxy Host object can be listed, read, validated, previewed, created, updated, deleted, and
-its verified complete candidate activated through private typed endpoints. Create/update/delete
-persist desired state and an immutable candidate but never activate it. Admin-only activation
-recompiles current desired state, verifies candidate content, and uses the existing atomic
-coordinator. Admin-only typed rollback restores a retained bound snapshot through a new forward
-revision and private recovery journal. Remaining high-level objects are planned for Phase 15; GUI
-work remains Phase 16. All must use this same server-side authorization, audit, concurrency,
-secret, revision, and activation boundary.
+Private typed endpoints cover Proxy Hosts, Stream Hosts, Discovery Sources, Certificates, Access
+Policies, write-only Stored Credentials, Users, immutable Roles, revisions, backups, and runtime
+status. Typed create/update/delete operations persist desired state and, where runtime state is
+affected, an immutable candidate; they never activate implicitly. Canonical Admin-only typed
+activation and rollback verify complete schema-2 state and dependencies through the existing
+atomic coordinator. Deprecated Proxy Host activation/rollback aliases accept schema 1 only. GUI
+and browser-session work remain Phase 16 and cannot bypass this API boundary.
 
 Local socket peers are authenticated by kernel credentials and receive the
 fixed `admin` role. Automation may additionally send a bearer API token. Token
@@ -57,6 +56,11 @@ rust-proxy proxy-host activate --socket SOCKET --expect REV CANDIDATE_ID
 rust-proxy proxy-host rollback --socket SOCKET --expect REV HISTORICAL_REVISION
 rust-proxy proxy-host validate --socket SOCKET proxy-host.json
 rust-proxy proxy-host preview --socket SOCKET proxy-host.json
+rust-proxy access-policy list --socket SOCKET
+rust-proxy certificate list --socket SOCKET
+rust-proxy stream-host list --socket SOCKET
+rust-proxy discovery-source list --socket SOCKET
+rust-proxy credential list --socket SOCKET
 rust-proxy backup create --socket SOCKET --expect REV --output /backup/aegis.age
 rust-proxy backup verify /backup/aegis.age --identity file:///run/secrets/age-identity
 rust-proxy restore validate --socket SOCKET --expect REV /backup/aegis.age --identity file:///run/secrets/age-identity
@@ -71,9 +75,9 @@ For local socket authentication, `metadata.owner_id` in `proxy-host.json` is `ui
 requests use owner persisted with token. Validation requires `validate-config`; preview requires
 `preview-config`; list/get require `read-proxy-hosts`. Reads never cross authenticated owner and get
 returns object generation as an ETag. Validation/preview compile and semantically validate a
-redacted candidate without writing state,
-creating a revision, or activating runtime configuration. Current endpoint policy rejects
-access-policy references and managed HTTPS until typed ownership metadata is implemented.
+redacted candidate without writing state, creating a revision, or activating runtime
+configuration. Access-policy references require owned or explicitly shared policies. Managed HTTPS
+requires one owned or explicitly shared typed Certificate object with unambiguous domain coverage.
 Create additionally requires `create-proxy-host`, matching owner, exact active revision, durable
 audit intent, complete-state compilation, and an unchanged object-store epoch. It creates an
 immutable candidate plus private desired-state binding before generation-one desired state and
