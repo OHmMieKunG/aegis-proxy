@@ -380,10 +380,15 @@ async fn update<D: Domain>(
     let object_id = object.metadata.id.clone();
     let state_for_lookup = state.clone();
     let existing =
-        tokio::task::spawn_blocking(move || D::get(&state_for_lookup, &owner, &object_id))
+        match tokio::task::spawn_blocking(move || D::get(&state_for_lookup, &owner, &object_id))
             .await
-            .map_err(|_| ApiError::Internal)?
-            .ok_or(ApiError::NotFound)?;
+        {
+            Ok(Some(existing)) => existing,
+            Ok(None) => return Err(audited_failure(&audit, "not_found", ApiError::NotFound).await),
+            Err(_) => {
+                return Err(audited_failure(&audit, "store_failed", ApiError::Internal).await);
+            }
+        };
     if existing.generation != generation {
         return Err(audited_failure(&audit, "object_conflict", ApiError::ObjectConflict).await);
     }
@@ -425,16 +430,26 @@ async fn delete<D: Domain>(
         begin_domain_mutation(&state, &principal, &request_id, &current, D::DELETE, &id).await?;
     let expected = checked_revision(&state, &headers, &current, &audit).await?;
     let generation = checked_generation(&headers, &audit).await?;
-    let owner = principal.owner_id.clone().ok_or(ApiError::Forbidden)?;
-    let object_id = id.parse::<ObjectId>().map_err(|_| ApiError::NotFound)?;
+    let owner = match principal.owner_id.clone() {
+        Some(owner) => owner,
+        None => return Err(audited_failure(&audit, "owner_denied", ApiError::Forbidden).await),
+    };
+    let object_id = match id.parse::<ObjectId>() {
+        Ok(id) => id,
+        Err(_) => return Err(audited_failure(&audit, "not_found", ApiError::NotFound).await),
+    };
     let state_for_lookup = state.clone();
     let lookup_owner = owner.clone();
     let lookup_id = object_id.clone();
-    let existing =
-        tokio::task::spawn_blocking(move || D::get(&state_for_lookup, &lookup_owner, &lookup_id))
-            .await
-            .map_err(|_| ApiError::Internal)?
-            .ok_or(ApiError::NotFound)?;
+    let existing = match tokio::task::spawn_blocking(move || {
+        D::get(&state_for_lookup, &lookup_owner, &lookup_id)
+    })
+    .await
+    {
+        Ok(Some(existing)) => existing,
+        Ok(None) => return Err(audited_failure(&audit, "not_found", ApiError::NotFound).await),
+        Err(_) => return Err(audited_failure(&audit, "store_failed", ApiError::Internal).await),
+    };
     if existing.generation != generation {
         return Err(audited_failure(&audit, "object_conflict", ApiError::ObjectConflict).await);
     }

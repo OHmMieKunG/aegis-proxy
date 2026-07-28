@@ -257,13 +257,20 @@ pub(super) async fn renew_certificate_object(
     )
     .await?;
     checked_revision(&state, &headers, &current, &audit).await?;
-    let owner = principal.owner_id.ok_or(ApiError::Forbidden)?;
-    let object_id = id.parse::<ObjectId>().map_err(|_| ApiError::NotFound)?;
+    let owner = match principal.owner_id {
+        Some(owner) => owner,
+        None => return Err(audited_failure(&audit, "owner_denied", ApiError::Forbidden).await),
+    };
+    let object_id = match id.parse::<ObjectId>() {
+        Ok(id) => id,
+        Err(_) => return Err(audited_failure(&audit, "not_found", ApiError::NotFound).await),
+    };
     let store = Arc::clone(&state.certificates);
-    let stored = tokio::task::spawn_blocking(move || store.get(&owner, &object_id))
-        .await
-        .map_err(|_| ApiError::Internal)?
-        .ok_or(ApiError::NotFound)?;
+    let stored = match tokio::task::spawn_blocking(move || store.get(&owner, &object_id)).await {
+        Ok(Some(stored)) => stored,
+        Ok(None) => return Err(audited_failure(&audit, "not_found", ApiError::NotFound).await),
+        Err(_) => return Err(audited_failure(&audit, "store_failed", ApiError::Internal).await),
+    };
     let certificate_id = stored.object.spec.certificate_ref.to_string();
     if !state
         .control

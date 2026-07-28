@@ -117,7 +117,10 @@ pub(super) async fn update_credential(
         Err(error) => return Err(audited_failure(&audit, "invalid_generation", error).await),
     };
     let request = parse_credential(&headers, &principal, &body, &audit, false).await?;
-    let object_id = id.parse::<ObjectId>().map_err(|_| ApiError::NotFound)?;
+    let object_id = match id.parse::<ObjectId>() {
+        Ok(id) => id,
+        Err(_) => return Err(audited_failure(&audit, "not_found", ApiError::NotFound).await),
+    };
     if object_id != request.metadata.id {
         return Err(audited_failure(&audit, "invalid_object_id", ApiError::InvalidRequest).await);
     }
