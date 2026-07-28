@@ -81,6 +81,11 @@ enum Command {
         #[command(subcommand)]
         command: TokenCommand,
     },
+    /// Bootstrap loopback browser administration.
+    Web {
+        #[command(subcommand)]
+        command: WebCommand,
+    },
     /// Read, validate, or preview typed Proxy Hosts through the private socket.
     ProxyHost {
         #[command(subcommand)]
@@ -240,6 +245,16 @@ enum TokenCommand {
         expect: String,
         #[arg(allow_hyphen_values = true)]
         id: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum WebCommand {
+    /// Create a ten-minute one-use setup token and print its plaintext once.
+    SetupToken {
+        /// Private Unix socket path.
+        #[arg(long, default_value = "/run/rust-proxy/admin.sock")]
+        socket: PathBuf,
     },
 }
 
@@ -556,6 +571,7 @@ enum CliScope {
     CreateBackup,
     ValidateRestore,
     ManageIdentities,
+    CreateWebSetupToken,
 }
 
 impl CliScope {
@@ -613,6 +629,7 @@ impl CliScope {
             Self::CreateBackup => "create_backup",
             Self::ValidateRestore => "validate_restore",
             Self::ManageIdentities => "manage_identities",
+            Self::CreateWebSetupToken => "create_web_setup_token",
         }
     }
 }
@@ -817,6 +834,7 @@ async fn run(cli: Cli) -> Result<(), BoxError> {
         }
         Command::Certificate { command } => run_certificate_object_command(command).await?,
         Command::Token { command } => run_token_command(command).await?,
+        Command::Web { command } => run_web_command(command).await?,
         Command::ProxyHost { command } => run_proxy_host_command(command).await?,
         Command::AccessPolicy { command } => {
             run_owned_object_command(command, "access-policies").await?

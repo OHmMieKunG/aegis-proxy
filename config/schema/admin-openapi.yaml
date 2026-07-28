@@ -1,11 +1,11 @@
 openapi: 3.1.0
 info:
-  title: AegisProxy private administration API
+  title: AegisProxy administration API
   version: 1.0.0
   description: >-
-    Current private Unix-socket-only v1 contract. This document is not served by the daemon.
-    Typed Proxy Host validation and preview are non-persistent. Mutations persist owned desired
-    state and an immutable candidate but never activate it.
+    Current v1 contract. This document is not served by the daemon. Unless a route explicitly
+    says otherwise, the current implementation is available only through the private Unix socket.
+    Typed Proxy Host validation and preview are non-persistent.
 servers:
   - url: http://localhost
     description: HTTP over the configured private Unix socket
@@ -57,6 +57,35 @@ paths:
       operationId: status
       responses:
         "200": {description: Redacted process status}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/web/status:
+    get:
+      operationId: webStatus
+      security: []
+      responses:
+        "200":
+          description: Minimal browser-administration and setup-token availability
+          headers:
+            Cache-Control: {$ref: "#/components/headers/NoStore"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/WebStatus"}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/web/setup-token:
+    post:
+      operationId: createWebSetupToken
+      description: Authenticated Admin Unix peer only; bearer authentication is rejected.
+      x-aegis-authentication: unix-peer-only
+      security:
+        - unixPeer: []
+      responses:
+        "201":
+          description: Ten-minute one-use plaintext setup token returned once
+          headers:
+            Cache-Control: {$ref: "#/components/headers/NoStore"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/IssuedWebSetupToken"}
         default: {$ref: "#/components/responses/Error"}
   /v1/node/drain:
     post:
@@ -602,7 +631,7 @@ paths:
                 scopes:
                   type: array
                   minItems: 1
-                  maxItems: 52
+                  maxItems: 53
                   uniqueItems: true
                   items:
                     $ref: "#/components/schemas/TokenScope"
@@ -702,6 +731,10 @@ components:
       type: http
       scheme: bearer
       description: Optional on the private socket; local peer credentials remain mandatory.
+    unixPeer:
+      type: http
+      scheme: aegis-unix-peer
+      description: Operating-system peer credentials from the private Unix socket; no HTTP header is accepted.
   parameters:
     IfMatch:
       name: If-Match
@@ -736,6 +769,10 @@ components:
       name: limit
       in: query
       schema: {type: integer, minimum: 1, maximum: 100, default: 100}
+  headers:
+    NoStore:
+      description: Response must not be stored by any cache.
+      schema: {type: string, const: no-store}
   requestBodies:
     TomlConfig:
       required: true
@@ -1094,7 +1131,7 @@ components:
             changes: {type: array, minItems: 7, maxItems: 8, items: {type: object}}
     TokenScope:
       type: string
-      enum: [read_status, read_config, validate_config, preview_config, create_candidate, activate_config, rollback_config, read_revisions, read_proxy_hosts, create_proxy_host, update_proxy_host, delete_proxy_host, activate_proxy_host, rollback_proxy_host, activate_typed_candidate, rollback_typed_revision, read_access_policies, create_access_policy, update_access_policy, delete_access_policy, read_routes, read_upstreams, drain, read_certificates, read_certificate_objects, create_certificate, update_certificate, delete_certificate, read_stream_hosts, create_stream_host, update_stream_host, delete_stream_host, read_discovery_sources, create_discovery_source, update_discovery_source, delete_discovery_source, read_credentials, create_credential, update_credential, revoke_credential, renew_certificate, read_audit, create_backup, validate_restore, manage_identities, read_tokens, create_token, revoke_token, read_users, create_user, update_user, read_roles]
+      enum: [read_status, read_config, validate_config, preview_config, create_candidate, activate_config, rollback_config, read_revisions, read_proxy_hosts, create_proxy_host, update_proxy_host, delete_proxy_host, activate_proxy_host, rollback_proxy_host, activate_typed_candidate, rollback_typed_revision, read_access_policies, create_access_policy, update_access_policy, delete_access_policy, read_routes, read_upstreams, drain, read_certificates, read_certificate_objects, create_certificate, update_certificate, delete_certificate, read_stream_hosts, create_stream_host, update_stream_host, delete_stream_host, read_discovery_sources, create_discovery_source, update_discovery_source, delete_discovery_source, read_credentials, create_credential, update_credential, revoke_credential, renew_certificate, read_audit, create_backup, validate_restore, manage_identities, read_tokens, create_token, revoke_token, read_users, create_user, update_user, read_roles, create_web_setup_token]
     TokenMetadata:
       type: object
       additionalProperties: false
@@ -1112,7 +1149,7 @@ components:
             - {type: "null"}
         scopes:
           type: array
-          maxItems: 52
+          maxItems: 53
           uniqueItems: true
           items: {$ref: "#/components/schemas/TokenScope"}
         expires_unix_secs: {type: integer, minimum: 1}
@@ -1124,6 +1161,25 @@ components:
       properties:
         token: {type: string, description: Plaintext returned once and never persisted}
         metadata: {$ref: "#/components/schemas/TokenMetadata"}
+    WebStatus:
+      type: object
+      additionalProperties: false
+      required: [web_enabled, oidc_configured, setup_token_active]
+      properties:
+        web_enabled: {type: boolean}
+        oidc_configured: {type: boolean}
+        setup_token_active: {type: boolean}
+    IssuedWebSetupToken:
+      type: object
+      additionalProperties: false
+      required: [token, owner_id, expires_unix_secs]
+      properties:
+        token:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{43}$'
+          description: Plaintext returned once, retained only as an in-memory SHA-256 digest
+        owner_id: {$ref: "#/components/schemas/ObjectId"}
+        expires_unix_secs: {type: integer, minimum: 1}
     ErrorEnvelope:
       type: object
       additionalProperties: false

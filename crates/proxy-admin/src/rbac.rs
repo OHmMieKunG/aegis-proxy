@@ -125,6 +125,8 @@ pub enum Action {
     UpdateUser,
     /// Read immutable built-in roles.
     ReadRoles,
+    /// Create one short-lived browser first-run setup token.
+    CreateWebSetupToken,
 }
 
 /// Invalid API-token scope set.
@@ -276,7 +278,7 @@ impl Role {
 mod tests {
     use super::{Action, Role, TokenScopeError, TokenScopes};
 
-    const ACTIONS: [Action; 52] = [
+    const ACTIONS: [Action; 53] = [
         Action::ReadStatus,
         Action::ReadConfig,
         Action::ValidateConfig,
@@ -329,6 +331,7 @@ mod tests {
         Action::CreateUser,
         Action::UpdateUser,
         Action::ReadRoles,
+        Action::CreateWebSetupToken,
     ];
 
     #[test]
@@ -410,6 +413,7 @@ mod tests {
         assert!(!Role::Operator.allows(Action::ActivateConfig));
         assert!(!Role::Operator.allows(Action::ReadAudit));
         assert!(Role::Admin.allows(Action::ManageIdentities));
+        assert!(!Role::Operator.allows(Action::CreateWebSetupToken));
     }
 
     #[test]

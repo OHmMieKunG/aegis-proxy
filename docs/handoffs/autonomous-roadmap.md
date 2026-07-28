@@ -2,11 +2,10 @@
 
 Updated: 2026-07-28
 
-- Current branch: `chore/phase-15-closeout`
-- Baseline: `dev@eb107ec`
-- Current phase: Phase 15 completion
-- Phase 16 status: approved to begin after merge
-- Expected working tree after closeout commit: clean
+- Current branch: `feat/phase-16-gui-mvp`
+- Baseline: merged Phase 15 closeout at `dev@714d6c4`
+- Current phase: Phase 16 GUI MVP
+- Phase 16 status: active
 
 ## Completed closeout work
 
@@ -16,7 +15,7 @@ Proxy Host persistence. Compiler, Access Policy, and object-store tests are exte
 CLI administration dispatch is separate from process wiring. No production Rust module exceeds
 1,200 measured lines.
 
-Regression coverage freezes the exact 52-action role matrix, OpenAPI scope order, authorization
+Regression coverage froze the exact Phase 15 52-action role matrix, OpenAPI scope order, authorization
 before typed deserialization, shared-store cross-owner hiding, schema-1 deprecated aliases versus
 schema-2 canonical routes, legacy subjectless/unscoped token behavior, candidate tamper detection,
 retention, and rollback recovery. The checked OpenAPI, configuration schema, manifests, defaults,
@@ -27,9 +26,8 @@ that timed-out handlers also needed an explicit shutdown drain and that User sto
 capacity response. Candidate `efcd0c3` fixes all five findings. Candidates `5a32495` and `f1bfd08`
 are retired; independent review must use `efcd0c3`.
 
-Administration documentation now describes all implemented Phase 15 typed domains, current
-certificate route separation, compatibility, and downgrade rules. No frontend dependency, TCP
-listener, browser route, OIDC state, or session code has entered the branch.
+Administration documentation describes all implemented Phase 15 typed domains, current certificate
+route separation, compatibility, and downgrade rules.
 
 ## Phase 15 decision
 
@@ -37,10 +35,20 @@ The project owner approved merging and Phase 16 progression on 2026-07-28, waivi
 review prerequisite for phase progression only. The completion report records the exception.
 Independent application-security review remains required for production release.
 
+## Completed Phase 16 units
+
+- ADR-0030 selects embedded React/Vite packaging with no Node production runtime.
+- Default-disabled restart-only loopback web/OIDC configuration validates exact origin, issuer,
+  group mappings, and secret-reference redaction.
+- Private `GET /v1/web/status` and Admin/Unix-peer-only `POST /v1/web/setup-token` are frozen in
+  OpenAPI. Setup tokens are 256-bit, ten-minute, hash-only, restart-ephemeral, owner-bound, audited,
+  and displayed once through `rust-proxy web setup-token`.
+
 ## Exact next task
 
-Merge closeout to `dev`, branch `feat/phase-16-gui-mvp`, and begin the frontend/packaging ADR plus
-default-disabled loopback web configuration.
+Implement bounded OIDC discovery/JWKS/token exchange and provisional browser sessions, then connect
+setup-token redemption to the durable issuer/subject ownership binding. Do not add the React
+dependency tree until the browser authentication boundary is runnable and tested.
 
 ## Known risks
 

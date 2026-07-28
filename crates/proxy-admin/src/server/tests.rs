@@ -86,6 +86,8 @@ fn checked_openapi_contains_every_private_route() {
         "/v1/live:",
         "/v1/ready:",
         "/v1/status:",
+        "/v1/web/status:",
+        "/v1/web/setup-token:",
         "/v1/node/drain:",
         "/v1/config/active:",
         "/v1/config/validate:",
@@ -192,6 +194,7 @@ fn checked_openapi_contains_every_private_route() {
         "create_user",
         "update_user",
         "read_roles",
+        "create_web_setup_token",
     ];
     let scope_line = openapi
         .lines()
@@ -208,7 +211,9 @@ fn checked_openapi_contains_every_private_route() {
             .collect::<Vec<_>>(),
         scopes
     );
-    assert_eq!(openapi.matches("maxItems: 52").count(), 2);
+    assert_eq!(openapi.matches("maxItems: 53").count(), 2);
+    assert!(openapi.contains("x-aegis-authentication: unix-peer-only"));
+    assert!(openapi.contains("scheme: aegis-unix-peer"));
     assert!(openapi.contains("operationId: createAccessPolicy"));
     assert!(openapi.contains("operationId: updateAccessPolicy"));
     assert!(openapi.contains("operationId: deleteAccessPolicy"));

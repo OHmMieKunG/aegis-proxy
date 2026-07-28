@@ -35,6 +35,87 @@ pub(in crate::server) async fn list_tokens(
     Ok(axum::Json(state.tokens.list()))
 }
 
+pub(in crate::server) async fn web_status(
+    State(state): State<AppState>,
+) -> Result<Response, ApiError> {
+    let config = state.control.runtime().config();
+    let now = unix_time().unwrap_or(u64::MAX);
+    let body = serde_json::to_vec(&WebStatusResponse {
+        web_enabled: config.admin.web.enabled,
+        oidc_configured: config.admin.web.oidc.is_some(),
+        setup_token_active: state.web_setup_tokens.is_active(now),
+    })
+    .map_err(|_| ApiError::Internal)?;
+    no_store_json(StatusCode::OK, body)
+}
+
+pub(in crate::server) async fn create_web_setup_token(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    principal: Principal,
+) -> Result<Response, ApiError> {
+    let current = state.control.runtime().revision().to_string();
+    let audit = begin_mutation(
+        &state,
+        &principal,
+        &request_id,
+        Some(current),
+        MutationSpec {
+            permission: Action::CreateWebSetupToken,
+            action: "web_setup_token_create",
+            resource_id: "web_setup",
+            new_revision: None,
+        },
+    )
+    .await?;
+    let expected_owner = format!("uid-{}", principal.actor_id);
+    let Some(owner_id) = principal.owner_id.filter(|owner| {
+        principal.actor_type == "unix_peer" && owner.as_str() == expected_owner.as_str()
+    }) else {
+        return Err(audited_failure(&audit, "unix_peer_required", ApiError::Forbidden).await);
+    };
+    let config = state.control.runtime().config();
+    if !config.admin.web.enabled || config.admin.web.oidc.is_none() {
+        return Err(audited_failure(&audit, "web_oidc_unavailable", ApiError::Unavailable).await);
+    }
+    let Some(now) = unix_time() else {
+        return Err(audited_failure(&audit, "clock_unavailable", ApiError::Unavailable).await);
+    };
+    let prepared = match WebSetupTokens::prepare(owner_id, now) {
+        Some(issued) => issued,
+        None => {
+            return Err(
+                audited_failure(&audit, "setup_token_unavailable", ApiError::Unavailable).await,
+            );
+        }
+    };
+    let body = match serde_json::to_vec(&IssuedWebSetupTokenBody {
+        token: prepared.plaintext(),
+        owner_id: prepared.owner_id(),
+        expires_unix_secs: prepared.expires_unix_secs(),
+    }) {
+        Ok(body) => body,
+        Err(_) => {
+            return Err(audited_failure(&audit, "response_failed", ApiError::Internal).await);
+        }
+    };
+    audit.record(AuditOutcome::Success, None, None).await?;
+    state.web_setup_tokens.install(&prepared);
+    no_store_json(StatusCode::CREATED, body)
+}
+
+fn no_store_json(status: StatusCode, body: Vec<u8>) -> Result<Response, ApiError> {
+    let mut response = Response::new(axum::body::Body::from(body));
+    *response.status_mut() = status;
+    response
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(response)
+}
+
 pub(in crate::server) async fn create_token(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,

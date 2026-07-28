@@ -49,6 +49,7 @@ mod unix {
         state: &Path,
         audit_key: &Path,
         port: u16,
+        web_port: u16,
         telemetry_port: u16,
         priority: i32,
     ) {
@@ -63,6 +64,19 @@ config_poll_secs = 300
 audit_key = {audit:?}
 requests_per_second = 100
 burst = 200
+
+[admin.web]
+enabled = true
+bind = "127.0.0.1:{web_port}"
+origin = "http://localhost:{web_port}"
+
+[admin.web.oidc]
+issuer = "https://login.example.test"
+client_id = "aegisproxy-test"
+client_secret = {audit:?}
+
+[admin.web.oidc.groups]
+admin = ["aegis-admins"]
 
 [observability.otlp_traces]
 endpoint = "http://127.0.0.1:{telemetry_port}/v1/traces"
@@ -295,6 +309,11 @@ allow = ["127.0.0.1/32"]
             .local_addr()
             .expect("slow telemetry address")
             .port();
+        let web_port = TcpListener::bind("127.0.0.1:0")
+            .expect("web port")
+            .local_addr()
+            .expect("web address")
+            .port();
         thread::spawn(move || {
             if slow_telemetry.accept().is_ok() {
                 thread::sleep(Duration::from_secs(5));
@@ -303,9 +322,33 @@ allow = ["127.0.0.1/32"]
         let configured = root.join("proxy.toml");
         let first = root.join("first.toml");
         let second = root.join("second.toml");
-        write_config(&configured, &state, &audit_key, port, telemetry_port, 0);
-        write_config(&first, &state, &audit_key, port, telemetry_port, 1);
-        write_config(&second, &state, &audit_key, port, telemetry_port, 2);
+        write_config(
+            &configured,
+            &state,
+            &audit_key,
+            port,
+            web_port,
+            telemetry_port,
+            0,
+        );
+        write_config(
+            &first,
+            &state,
+            &audit_key,
+            port,
+            web_port,
+            telemetry_port,
+            1,
+        );
+        write_config(
+            &second,
+            &state,
+            &audit_key,
+            port,
+            web_port,
+            telemetry_port,
+            2,
+        );
 
         let log_path = root.join("daemon.jsonl");
         let log = fs::File::create(&log_path).expect("log file");
@@ -322,6 +365,39 @@ allow = ["127.0.0.1/32"]
         let socket = state.join("admin/admin.sock");
         wait_for_socket(&mut daemon.child, &socket);
         let socket = socket.to_str().expect("socket UTF-8");
+        let initial_web_status = raw_get(socket, "/v1/web/status");
+        assert!(initial_web_status.starts_with("HTTP/1.1 200 "));
+        assert!(initial_web_status.contains("\r\ncache-control: no-store\r\n"));
+        let initial_web_json: serde_json::Value = serde_json::from_str(
+            initial_web_status
+                .split_once("\r\n\r\n")
+                .expect("web status body")
+                .1,
+        )
+        .expect("web status JSON");
+        assert_eq!(initial_web_json["web_enabled"], true);
+        assert_eq!(initial_web_json["oidc_configured"], true);
+        assert_eq!(initial_web_json["setup_token_active"], false);
+        let setup = run(&["web", "setup-token", "--socket", socket]);
+        assert!(setup.status.success(), "{:?}", setup.stderr);
+        let setup_json: serde_json::Value =
+            serde_json::from_slice(&setup.stdout).expect("setup token JSON");
+        let setup_plaintext = setup_json["token"]
+            .as_str()
+            .expect("setup token plaintext")
+            .to_owned();
+        assert_eq!(setup_plaintext.len(), 43);
+        assert_eq!(setup_json["owner_id"], owner);
+        assert!(
+            setup_json["expires_unix_secs"]
+                .as_u64()
+                .expect("setup expiry")
+                > SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("test clock")
+                    .as_secs()
+        );
+        assert!(raw_get(socket, "/v1/web/status").contains("\"setup_token_active\":true"));
         let owned_policies = run(&["access-policy", "list", "--socket", socket]);
         assert!(owned_policies.status.success());
         let policies: serde_json::Value =
@@ -592,7 +668,11 @@ allow = ["127.0.0.1/32"]
         ]);
         assert_eq!(denied_owner.status.code(), Some(5));
 
-        for (id, role) in [("viewer-user", "viewer"), (owner.as_str(), "operator")] {
+        for (id, role) in [
+            ("viewer-user", "viewer"),
+            (owner.as_str(), "operator"),
+            ("admin-user", "admin"),
+        ] {
             let path = daemon.root.join(format!("{id}.json"));
             fs::write(
                 &path,
@@ -630,6 +710,38 @@ allow = ["127.0.0.1/32"]
             .output()
             .expect("stale user update");
         assert_eq!(stale_user_update.status.code(), Some(4));
+        let web_bearer = run(&[
+            "token",
+            "create",
+            "--socket",
+            socket,
+            "--expect",
+            &current,
+            "--user-ref",
+            "admin-user",
+            "--scope",
+            "create-web-setup-token",
+            "--ttl-secs",
+            "600",
+        ]);
+        assert!(web_bearer.status.success(), "{:?}", web_bearer.stderr);
+        let web_bearer_json: serde_json::Value =
+            serde_json::from_slice(&web_bearer.stdout).expect("web bearer JSON");
+        let web_bearer_plaintext = web_bearer_json["token"]
+            .as_str()
+            .expect("web bearer plaintext");
+        let denied_web_setup = raw_json_post(
+            socket,
+            "/v1/web/setup-token",
+            &current,
+            Some(web_bearer_plaintext),
+            "application/json",
+            "{}",
+        );
+        assert!(
+            denied_web_setup.starts_with("HTTP/1.1 403 "),
+            "{denied_web_setup}"
+        );
 
         let escalation = run(&[
             "token",
@@ -1177,6 +1289,7 @@ allow = ["127.0.0.1/32"]
             &state,
             &audit_key,
             port,
+            web_port,
             telemetry_port,
             99,
         );
@@ -1854,6 +1967,7 @@ allow = ["127.0.0.1/32"]
         assert!(audit.contains("\"action\":\"access_policy_create\""));
         assert!(audit.contains("\"action\":\"access_policy_update\""));
         assert!(audit.contains("\"action\":\"access_policy_delete\""));
+        assert!(audit.contains("\"action\":\"web_setup_token_create\""));
         let audit_records = audit
             .lines()
             .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("audit JSON"))
@@ -1877,6 +1991,8 @@ allow = ["127.0.0.1/32"]
                 .all(|line| line.contains("\"node_id\":\"node-a\""))
         );
         assert!(!audit.contains(plaintext));
+        assert!(!audit.contains(&setup_plaintext));
+        assert!(!audit.contains(web_bearer_plaintext));
         let logs = fs::read_to_string(log_path).expect("structured logs");
         assert!(
             logs.lines()
@@ -1889,6 +2005,8 @@ allow = ["127.0.0.1/32"]
             "AGENT_CANARY",
             "HEADER_CANARY",
             plaintext,
+            &setup_plaintext,
+            web_bearer_plaintext,
         ] {
             assert!(!logs.contains(canary));
         }

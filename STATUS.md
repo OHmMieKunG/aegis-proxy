@@ -83,7 +83,7 @@ evidence.
   side-effect-free typed preview, and bounded field-level diff. Existing primitives validate
   ownership, references, domains, conflicts, listener/certificate policy, generated configuration,
   redaction, fingerprints, restart classification, and owner/object identity during diff. Existing
-  low-level API tokens use a complete 52-action role-and-scope intersection. Private typed Proxy
+  low-level API tokens use a complete 53-action role-and-scope intersection. Private typed Proxy
   Host validation and preview endpoints authenticate and authorize before JSON deserialization,
   enforce principal ownership, reject persisted identity/domain conflicts, and cannot persist or
   activate. The bounded private typed object store is opened at administration startup and exposes
@@ -151,8 +151,10 @@ evidence.
 roadmap progression under the project-owner exception recorded in
 [the completion report](docs/reviews/phase-15-completion.md). Independent application-security
 review remains a production-release blocker. Phase 16 now has ADR-0030 plus default-disabled
-restart-only web/OIDC configuration validation and redaction. No browser listener, session, route,
-asset, or frontend dependency exists yet.
+restart-only web/OIDC configuration validation and redaction. The Unix API now provides minimal
+unauthenticated web status and an audited Admin/Unix-peer-only, hash-only, ten-minute setup-token
+operation with one-time CLI display and a frozen OpenAPI contract. No browser listener, OIDC
+exchange, session, asset, or frontend dependency exists yet.
 
 ## Release blockers
 
@@ -178,9 +180,9 @@ asset, or frontend dependency exists yet.
 | `cargo tree -e features` | passed; 2,440 output lines |
 | `cargo check --manifest-path fuzz/Cargo.toml --all-targets` | passed |
 | Phase 15 OpenAPI/config-schema/manifest/lock comparison against `dev@eb107ec` | passed; no differences |
-| Admin OpenAPI | checked in Rust and parsed with Python/PyYAML; includes typed rollback and 52 token scopes |
+| Admin OpenAPI | checked in Rust and parsed with Python/PyYAML; includes typed rollback, web bootstrap, and 53 token scopes |
 | Phase 15 production-module size gate | passed; largest measured module is 1,129 lines |
-| authorization/ownership/migration/secret/tamper/recovery coverage | passed in the 86-test Admin suite and CLI integration |
+| authorization/ownership/migration/secret/tamper/recovery coverage | passed in the 87-test Admin suite and CLI integration; includes setup-token expiry/replacement/replay, Unix-peer enforcement, audit, and canaries |
 
 ## Unavailable or incomplete checks
 

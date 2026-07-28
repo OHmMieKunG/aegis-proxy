@@ -81,6 +81,10 @@ AegisProxy has not published a supported release.
 - Began Phase 16 with the embedded React/Vite packaging ADR and default-disabled restart-only
   loopback web/OIDC configuration, including exact-origin, issuer, group-conflict, and
   secret-redaction validation.
+- Added minimal web availability status and an audited Admin/Unix-peer-only first-run setup-token
+  API/CLI contract. One 256-bit ten-minute token is retained only as a process-memory SHA-256
+  digest, bound to the peer's `uid-<uid>` owner, and returned once with `no-store`; the RBAC and
+  scope vocabulary now contains 53 actions.
 - Added bounded encrypted Stored Credentials with write-only create/rotation values, redacted
   owner-scoped metadata, exact scopes, CLI lifecycle, and ciphertext removal on revoke.
 - Added durable Users, read-only built-in Roles, exact identity/token scopes, and subject-bound

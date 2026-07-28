@@ -213,7 +213,11 @@ compatibility policy.
 Default-disabled `[admin.web]` configuration now validates a nonzero loopback bind, one exact
 same-port `http://localhost` origin, canonical HTTPS OIDC issuer, bounded secret references,
 top-level groups claim, and disjoint bounded built-in-role group mappings. Web/OIDC changes are
-restart-only and secret references are redacted from preview.
+restart-only and secret references are redacted from preview. The private Unix API now exposes
+minimal unauthenticated web availability plus an audited Admin/Unix-peer-only setup-token
+operation. It retains one ten-minute token only as an in-memory SHA-256 digest, binds it to the
+caller's `uid-<uid>` owner, returns plaintext once with `no-store`, and has matching CLI/OpenAPI
+contracts.
 
 **Objective:** make common reverse-proxy administration safe without low-level proxy knowledge.
 

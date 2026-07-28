@@ -138,6 +138,26 @@ pub(super) async fn run_token_command(command: TokenCommand) -> Result<(), BoxEr
     Ok(())
 }
 
+pub(super) async fn run_web_command(command: WebCommand) -> Result<(), BoxError> {
+    let WebCommand::SetupToken { socket } = command;
+    let response = admin_request(
+        &AdminConnection {
+            socket,
+            token_ref: None,
+        },
+        Method::POST,
+        "/v1/web/setup-token",
+        None,
+        None,
+        Vec::new(),
+    )
+    .await?;
+    require_admin_success(&response)?;
+    io::stdout().lock().write_all(&response.body)?;
+    writeln!(io::stdout().lock())?;
+    Ok(())
+}
+
 pub(super) async fn run_proxy_host_command(command: ProxyHostCommand) -> Result<(), BoxError> {
     let response = match command {
         ProxyHostCommand::List { admin } => {

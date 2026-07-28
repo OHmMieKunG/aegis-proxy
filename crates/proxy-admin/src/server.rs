@@ -7,6 +7,7 @@ mod handlers;
 mod support;
 mod unified;
 mod users;
+mod web_setup;
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -31,7 +32,7 @@ use axum::{
     },
     http::{
         HeaderMap, HeaderValue, StatusCode,
-        header::{AUTHORIZATION, CONTENT_TYPE, ETAG, IF_MATCH},
+        header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, ETAG, IF_MATCH},
         request::Parts,
     },
     middleware::{self, Next},
@@ -65,6 +66,7 @@ use handlers::*;
 use support::*;
 use unified::*;
 use users::*;
+use web_setup::*;
 
 const AUDIT_KEY_BYTES: usize = 64;
 const REQUEST_ID_BYTES: usize = 16;
@@ -127,6 +129,7 @@ struct AppState {
     discovery_sources: Arc<DiscoverySourceStore>,
     credentials: Arc<CredentialStore>,
     users: Arc<UserStore>,
+    web_setup_tokens: Arc<WebSetupTokens>,
     audit: Option<Arc<AuditLog>>,
     allowed_uids: Arc<[u32]>,
     auth_permits: Arc<Semaphore>,
@@ -437,6 +440,13 @@ struct StatusResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct WebStatusResponse {
+    web_enabled: bool,
+    oidc_configured: bool,
+    setup_token_active: bool,
+}
+
+#[derive(Debug, Serialize)]
 struct HealthDetailsResponse {
     request_id: String,
     status: &'static str,
@@ -606,6 +616,13 @@ struct IssuedTokenBody<'a> {
 }
 
 #[derive(Debug, Serialize)]
+struct IssuedWebSetupTokenBody<'a> {
+    token: &'a str,
+    owner_id: &'a ObjectId,
+    expires_unix_secs: u64,
+}
+
+#[derive(Debug, Serialize)]
 struct RevocationResponse {
     revoked: bool,
 }
@@ -745,6 +762,7 @@ pub async fn serve(
         discovery_sources: Arc::new(discovery_source_store),
         credentials: Arc::new(credential_store),
         users: Arc::new(user_store),
+        web_setup_tokens: Arc::new(WebSetupTokens::new()),
         audit,
         allowed_uids: Arc::from(config.admin.allowed_uids.clone()),
         auth_permits: Arc::new(Semaphore::new(config.admin.max_auth_in_flight)),
@@ -769,6 +787,8 @@ pub async fn serve(
         .route("/v1/ready", get(ready))
         .route("/metrics", get(metrics))
         .route("/v1/status", get(status))
+        .route("/v1/web/status", get(web_status))
+        .route("/v1/web/setup-token", post(create_web_setup_token))
         .route("/v1/node/drain", post(drain_node))
         .route("/v1/config/active", get(active_config))
         .route("/v1/config/validate", post(validate_config))

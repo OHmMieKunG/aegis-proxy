@@ -19,7 +19,11 @@ backup creation, and restore validation. Owner-scoped typed APIs cover Proxy Hos
 Discovery Sources, Certificates, Access Policies, write-only Stored Credentials, Users, and
 immutable Roles. Runtime-changing typed mutations create non-active schema-2 candidates; verified
 Admin-only activation and forward rollback remain explicit. Restore does not extract state. No
-TCP/public admin listener, browser session, or web GUI exists.
+TCP/public admin listener, browser session, or web GUI exists. Phase 16 adds two private bootstrap
+routes: unauthenticated `GET /v1/web/status` returns only configuration/token availability, while
+audited `POST /v1/web/setup-token` accepts only an Admin Unix peer. It creates one 256-bit,
+ten-minute, process-memory token bound to `uid-<uid>`, stores only its SHA-256 digest, and returns
+plaintext once with `Cache-Control: no-store`.
 
 Phase 15 now includes a library-only strict Proxy Host object and side-effect-free compiler. Caller
 RBAC supplies immutable owner, object, domain, policy, listener, certificate, and upstream-template
