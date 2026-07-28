@@ -22,6 +22,141 @@ fn validates_private_admin_settings() {
     assert!(validate(&config).is_err());
 }
 
+fn valid_admin_web() -> AdminWebConfig {
+    AdminWebConfig {
+        enabled: true,
+        bind: "127.0.0.1:9090".parse().expect("web bind"),
+        origin: "http://localhost:9090".into(),
+        oidc: Some(AdminWebOidcConfig {
+            issuer: "https://idp.example.test/tenant".into(),
+            client_id: "aegis-proxy".into(),
+            client_secret: "file:///run/secrets/oidc-client".into(),
+            ca_bundle: None,
+            groups_claim: "groups".into(),
+            groups: AdminWebOidcGroups {
+                viewer: vec!["aegis-viewers".into()],
+                auditor: vec!["aegis-auditors".into()],
+                operator: vec!["aegis-operators".into()],
+                admin: vec!["aegis-admins".into()],
+            },
+        }),
+    }
+}
+
+#[test]
+fn validates_loopback_web_origin_and_oidc_policy() {
+    let mut config = base_config();
+    assert!(!config.admin.web.enabled);
+    validate(&config).expect("default-disabled browser administration");
+
+    config.admin = toml::from_str(
+        r#"
+            [web]
+            enabled = true
+            bind = "127.0.0.1:9090"
+            origin = "http://localhost:9090"
+
+            [web.oidc]
+            issuer = "https://idp.example.test/tenant"
+            client_id = "aegis-proxy"
+            client_secret = "file:///run/secrets/oidc-client"
+
+            [web.oidc.groups]
+            viewer = ["aegis-viewers"]
+            auditor = ["aegis-auditors"]
+            operator = ["aegis-operators"]
+            admin = ["aegis-admins"]
+        "#,
+    )
+    .expect("browser administration TOML");
+    assert_eq!(
+        config
+            .admin
+            .web
+            .oidc
+            .as_ref()
+            .expect("OIDC")
+            .groups_claim,
+        "groups"
+    );
+    validate(&config).expect("valid browser administration");
+
+    for bind in ["0.0.0.0:9090", "192.0.2.1:9090", "127.0.0.1:0"] {
+        let mut invalid = config.clone();
+        invalid.admin.web.bind = bind.parse().expect("invalid bind shape");
+        assert!(validate(&invalid).is_err(), "accepted web bind {bind}");
+    }
+    for origin in [
+        "http://127.0.0.1:9090",
+        "http://localhost:9091",
+        "https://localhost:9090",
+        "http://localhost:9090/",
+        "http://localhost:9090/path",
+        "http://user@localhost:9090",
+        "http://localhost:9090?query",
+        "http://localhost:9090#fragment",
+    ] {
+        let mut invalid = config.clone();
+        invalid.admin.web.origin = origin.into();
+        assert!(validate(&invalid).is_err(), "accepted web origin {origin}");
+    }
+
+    let mut missing_oidc = config.clone();
+    missing_oidc.admin.web.oidc = None;
+    assert!(validate(&missing_oidc).is_err());
+}
+
+#[test]
+fn rejects_unsafe_oidc_and_conflicting_role_groups() {
+    let mut config = base_config();
+    config.admin.web = valid_admin_web();
+
+    for issuer in [
+        "http://idp.example.test",
+        "https://user@idp.example.test",
+        "https://idp.example.test?query",
+        "https://IDP.example.test",
+    ] {
+        let mut invalid = config.clone();
+        invalid
+            .admin
+            .web
+            .oidc
+            .as_mut()
+            .expect("OIDC")
+            .issuer = issuer.into();
+        assert!(validate(&invalid).is_err(), "accepted issuer {issuer}");
+    }
+
+    let oidc = config.admin.web.oidc.as_mut().expect("OIDC");
+    oidc.groups.viewer.push("aegis-admins".into());
+    assert!(validate(&config).is_err());
+
+    let mut no_admin = base_config();
+    no_admin.admin.web = valid_admin_web();
+    no_admin
+        .admin
+        .web
+        .oidc
+        .as_mut()
+        .expect("OIDC")
+        .groups
+        .admin
+        .clear();
+    assert!(validate(&no_admin).is_err());
+
+    let mut bad_secret = base_config();
+    bad_secret.admin.web = valid_admin_web();
+    bad_secret
+        .admin
+        .web
+        .oidc
+        .as_mut()
+        .expect("OIDC")
+        .client_secret = "https://idp.example.test/secret".into();
+    assert!(validate(&bad_secret).is_err());
+}
+
 #[test]
 fn rejects_remote_admin_listener_configuration() {
     let source = r#"

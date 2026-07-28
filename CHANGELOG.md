@@ -78,6 +78,9 @@ AegisProxy has not published a supported release.
 - Added deterministic schema-2 unified typed snapshots, canonical preview/activation/rollback
   routes, exact Access Policy and Certificate dependency binding, and schema-1 compatibility
   limited to deprecated Proxy Host aliases.
+- Began Phase 16 with the embedded React/Vite packaging ADR and default-disabled restart-only
+  loopback web/OIDC configuration, including exact-origin, issuer, group-conflict, and
+  secret-redaction validation.
 - Added bounded encrypted Stored Credentials with write-only create/rotation values, redacted
   owner-scoped metadata, exact scopes, CLI lifecycle, and ciphertext removal on revoke.
 - Added durable Users, read-only built-in Roles, exact identity/token scopes, and subject-bound

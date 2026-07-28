@@ -898,6 +898,8 @@ pub struct AdminConfig {
     pub requests_per_second: u32,
     /// Per-principal request burst.
     pub burst: u32,
+    /// Optional loopback browser administration.
+    pub web: AdminWebConfig,
 }
 
 impl Default for AdminConfig {
@@ -912,8 +914,72 @@ impl Default for AdminConfig {
             request_timeout_secs: 10,
             requests_per_second: 20,
             burst: 40,
+            web: AdminWebConfig::default(),
         }
     }
+}
+
+/// Default-disabled browser administration listener.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AdminWebConfig {
+    /// Enable the loopback browser listener after restart.
+    pub enabled: bool,
+    /// Loopback socket address used by the browser listener.
+    pub bind: SocketAddr,
+    /// Exact canonical browser origin without a trailing slash.
+    pub origin: String,
+    /// OIDC policy required when browser administration is enabled.
+    pub oidc: Option<AdminWebOidcConfig>,
+}
+
+impl Default for AdminWebConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind: SocketAddr::from(([127, 0, 0, 1], 9090)),
+            origin: "http://localhost:9090".into(),
+            oidc: None,
+        }
+    }
+}
+
+/// Browser OIDC provider and fixed-role group mapping.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdminWebOidcConfig {
+    /// Exact canonical HTTPS issuer.
+    pub issuer: String,
+    /// Public OIDC client identifier.
+    pub client_id: String,
+    /// Secret reference for the OIDC client secret.
+    pub client_secret: String,
+    /// Optional secret reference for a private issuer CA bundle.
+    #[serde(default)]
+    pub ca_bundle: Option<String>,
+    /// Top-level ID-token string-array claim containing group names.
+    #[serde(default = "default_groups_claim")]
+    pub groups_claim: String,
+    /// Exact group names mapped to built-in roles.
+    pub groups: AdminWebOidcGroups,
+}
+
+/// Exact OIDC group names mapped to built-in roles.
+#[derive(Clone, Debug, Deserialize, Default, Eq, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AdminWebOidcGroups {
+    /// Groups mapped to Viewer.
+    pub viewer: Vec<String>,
+    /// Groups mapped to Auditor.
+    pub auditor: Vec<String>,
+    /// Groups mapped to Operator.
+    pub operator: Vec<String>,
+    /// Groups mapped to Admin.
+    pub admin: Vec<String>,
+}
+
+fn default_groups_claim() -> String {
+    "groups".into()
 }
 
 /// Bounded process telemetry policy.

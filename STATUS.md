@@ -1,7 +1,7 @@
 # AegisProxy verified status
 
 Verification date: 2026-07-28
-Branch: `chore/phase-15-closeout`
+Branch: `feat/phase-16-gui-mvp`
 Verification basis: Phase 14 plus Phase 15 compiler `fa7913f`, preview service `d3de105`, typed diff
 `2617f0e`, API-token scopes `81bd500`, owned Proxy Host endpoints `00cfa32`, typed object store
 `5c8898b`, owner-scoped typed reads `d1514dd`, aggregate compiler `35d7d38`, mutation-scope fix
@@ -150,7 +150,9 @@ evidence.
 [Phase 16 NPMPlus-style GUI MVP](PLAN.md#phase-16--npmplus-style-gui-mvp). Phase 15 is complete for
 roadmap progression under the project-owner exception recorded in
 [the completion report](docs/reviews/phase-15-completion.md). Independent application-security
-review remains a production-release blocker. Phase 16 browser work has not started.
+review remains a production-release blocker. Phase 16 now has ADR-0030 plus default-disabled
+restart-only web/OIDC configuration validation and redaction. No browser listener, session, route,
+asset, or frontend dependency exists yet.
 
 ## Release blockers
 
@@ -168,11 +170,11 @@ review remains a production-release blocker. Phase 16 browser work has not start
 | `cargo fmt --all -- --check` | passed |
 | `cargo check --workspace --all-targets --all-features` | passed; transitive warning below |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | passed |
-| `cargo test --workspace --all-features` | passed: 339 passed, 2 intentionally ignored |
+| `cargo test --workspace --all-features` | passed: 342 passed, 2 intentionally ignored |
 | `cargo test --workspace --doc` | passed; no doctests defined |
 | valid configuration corpus | seven accepted |
 | invalid configuration corpus | three rejected as expected |
-| changed documentation link targets | passed: seven changed Markdown files; every relative target exists |
+| changed documentation link targets | passed: every relative target in current changed Markdown files exists |
 | `cargo tree -e features` | passed; 2,440 output lines |
 | `cargo check --manifest-path fuzz/Cargo.toml --all-targets` | passed |
 | Phase 15 OpenAPI/config-schema/manifest/lock comparison against `dev@eb107ec` | passed; no differences |

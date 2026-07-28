@@ -11,6 +11,12 @@ pub fn redacted(config: &Config) -> Config {
     if output.admin.audit_key.is_some() {
         output.admin.audit_key = Some(REDACTED.into());
     }
+    if let Some(oidc) = &mut output.admin.web.oidc {
+        oidc.client_secret = REDACTED.into();
+        if oidc.ca_bundle.is_some() {
+            oidc.ca_bundle = Some(REDACTED.into());
+        }
+    }
     if output.tls.identity.is_some() {
         output.tls.identity = Some(REDACTED.into());
     }
@@ -60,9 +66,9 @@ mod tests {
 
     use crate::{
         AcmeConfig, AcmeDnsProviderConfig, AcmeEnvironment, AcmeExternalAccountConfig,
-        AcmeIssuerConfig, AdminConfig, CertificateConfig, Config, EndpointConfig, LimitsConfig,
-        ListenerConfig, ObservabilityConfig, RuntimeConfig, TlsConfig, TrustedProxyConfig,
-        UpstreamGroupConfig,
+        AcmeIssuerConfig, AdminConfig, AdminWebConfig, AdminWebOidcConfig, AdminWebOidcGroups,
+        CertificateConfig, Config, EndpointConfig, LimitsConfig, ListenerConfig,
+        ObservabilityConfig, RuntimeConfig, TlsConfig, TrustedProxyConfig, UpstreamGroupConfig,
     };
 
     use super::*;
@@ -145,12 +151,26 @@ mod tests {
             routes: vec![],
             admin: AdminConfig {
                 audit_key: Some("env://CANARY_AUDIT".into()),
+                web: AdminWebConfig {
+                    oidc: Some(AdminWebOidcConfig {
+                        issuer: "https://idp.example.test".into(),
+                        client_id: "aegis".into(),
+                        client_secret: "env://CANARY_OIDC_SECRET".into(),
+                        ca_bundle: Some("file:///CANARY_OIDC_CA".into()),
+                        groups_claim: "groups".into(),
+                        groups: AdminWebOidcGroups {
+                            admin: vec!["aegis-admin".into()],
+                            ..AdminWebOidcGroups::default()
+                        },
+                    }),
+                    ..AdminWebConfig::default()
+                },
                 ..AdminConfig::default()
             },
             observability: ObservabilityConfig::default(),
         };
         let serialized = toml::to_string(&redacted(&config)).expect("serialize redacted config");
         assert!(!serialized.contains("CANARY"));
-        assert_eq!(serialized.matches(REDACTED).count(), 9);
+        assert_eq!(serialized.matches(REDACTED).count(), 11);
     }
 }

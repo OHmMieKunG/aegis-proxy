@@ -26,6 +26,14 @@ fn validates_bounded_node_identity() {
     assert!(NodeIdentity::new("a".repeat(64), 7).is_err());
 }
 
+#[test]
+fn browser_admin_changes_require_restart() {
+    let current = config(8080);
+    let mut candidate = (*current).clone();
+    candidate.admin.web.enabled = true;
+    assert!(!hot_reload_compatible(&current, &candidate));
+}
+
 #[tokio::test]
 async fn drain_is_one_way_and_revision_hash_is_exact() {
     let shutdown = CancellationToken::new();

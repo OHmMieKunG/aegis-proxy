@@ -207,7 +207,13 @@ compatibility policy.
 
 ## Phase 16 — NPMPlus-style GUI MVP
 
-**Status:** ready to begin from the validated Phase 15 merge.
+**Status:** active on `feat/phase-16-gui-mvp`.
+
+**Completed units:** ADR-0030 selects embedded React/Vite without a Node production runtime.
+Default-disabled `[admin.web]` configuration now validates a nonzero loopback bind, one exact
+same-port `http://localhost` origin, canonical HTTPS OIDC issuer, bounded secret references,
+top-level groups claim, and disjoint bounded built-in-role group mappings. Web/OIDC changes are
+restart-only and secret references are redacted from preview.
 
 **Objective:** make common reverse-proxy administration safe without low-level proxy knowledge.
 

@@ -46,6 +46,115 @@ pub(crate) fn validate_admin(admin: &AdminConfig) -> Result<(), ConfigError> {
             "administrative resource limits are outside safe bounds".into(),
         ));
     }
+    validate_admin_web(&admin.web)?;
+    Ok(())
+}
+
+fn validate_admin_web(web: &AdminWebConfig) -> Result<(), ConfigError> {
+    if !web.bind.ip().is_loopback() || web.bind.port() == 0 {
+        return Err(ConfigError::Invalid(
+            "admin.web.bind must use a nonzero loopback address".into(),
+        ));
+    }
+    let expected_origin = format!("http://localhost:{}", web.bind.port());
+    if web.origin != expected_origin {
+        return Err(ConfigError::Invalid(format!(
+            "admin.web.origin must be exactly {expected_origin}"
+        )));
+    }
+    let Some(oidc) = &web.oidc else {
+        if web.enabled {
+            return Err(ConfigError::Invalid(
+                "admin.web.oidc is required when browser administration is enabled".into(),
+            ));
+        }
+        return Ok(());
+    };
+    validate_admin_oidc(oidc)?;
+    if web.enabled && oidc.groups.admin.is_empty() {
+        return Err(ConfigError::Invalid(
+            "admin.web.oidc.groups.admin requires at least one group".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_admin_oidc(oidc: &AdminWebOidcConfig) -> Result<(), ConfigError> {
+    let issuer = Url::parse(&oidc.issuer)
+        .map_err(|_| ConfigError::Invalid("admin.web.oidc.issuer is invalid".into()))?;
+    let canonical_without_root = issuer
+        .path()
+        .eq("/")
+        .then(|| issuer.as_str().strip_suffix('/'))
+        .flatten();
+    if oidc.issuer.len() > 2_048
+        || issuer.scheme() != "https"
+        || issuer.host_str().is_none()
+        || !issuer.username().is_empty()
+        || issuer.password().is_some()
+        || issuer.query().is_some()
+        || issuer.fragment().is_some()
+        || (oidc.issuer != issuer.as_str() && canonical_without_root != Some(&oidc.issuer))
+    {
+        return Err(ConfigError::Invalid(
+            "admin.web.oidc.issuer must be a canonical HTTPS URL without credentials, query, or fragment"
+                .into(),
+        ));
+    }
+    if oidc.client_id.is_empty()
+        || oidc.client_id.len() > 256
+        || oidc.client_id.chars().any(char::is_control)
+    {
+        return Err(ConfigError::Invalid(
+            "admin.web.oidc.client_id is outside safe bounds".into(),
+        ));
+    }
+    for (field, reference) in [
+        ("client_secret", Some(oidc.client_secret.as_str())),
+        ("ca_bundle", oidc.ca_bundle.as_deref()),
+    ] {
+        if let Some(reference) = reference {
+            SecretRef::parse(reference).map_err(|_| {
+                ConfigError::Invalid(format!(
+                    "admin.web.oidc.{field} has an invalid secret reference"
+                ))
+            })?;
+        }
+    }
+    if oidc.groups_claim.is_empty()
+        || oidc.groups_claim.len() > 128
+        || oidc.groups_claim.chars().any(char::is_control)
+    {
+        return Err(ConfigError::Invalid(
+            "admin.web.oidc.groups_claim is outside safe bounds".into(),
+        ));
+    }
+    let groups = [
+        &oidc.groups.viewer,
+        &oidc.groups.auditor,
+        &oidc.groups.operator,
+        &oidc.groups.admin,
+    ];
+    if groups.iter().any(|groups| groups.len() > 64)
+        || groups.iter().map(|groups| groups.len()).sum::<usize>() > 256
+    {
+        return Err(ConfigError::Invalid(
+            "admin.web.oidc role group lists exceed safe bounds".into(),
+        ));
+    }
+    let mut unique = HashSet::new();
+    for group in groups.into_iter().flatten() {
+        if group.is_empty()
+            || group.len() > 256
+            || group.chars().any(char::is_control)
+            || !unique.insert(group)
+        {
+            return Err(ConfigError::Invalid(
+                "admin.web.oidc group names must be bounded, nonempty, and unique across roles"
+                    .into(),
+            ));
+        }
+    }
     Ok(())
 }
 

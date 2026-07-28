@@ -10,6 +10,38 @@
 - Future schema versions fail closed on older binaries. There is no automatic downgrade or silent fallback.
 - `rust-proxy fmt` emits a normalized validated document and preserves secret references. `rust-proxy preview` is the safe export: it redacts secret-reference metadata and includes the compiled route fingerprint.
 
+## Browser administration
+
+Browser administration is default-disabled and restart-only. Its bind address must be loopback,
+and its origin is one exact `http://localhost:PORT` value using the same nonzero port. Paths,
+queries, fragments, user information, wildcards, noncanonical host spelling, and alternate origins
+are rejected.
+
+```toml
+[admin.web]
+enabled = true
+bind = "127.0.0.1:9090"
+origin = "http://localhost:9090"
+
+[admin.web.oidc]
+issuer = "https://idp.example.test/tenant"
+client_id = "aegis-proxy"
+client_secret = "file:///run/secrets/oidc-client"
+groups_claim = "groups"
+
+[admin.web.oidc.groups]
+viewer = ["aegis-viewers"]
+auditor = ["aegis-auditors"]
+operator = ["aegis-operators"]
+admin = ["aegis-admins"]
+```
+
+The issuer must be canonical HTTPS without credentials, query, or fragment. Client secrets and
+optional CA bundles are secret references and are redacted from preview. Group lists are bounded,
+exact, and disjoint across the four built-in roles; enabling browser administration requires at
+least one Admin group. The browser listener and OIDC/session implementation are delivered in
+Phase 16 and do not change Unix peer or bearer authentication.
+
 ## Typed Proxy Host compilation
 
 Phase 15 provides a compiler from the strict seven-field Proxy Host object into this same schema-v1
