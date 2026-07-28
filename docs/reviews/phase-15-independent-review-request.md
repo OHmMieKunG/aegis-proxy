@@ -1,23 +1,23 @@
 # Phase 15 independent API/security review request
 
-Status: **paused pending replacement commit**
+Status: **awaiting independent reviewer**
 
 Prepared: 2026-07-28
 
 This is a review request, not completion evidence or maintainer signoff. The reviewer must be
 independent of the Phase 15 implementation author.
 
-## Candidate status
+## Immutable candidate
 
-- Candidate commit: pending; do not review `f1bfd08`
+- Candidate commit: `efcd0c3`
 - Candidate branch: `chore/phase-15-closeout`
 - Phase 15 baseline: `b685449` (Phase 14 completion)
 - Immediate closeout base: `eb107ec`
 - Scope: private typed control plane and its closeout; no browser listener, OIDC, session, GUI, or
   frontend dependency exists
 
-After the replacement is committed, review the cumulative `b685449..<candidate>` change. Use
-`eb107ec..<candidate>` only to isolate the final module split and contract-freeze tests.
+Review the cumulative `b685449..efcd0c3` change. Use `eb107ec..efcd0c3` only to isolate the final
+module split and contract-freeze tests.
 
 Candidates `5a32495` and `f1bfd08` are retired. Maintainer reviews found:
 
@@ -30,8 +30,8 @@ Candidates `5a32495` and `f1bfd08` are retired. Maintainer reviews found:
   response classes; and
 - User store hard limits were returned as invalid requests instead of capacity exhaustion.
 
-The current working tree remediates these findings but is not an immutable review target. Retarget
-this request to its exact commit before independent review.
+Candidate `efcd0c3` remediates these maintainer findings. Reproduce them rather than accepting the
+maintainer assessment.
 
 ## Required qualifications and independence
 
@@ -100,8 +100,7 @@ reproduction but cannot supply the independent decision.
 
 ## Maintainer verification available
 
-The current replacement working tree passed these local maintainer checks; rerun and record them
-against the immutable replacement commit:
+The exact candidate passed these local maintainer checks:
 
 - formatting, all-target/all-feature check, and Clippy with warnings denied;
 - 339 workspace tests with two intentional ignores and the separate doc-test gate;

@@ -38,7 +38,7 @@ legacy subjectless automation tokens remain parseable without gaining new scopes
 Unified candidate preview now emits stable add/update/remove records for every typed domain and
 bound dependency. Updates expose only closed per-kind field-name allowlists; object values,
 configuration secrets, ciphertext, and internal paths cannot enter the diff.
-Current Phase 15 closeout work keeps accepted requests running under their bounded in-flight
+Phase 15 closeout candidate `efcd0c3` keeps accepted requests running under their bounded in-flight
 permits after a response deadline so blocking mutations cannot outlive
 serialization or terminal audit, and shutdown drains those permits before the administrative
 service exits. Token, backup, and restore JSON now passes exact action
@@ -154,9 +154,8 @@ Access Policy tests, and CLI administration dispatch; no production Rust module 
 measured lines. The 52-action matrix, authorization-before-deserialization ordering, owner hiding,
 schema-1/schema-2 route separation, legacy-token behavior, and candidate recovery are covered.
 The original maintainer-review findings plus the follow-up shutdown-drain and
-capacity-classification findings are fixed in the current working tree. Phase 15 remains open for a
-replacement commit, independent review of that exact candidate, and final immutable evidence.
-Phase 16 browser work has not started.
+capacity-classification findings are fixed in `efcd0c3`. Phase 15 remains open for independent
+review of that exact candidate and final immutable evidence. Phase 16 browser work has not started.
 
 ## Release blockers
 

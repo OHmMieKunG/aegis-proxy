@@ -24,8 +24,8 @@ and dependency set are unchanged from `dev@eb107ec`.
 Maintainer review found response-timeout cancellation, pre-authorization JSON parsing in
 token/backup/restore handlers, and collapsed User mutation error classes. Follow-up review found
 that timed-out handlers also needed an explicit shutdown drain and that User store limits needed a
-capacity response. The current working tree fixes all five findings. Candidates `5a32495` and
-`f1bfd08` are retired; independent review must wait for the replacement commit.
+capacity response. Candidate `efcd0c3` fixes all five findings. Candidates `5a32495` and `f1bfd08`
+are retired; independent review must use `efcd0c3`.
 
 Administration documentation now describes all implemented Phase 15 typed domains, current
 certificate route separation, compatibility, and downgrade rules. No frontend dependency, TCP
@@ -33,8 +33,7 @@ listener, browser route, OIDC state, or session code has entered the branch.
 
 ## Remaining Phase 15 gate
 
-Commit the verified replacement candidate, then an independent reviewer must approve API
-versioning, RBAC, ownership, secret isolation,
+An independent reviewer must approve API versioning, RBAC, ownership, secret isolation,
 authorization ordering, migration/downgrade behavior, and candidate recovery with no unresolved
 critical/high finding. The exact scope, required attacks, local evidence, and report format are
 prepared in
@@ -44,9 +43,9 @@ into `dev`.
 
 ## Exact next task
 
-Commit and retarget the replacement candidate, then obtain and record the independent Phase 15
-API/security review. If it passes, create immutable completion evidence, merge closeout to `dev`,
-and branch `feat/phase-16-gui-mvp` from that merge.
+Obtain and record the independent Phase 15 API/security review of `efcd0c3`. If it passes, create
+immutable completion evidence, merge closeout to `dev`, and branch `feat/phase-16-gui-mvp` from
+that merge.
 
 ## Known risks
 
