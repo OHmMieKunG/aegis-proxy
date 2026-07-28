@@ -71,6 +71,11 @@ enum Command {
         #[command(subcommand)]
         command: CertificateCommand,
     },
+    /// Manage typed Certificate objects through the private socket.
+    Certificate {
+        #[command(subcommand)]
+        command: CertificateObjectCommand,
+    },
     /// Manage hash-only administrative API tokens through the private socket.
     Token {
         #[command(subcommand)]
@@ -85,6 +90,31 @@ enum Command {
     AccessPolicy {
         #[command(subcommand)]
         command: AccessPolicyCommand,
+    },
+    /// Manage encrypted Stored Credentials through the private socket.
+    Credential {
+        #[command(subcommand)]
+        command: AccessPolicyCommand,
+    },
+    /// Manage administrative users and inspect immutable roles.
+    User {
+        #[command(subcommand)]
+        command: UserCommand,
+    },
+    /// List immutable built-in roles.
+    Role {
+        #[command(flatten)]
+        admin: AdminConnection,
+    },
+    /// Manage typed Stream Hosts through the private socket.
+    StreamHost {
+        #[command(subcommand)]
+        command: TypedDomainCommand,
+    },
+    /// Manage typed Discovery Sources through the private socket.
+    DiscoverySource {
+        #[command(subcommand)]
+        command: TypedDomainCommand,
     },
     /// Create or verify encrypted state backups.
     Backup {
@@ -189,8 +219,8 @@ enum TokenCommand {
         admin: AdminConnection,
         #[arg(long)]
         expect: String,
-        #[arg(long, value_enum)]
-        role: CliRole,
+        #[arg(long)]
+        user_ref: String,
         /// Explicit action scope; repeat for multiple scopes.
         #[arg(long, value_enum, required = true)]
         scope: Vec<CliScope>,
@@ -330,12 +360,146 @@ enum AccessPolicyCommand {
     },
 }
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
-enum CliRole {
-    Viewer,
-    Auditor,
-    Operator,
-    Admin,
+#[derive(Debug, Subcommand)]
+enum UserCommand {
+    /// List users.
+    List {
+        #[command(flatten)]
+        admin: AdminConnection,
+    },
+    /// Get one user.
+    Get {
+        #[command(flatten)]
+        admin: AdminConnection,
+        id: String,
+    },
+    /// Create one user.
+    Create {
+        #[command(flatten)]
+        admin: AdminConnection,
+        #[arg(long)]
+        expect: String,
+        file: PathBuf,
+    },
+    /// Replace one user.
+    Update {
+        #[command(flatten)]
+        admin: AdminConnection,
+        #[arg(long)]
+        expect: String,
+        #[arg(long)]
+        generation: u64,
+        id: String,
+        file: PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum CertificateObjectCommand {
+    /// List typed Certificates owned by authenticated principal.
+    List {
+        #[command(flatten)]
+        admin: AdminConnection,
+    },
+    /// Get one typed Certificate owned by authenticated principal.
+    Get {
+        #[command(flatten)]
+        admin: AdminConnection,
+        id: String,
+    },
+    /// Validate and persist one owned Certificate without activation.
+    Create {
+        #[command(flatten)]
+        admin: AdminConnection,
+        #[arg(long)]
+        expect: String,
+        file: PathBuf,
+    },
+    /// Replace one owned Certificate without activation.
+    Update {
+        #[command(flatten)]
+        admin: AdminConnection,
+        #[arg(long)]
+        expect: String,
+        #[arg(long)]
+        generation: u64,
+        id: String,
+        file: PathBuf,
+    },
+    /// Delete one owned Certificate without activation.
+    Delete {
+        #[command(flatten)]
+        admin: AdminConnection,
+        #[arg(long)]
+        expect: String,
+        #[arg(long)]
+        generation: u64,
+        id: String,
+    },
+    /// Request renewal by owned Certificate object ID.
+    Renew {
+        #[command(flatten)]
+        admin: AdminConnection,
+        #[arg(long)]
+        expect: String,
+        id: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum TypedDomainCommand {
+    /// List objects owned by authenticated principal.
+    List {
+        #[command(flatten)]
+        admin: AdminConnection,
+    },
+    /// Get one object owned by authenticated principal.
+    Get {
+        #[command(flatten)]
+        admin: AdminConnection,
+        id: String,
+    },
+    /// Validate, persist, and create a non-active candidate.
+    Create {
+        #[command(flatten)]
+        admin: AdminConnection,
+        #[arg(long)]
+        expect: String,
+        file: PathBuf,
+    },
+    /// Replace one object and create a non-active candidate.
+    Update {
+        #[command(flatten)]
+        admin: AdminConnection,
+        #[arg(long)]
+        expect: String,
+        #[arg(long)]
+        generation: u64,
+        id: String,
+        file: PathBuf,
+    },
+    /// Delete one object and create a non-active candidate.
+    Delete {
+        #[command(flatten)]
+        admin: AdminConnection,
+        #[arg(long)]
+        expect: String,
+        #[arg(long)]
+        generation: u64,
+        id: String,
+    },
+    /// Validate one object without persistence.
+    Validate {
+        #[command(flatten)]
+        admin: AdminConnection,
+        file: PathBuf,
+    },
+    /// Preview one object without persistence or activation.
+    Preview {
+        #[command(flatten)]
+        admin: AdminConnection,
+        file: PathBuf,
+    },
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -354,6 +518,8 @@ enum CliScope {
     DeleteProxyHost,
     ActivateProxyHost,
     RollbackProxyHost,
+    ActivateTypedCandidate,
+    RollbackTypedRevision,
     ReadAccessPolicies,
     CreateAccessPolicy,
     UpdateAccessPolicy,
@@ -362,6 +528,29 @@ enum CliScope {
     ReadUpstreams,
     Drain,
     ReadCertificates,
+    ReadCertificateObjects,
+    CreateCertificate,
+    UpdateCertificate,
+    DeleteCertificate,
+    ReadStreamHosts,
+    CreateStreamHost,
+    UpdateStreamHost,
+    DeleteStreamHost,
+    ReadDiscoverySources,
+    CreateDiscoverySource,
+    UpdateDiscoverySource,
+    DeleteDiscoverySource,
+    ReadCredentials,
+    CreateCredential,
+    UpdateCredential,
+    RevokeCredential,
+    ReadTokens,
+    CreateToken,
+    RevokeToken,
+    ReadUsers,
+    CreateUser,
+    UpdateUser,
+    ReadRoles,
     RenewCertificate,
     ReadAudit,
     CreateBackup,
@@ -386,6 +575,8 @@ impl CliScope {
             Self::DeleteProxyHost => "delete_proxy_host",
             Self::ActivateProxyHost => "activate_proxy_host",
             Self::RollbackProxyHost => "rollback_proxy_host",
+            Self::ActivateTypedCandidate => "activate_typed_candidate",
+            Self::RollbackTypedRevision => "rollback_typed_revision",
             Self::ReadAccessPolicies => "read_access_policies",
             Self::CreateAccessPolicy => "create_access_policy",
             Self::UpdateAccessPolicy => "update_access_policy",
@@ -394,6 +585,29 @@ impl CliScope {
             Self::ReadUpstreams => "read_upstreams",
             Self::Drain => "drain",
             Self::ReadCertificates => "read_certificates",
+            Self::ReadCertificateObjects => "read_certificate_objects",
+            Self::CreateCertificate => "create_certificate",
+            Self::UpdateCertificate => "update_certificate",
+            Self::DeleteCertificate => "delete_certificate",
+            Self::ReadStreamHosts => "read_stream_hosts",
+            Self::CreateStreamHost => "create_stream_host",
+            Self::UpdateStreamHost => "update_stream_host",
+            Self::DeleteStreamHost => "delete_stream_host",
+            Self::ReadDiscoverySources => "read_discovery_sources",
+            Self::CreateDiscoverySource => "create_discovery_source",
+            Self::UpdateDiscoverySource => "update_discovery_source",
+            Self::DeleteDiscoverySource => "delete_discovery_source",
+            Self::ReadCredentials => "read_credentials",
+            Self::CreateCredential => "create_credential",
+            Self::UpdateCredential => "update_credential",
+            Self::RevokeCredential => "revoke_credential",
+            Self::ReadTokens => "read_tokens",
+            Self::CreateToken => "create_token",
+            Self::RevokeToken => "revoke_token",
+            Self::ReadUsers => "read_users",
+            Self::CreateUser => "create_user",
+            Self::UpdateUser => "update_user",
+            Self::ReadRoles => "read_roles",
             Self::RenewCertificate => "renew_certificate",
             Self::ReadAudit => "read_audit",
             Self::CreateBackup => "create_backup",
@@ -443,7 +657,7 @@ struct CandidateResponse {
 
 #[derive(Debug, Serialize)]
 struct TokenCreateBody<'a> {
-    role: &'a str,
+    user_ref: &'a str,
     scopes: Vec<&'static str>,
     expires_unix_secs: u64,
 }
@@ -601,9 +815,27 @@ async fn run(cli: Cli) -> Result<(), BoxError> {
         Command::Cert { command } => {
             run_certificate_command(command).await?;
         }
+        Command::Certificate { command } => run_certificate_object_command(command).await?,
         Command::Token { command } => run_token_command(command).await?,
         Command::ProxyHost { command } => run_proxy_host_command(command).await?,
-        Command::AccessPolicy { command } => run_access_policy_command(command).await?,
+        Command::AccessPolicy { command } => {
+            run_owned_object_command(command, "access-policies").await?
+        }
+        Command::Credential { command } => run_owned_object_command(command, "credentials").await?,
+        Command::User { command } => run_user_command(command).await?,
+        Command::Role { admin } => {
+            let response =
+                admin_request(&admin, Method::GET, "/v1/roles", None, None, Vec::new()).await?;
+            require_admin_success(&response)?;
+            io::stdout().lock().write_all(&response.body)?;
+            writeln!(io::stdout().lock())?;
+        }
+        Command::StreamHost { command } => {
+            run_typed_domain_command(command, "stream-hosts").await?
+        }
+        Command::DiscoverySource { command } => {
+            run_typed_domain_command(command, "discovery-sources").await?
+        }
         Command::Backup { command } => run_backup_command(command).await?,
         Command::Restore { command } => run_restore_command(command).await?,
         Command::Health { admin } => {
@@ -803,7 +1035,7 @@ async fn run_token_command(command: TokenCommand) -> Result<(), BoxError> {
         TokenCommand::Create {
             admin,
             expect,
-            role,
+            user_ref,
             scope,
             ttl_secs,
         } => {
@@ -815,14 +1047,9 @@ async fn run_token_command(command: TokenCommand) -> Result<(), BoxError> {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)?
                 .as_secs();
-            let role = match role {
-                CliRole::Viewer => "viewer",
-                CliRole::Auditor => "auditor",
-                CliRole::Operator => "operator",
-                CliRole::Admin => "admin",
-            };
+            let user_ref = user_ref.parse::<aegisproxy_admin::ObjectId>()?;
             let body = serde_json::to_vec(&TokenCreateBody {
-                role,
+                user_ref: user_ref.as_str(),
                 scopes: scope.into_iter().map(CliScope::as_api_str).collect(),
                 expires_unix_secs: now.saturating_add(ttl_secs),
             })?;
@@ -949,7 +1176,7 @@ async fn run_proxy_host_command(command: ProxyHostCommand) -> Result<(), BoxErro
             admin_request(
                 &admin,
                 Method::POST,
-                &format!("/v1/proxy-hosts/candidates/{candidate}/activate"),
+                &format!("/v1/config/typed-candidates/{candidate}/activate"),
                 Some(expect),
                 None,
                 Vec::new(),
@@ -964,7 +1191,7 @@ async fn run_proxy_host_command(command: ProxyHostCommand) -> Result<(), BoxErro
             admin_request(
                 &admin,
                 Method::POST,
-                &format!("/v1/proxy-hosts/revisions/{revision}/rollback"),
+                &format!("/v1/config/typed-revisions/{revision}/rollback"),
                 Some(expect),
                 None,
                 Vec::new(),
@@ -1002,13 +1229,16 @@ async fn run_proxy_host_command(command: ProxyHostCommand) -> Result<(), BoxErro
     Ok(())
 }
 
-async fn run_access_policy_command(command: AccessPolicyCommand) -> Result<(), BoxError> {
+async fn run_owned_object_command(
+    command: AccessPolicyCommand,
+    resource: &str,
+) -> Result<(), BoxError> {
     let response = match command {
         AccessPolicyCommand::List { admin } => {
             admin_request(
                 &admin,
                 Method::GET,
-                "/v1/access-policies",
+                &format!("/v1/{resource}"),
                 None,
                 None,
                 Vec::new(),
@@ -1020,7 +1250,7 @@ async fn run_access_policy_command(command: AccessPolicyCommand) -> Result<(), B
             admin_request(
                 &admin,
                 Method::GET,
-                &format!("/v1/access-policies/{id}"),
+                &format!("/v1/{resource}/{id}"),
                 None,
                 None,
                 Vec::new(),
@@ -1036,7 +1266,7 @@ async fn run_access_policy_command(command: AccessPolicyCommand) -> Result<(), B
             admin_request(
                 &admin,
                 Method::POST,
-                "/v1/access-policies",
+                &format!("/v1/{resource}"),
                 Some(expect),
                 Some("application/json"),
                 body,
@@ -1054,7 +1284,7 @@ async fn run_access_policy_command(command: AccessPolicyCommand) -> Result<(), B
             admin_request_with_generation(
                 &admin,
                 Method::PUT,
-                &format!("/v1/access-policies/{id}"),
+                &format!("/v1/{resource}/{id}"),
                 Some(expect),
                 Some(generation),
                 Some("application/json"),
@@ -1071,11 +1301,276 @@ async fn run_access_policy_command(command: AccessPolicyCommand) -> Result<(), B
             admin_request_with_generation(
                 &admin,
                 Method::DELETE,
-                &format!("/v1/access-policies/{id}"),
+                &format!("/v1/{resource}/{id}"),
                 Some(expect),
                 Some(generation),
                 None,
                 Vec::new(),
+            )
+            .await?
+        }
+    };
+    require_admin_success(&response)?;
+    io::stdout().lock().write_all(&response.body)?;
+    writeln!(io::stdout().lock())?;
+    Ok(())
+}
+
+async fn run_user_command(command: UserCommand) -> Result<(), BoxError> {
+    let response = match command {
+        UserCommand::List { admin } => {
+            admin_request(&admin, Method::GET, "/v1/users", None, None, Vec::new()).await?
+        }
+        UserCommand::Get { admin, id } => {
+            let id = id.parse::<aegisproxy_admin::ObjectId>()?;
+            admin_request(
+                &admin,
+                Method::GET,
+                &format!("/v1/users/{id}"),
+                None,
+                None,
+                Vec::new(),
+            )
+            .await?
+        }
+        UserCommand::Create {
+            admin,
+            expect,
+            file,
+        } => {
+            let body = read_bounded(file, aegisproxy_config::MAX_CONFIG_BYTES).await?;
+            admin_request(
+                &admin,
+                Method::POST,
+                "/v1/users",
+                Some(expect),
+                Some("application/json"),
+                body,
+            )
+            .await?
+        }
+        UserCommand::Update {
+            admin,
+            expect,
+            generation,
+            id,
+            file,
+        } => {
+            let body = read_bounded(file, aegisproxy_config::MAX_CONFIG_BYTES).await?;
+            admin_request_with_generation(
+                &admin,
+                Method::PUT,
+                &format!("/v1/users/{id}"),
+                Some(expect),
+                Some(generation),
+                Some("application/json"),
+                body,
+            )
+            .await?
+        }
+    };
+    require_admin_success(&response)?;
+    io::stdout().lock().write_all(&response.body)?;
+    writeln!(io::stdout().lock())?;
+    Ok(())
+}
+
+async fn run_certificate_object_command(command: CertificateObjectCommand) -> Result<(), BoxError> {
+    let response = match command {
+        CertificateObjectCommand::List { admin } => {
+            admin_request(
+                &admin,
+                Method::GET,
+                "/v1/certificates",
+                None,
+                None,
+                Vec::new(),
+            )
+            .await?
+        }
+        CertificateObjectCommand::Get { admin, id } => {
+            let id = id.parse::<aegisproxy_admin::ObjectId>()?;
+            admin_request(
+                &admin,
+                Method::GET,
+                &format!("/v1/certificates/{id}"),
+                None,
+                None,
+                Vec::new(),
+            )
+            .await?
+        }
+        CertificateObjectCommand::Create {
+            admin,
+            expect,
+            file,
+        } => {
+            let body = read_bounded(file, aegisproxy_config::MAX_CONFIG_BYTES).await?;
+            admin_request(
+                &admin,
+                Method::POST,
+                "/v1/certificates",
+                Some(expect),
+                Some("application/json"),
+                body,
+            )
+            .await?
+        }
+        CertificateObjectCommand::Update {
+            admin,
+            expect,
+            generation,
+            id,
+            file,
+        } => {
+            let body = read_bounded(file, aegisproxy_config::MAX_CONFIG_BYTES).await?;
+            admin_request_with_generation(
+                &admin,
+                Method::PUT,
+                &format!("/v1/certificates/{id}"),
+                Some(expect),
+                Some(generation),
+                Some("application/json"),
+                body,
+            )
+            .await?
+        }
+        CertificateObjectCommand::Delete {
+            admin,
+            expect,
+            generation,
+            id,
+        } => {
+            admin_request_with_generation(
+                &admin,
+                Method::DELETE,
+                &format!("/v1/certificates/{id}"),
+                Some(expect),
+                Some(generation),
+                None,
+                Vec::new(),
+            )
+            .await?
+        }
+        CertificateObjectCommand::Renew { admin, expect, id } => {
+            admin_request(
+                &admin,
+                Method::POST,
+                &format!("/v1/certificates/{id}/renew"),
+                Some(expect),
+                None,
+                Vec::new(),
+            )
+            .await?
+        }
+    };
+    require_admin_success(&response)?;
+    io::stdout().lock().write_all(&response.body)?;
+    writeln!(io::stdout().lock())?;
+    Ok(())
+}
+
+async fn run_typed_domain_command(
+    command: TypedDomainCommand,
+    collection: &str,
+) -> Result<(), BoxError> {
+    let response = match command {
+        TypedDomainCommand::List { admin } => {
+            admin_request(
+                &admin,
+                Method::GET,
+                &format!("/v1/{collection}"),
+                None,
+                None,
+                Vec::new(),
+            )
+            .await?
+        }
+        TypedDomainCommand::Get { admin, id } => {
+            let id = id.parse::<aegisproxy_admin::ObjectId>()?;
+            admin_request(
+                &admin,
+                Method::GET,
+                &format!("/v1/{collection}/{id}"),
+                None,
+                None,
+                Vec::new(),
+            )
+            .await?
+        }
+        TypedDomainCommand::Create {
+            admin,
+            expect,
+            file,
+        } => {
+            let body = read_bounded(file, aegisproxy_config::MAX_CONFIG_BYTES).await?;
+            admin_request(
+                &admin,
+                Method::POST,
+                &format!("/v1/{collection}"),
+                Some(expect),
+                Some("application/json"),
+                body,
+            )
+            .await?
+        }
+        TypedDomainCommand::Update {
+            admin,
+            expect,
+            generation,
+            id,
+            file,
+        } => {
+            let body = read_bounded(file, aegisproxy_config::MAX_CONFIG_BYTES).await?;
+            admin_request_with_generation(
+                &admin,
+                Method::PUT,
+                &format!("/v1/{collection}/{id}"),
+                Some(expect),
+                Some(generation),
+                Some("application/json"),
+                body,
+            )
+            .await?
+        }
+        TypedDomainCommand::Delete {
+            admin,
+            expect,
+            generation,
+            id,
+        } => {
+            admin_request_with_generation(
+                &admin,
+                Method::DELETE,
+                &format!("/v1/{collection}/{id}"),
+                Some(expect),
+                Some(generation),
+                None,
+                Vec::new(),
+            )
+            .await?
+        }
+        TypedDomainCommand::Validate { admin, file } => {
+            let body = read_bounded(file, aegisproxy_config::MAX_CONFIG_BYTES).await?;
+            admin_request(
+                &admin,
+                Method::POST,
+                &format!("/v1/{collection}/validate"),
+                None,
+                Some("application/json"),
+                body,
+            )
+            .await?
+        }
+        TypedDomainCommand::Preview { admin, file } => {
+            let body = read_bounded(file, aegisproxy_config::MAX_CONFIG_BYTES).await?;
+            admin_request(
+                &admin,
+                Method::POST,
+                &format!("/v1/{collection}/preview"),
+                None,
+                Some("application/json"),
+                body,
             )
             .await?
         }

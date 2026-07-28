@@ -1,7 +1,7 @@
 # AegisProxy verified status
 
-Verification date: 2026-07-27
-Branch: `work/autonomous-roadmap`
+Verification date: 2026-07-28
+Branch: `feat/phase-15-control-plane-completion`
 Verification basis: Phase 14 plus Phase 15 compiler `fa7913f`, preview service `d3de105`, typed diff
 `2617f0e`, API-token scopes `81bd500`, owned Proxy Host endpoints `00cfa32`, typed object store
 `5c8898b`, owner-scoped typed reads `d1514dd`, aggregate compiler `35d7d38`, mutation-scope fix
@@ -16,8 +16,28 @@ available through the API and CLI (`926eb68`), with dual-concurrency update/dele
 `334916d`. Proxy Host validation/preview can now resolve one owned or explicitly shared policy
 without persistence (`c12f1c3`). Typed candidates bind exact referenced policy generations and
 content; activation and rollback revalidate current policy state (`20449a3`).
-Library-only typed certificate ownership and managed-HTTPS selection metadata now exist
-(`edcb53b`).
+Typed certificate ownership and managed-HTTPS selection metadata (`edcb53b`) now have bounded
+private persistence, exact owner-scoped CRUD permissions, API/CLI operations, and separated runtime
+status and direct-renewal routes.
+Strict typed Stream Hosts and file/DNS Discovery Sources now compile deterministically without
+source I/O, persist in bounded owner-scoped stores, expose exact CRUD/preview/CLI contracts, and
+create schema-2 unified typed-bound non-active candidates. Unified snapshots cover complete Proxy
+Hosts, Stream Hosts, Discovery Sources, and exact referenced Access Policy and Certificate records;
+canonical typed preview, Admin-only activation, and forward rollback are available while the old
+Proxy Host routes accept only schema-1 snapshots.
+Low-level configuration activation and rollback reject typed-bound revisions, preventing broad
+configuration scopes from bypassing typed authorization.
+Stored Credentials now encrypt bounded write-only values to configured age recipients, persist
+only ciphertext and safe metadata, expose owner-scoped CRUD/rotation/revocation through exact
+scopes and CLI, and remove usable ciphertext on revoke. Responses never expose plaintext or
+ciphertext.
+Durable Users now bind identity/owner equality to a fixed built-in role and enabled state; Roles
+are read-only. New tokens require an enabled `user_ref`, inherit that user's role and owner, and
+accept only an explicit role-bounded scope subset. Disabling a user blocks its subject tokens while
+legacy subjectless automation tokens remain parseable without gaining new scopes.
+Unified candidate preview now emits stable add/update/remove records for every typed domain and
+bound dependency. Updates expose only closed per-kind field-name allowlists; object values,
+configuration secrets, ciphertext, and internal paths cannot enter the diff.
 
 Working tree at Phase 14 start: clean at `10aae8c`
 

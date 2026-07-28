@@ -10,6 +10,9 @@ Deny by default; every mutation is auditable.
 Viewer/operator/admin roles; endpoint-only auth; external policy engine.
 ## Decision
 Use fixed server-side viewer, auditor, operator, and admin permissions in v1.
+Users bind one identity/owner to one immutable built-in role and enabled state. New API tokens name
+an enabled user, inherit that role and owner, and grant only an explicit action subset. Built-in
+roles are read-only; custom roles are unsupported.
 ## Rationale
 Small explicit matrix is easier to review than a generic policy engine.
 ## Consequences

@@ -1,7 +1,12 @@
 //! Private Unix-socket administrative HTTP service.
 
+mod certificates;
+mod credentials;
+mod domains;
 mod handlers;
 mod support;
+mod unified;
+mod users;
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -45,12 +50,21 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     AccessPolicyMetadata, AccessPolicySpec, AccessPolicyStore, AccessPolicyStoreError, Action,
-    ApiObject, AuditEvent, AuditLog, AuditOutcome, ObjectId, PreparedProxyHost,
+    ApiObject, AuditEvent, AuditLog, AuditOutcome, CertificateSpec, CertificateStore,
+    CertificateStoreError, CredentialReplacement, CredentialStore, CredentialStoreError,
+    DiscoverySourceSpec, DiscoverySourceStore, ObjectId, PreparedProxyHost,
     ProxyHostPreparationError, ProxyHostPreviewSummary, ProxyHostSpec, ProxyHostStore,
-    ProxyHostStoreError, Role, StoredAccessPolicy, StoredProxyHost, TokenScopes, TokenStore,
+    ProxyHostStoreError, Role, StoredAccessPolicy, StoredCertificate, StoredCredential,
+    StoredDiscoverySource, StoredProxyHost, StoredStreamHost, StoredUser, StreamHostSpec,
+    StreamHostStore, TokenScopes, TokenStore, UserSpec, UserStore,
 };
+use certificates::*;
+use credentials::*;
+use domains::*;
 use handlers::*;
 use support::*;
+use unified::*;
+use users::*;
 
 const AUDIT_KEY_BYTES: usize = 64;
 const REQUEST_ID_BYTES: usize = 16;
@@ -75,6 +89,21 @@ pub enum AdminServerError {
     /// Typed Access Policy desired state could not be loaded safely.
     #[error("administrative Access Policy store failed")]
     AccessPolicies,
+    /// Typed Certificate desired state could not be loaded safely.
+    #[error("administrative Certificate store failed")]
+    Certificates,
+    /// Typed Stream Host desired state could not be loaded safely.
+    #[error("administrative Stream Host store failed")]
+    StreamHosts,
+    /// Typed Discovery Source desired state could not be loaded safely.
+    #[error("administrative Discovery Source store failed")]
+    DiscoverySources,
+    /// Encrypted Stored Credential state could not be loaded safely.
+    #[error("administrative Stored Credential store failed")]
+    Credentials,
+    /// User identity state could not be loaded safely.
+    #[error("administrative User store failed")]
+    Users,
     /// Blocking initialization task failed.
     #[error("administrative initialization task failed: {0}")]
     Initialization(String),
@@ -86,6 +115,11 @@ struct AppState {
     tokens: Arc<TokenStore>,
     proxy_hosts: Arc<ProxyHostStore>,
     access_policies: Arc<AccessPolicyStore>,
+    certificates: Arc<CertificateStore>,
+    stream_hosts: Arc<StreamHostStore>,
+    discovery_sources: Arc<DiscoverySourceStore>,
+    credentials: Arc<CredentialStore>,
+    users: Arc<UserStore>,
     audit: Option<Arc<AuditLog>>,
     allowed_uids: Arc<[u32]>,
     auth_permits: Arc<Semaphore>,
@@ -175,6 +209,9 @@ impl FromRequestParts<AppState> for Principal {
             .await
             .map_err(|_| ApiError::Internal)?
             .ok_or(ApiError::Unauthorized)?;
+            if !subject_is_enabled(&metadata, &state.users) {
+                return Err(ApiError::Unauthorized);
+            }
             let principal = Self {
                 actor_type: "api_token",
                 actor_id: metadata.id,
@@ -186,6 +223,17 @@ impl FromRequestParts<AppState> for Principal {
             Ok(principal)
         }
     }
+}
+
+fn subject_is_enabled(metadata: &crate::TokenMetadata, users: &UserStore) -> bool {
+    let Some(user_ref) = metadata.user_ref.as_ref() else {
+        return true;
+    };
+    users.get(user_ref).is_some_and(|user| {
+        user.object.spec.enabled
+            && user.object.spec.role == metadata.role
+            && metadata.owner_id.as_ref() == Some(user_ref)
+    })
 }
 
 #[derive(Debug)]
@@ -496,6 +544,16 @@ struct PreviewResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct TypedPreviewResponse {
+    active_revision: String,
+    active_route_fingerprint: String,
+    candidate_route_fingerprint: String,
+    activation_class: &'static str,
+    changes: Vec<TypedCandidateChange>,
+    config: Config,
+}
+
+#[derive(Debug, Serialize)]
 struct ProxyHostValidationResponse {
     valid: bool,
     summary: ProxyHostPreviewSummary,
@@ -529,7 +587,7 @@ struct ActivationResponse {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TokenCreateRequest {
-    role: Role,
+    user_ref: ObjectId,
     scopes: Vec<Action>,
     expires_unix_secs: u64,
 }
@@ -624,6 +682,25 @@ pub async fn serve(
     .map_err(|_| AdminServerError::ProxyHosts)?;
     let access_policy_store =
         open_access_policy_store(state_dir.join("admin/access-policies.json")).await?;
+    let certificate_store =
+        open_certificate_store(state_dir.join("admin/certificate-objects.json")).await?;
+    let stream_host_store =
+        open_stream_host_store(state_dir.join("admin/stream-hosts.json")).await?;
+    let discovery_source_store =
+        open_discovery_source_store(state_dir.join("admin/discovery-sources.json")).await?;
+    let credential_path = state_dir.join("admin/credentials.json");
+    let credential_recipients = config.tls.state_encryption_recipients.clone();
+    let credential_store = tokio::task::spawn_blocking(move || {
+        CredentialStore::open(credential_path, credential_recipients)
+    })
+    .await
+    .map_err(|error| AdminServerError::Initialization(error.to_string()))?
+    .map_err(|_| AdminServerError::Credentials)?;
+    let user_path = state_dir.join("admin/users.json");
+    let user_store = tokio::task::spawn_blocking(move || UserStore::open(user_path))
+        .await
+        .map_err(|error| AdminServerError::Initialization(error.to_string()))?
+        .map_err(|_| AdminServerError::Users)?;
     let audit = match config.admin.audit_key.clone() {
         Some(reference) => {
             let audit_path = state_dir.join("audit/admin.jsonl");
@@ -652,6 +729,11 @@ pub async fn serve(
         tokens: Arc::new(tokens),
         proxy_hosts: Arc::new(proxy_host_store),
         access_policies: Arc::new(access_policy_store),
+        certificates: Arc::new(certificate_store),
+        stream_hosts: Arc::new(stream_host_store),
+        discovery_sources: Arc::new(discovery_source_store),
+        credentials: Arc::new(credential_store),
+        users: Arc::new(user_store),
         audit,
         allowed_uids: Arc::from(config.admin.allowed_uids.clone()),
         auth_permits: Arc::new(Semaphore::new(config.admin.max_auth_in_flight)),
@@ -700,12 +782,54 @@ pub async fn serve(
         .route("/v1/proxy-hosts/validate", post(validate_proxy_host))
         .route("/v1/proxy-hosts/preview", post(preview_proxy_host))
         .route(
+            "/v1/stream-hosts",
+            get(stream_hosts).post(create_stream_host),
+        )
+        .route(
+            "/v1/stream-hosts/{id}",
+            get(stream_host)
+                .put(update_stream_host)
+                .delete(delete_stream_host),
+        )
+        .route("/v1/stream-hosts/validate", post(validate_stream_host))
+        .route("/v1/stream-hosts/preview", post(preview_stream_host))
+        .route(
+            "/v1/discovery-sources",
+            get(discovery_sources).post(create_discovery_source),
+        )
+        .route(
+            "/v1/discovery-sources/{id}",
+            get(discovery_source)
+                .put(update_discovery_source)
+                .delete(delete_discovery_source),
+        )
+        .route(
+            "/v1/discovery-sources/validate",
+            post(validate_discovery_source),
+        )
+        .route(
+            "/v1/discovery-sources/preview",
+            post(preview_discovery_source),
+        )
+        .route(
             "/v1/proxy-hosts/candidates/{id}/activate",
             post(activate_proxy_host_candidate),
         )
         .route(
             "/v1/proxy-hosts/revisions/{id}/rollback",
             post(rollback_proxy_hosts),
+        )
+        .route(
+            "/v1/config/typed-candidates/{id}/preview",
+            get(preview_typed_candidate),
+        )
+        .route(
+            "/v1/config/typed-candidates/{id}/activate",
+            post(activate_typed_candidate),
+        )
+        .route(
+            "/v1/config/typed-revisions/{id}/rollback",
+            post(rollback_typed_revision),
         )
         .route("/v1/config/candidates", post(create_candidate))
         .route(
@@ -720,12 +844,39 @@ pub async fn serve(
         )
         .route("/v1/routes", get(routes))
         .route("/v1/upstreams", get(upstreams))
-        .route("/v1/providers", get(providers))
-        .route("/v1/certificates", get(certificates))
-        .route("/v1/certificates/{id}/renew", post(renew_certificate))
+        .route("/v1/runtime/providers", get(providers))
+        .route(
+            "/v1/certificates",
+            get(certificate_objects).post(create_certificate),
+        )
+        .route(
+            "/v1/certificates/{id}",
+            get(certificate_object)
+                .put(update_certificate)
+                .delete(delete_certificate),
+        )
+        .route(
+            "/v1/certificates/{id}/renew",
+            post(renew_certificate_object),
+        )
+        .route("/v1/runtime/certificates", get(runtime_certificates))
+        .route(
+            "/v1/runtime/certificates/{id}/renew",
+            post(renew_runtime_certificate),
+        )
+        .route("/v1/credentials", get(credentials).post(create_credential))
+        .route(
+            "/v1/credentials/{id}",
+            get(credential)
+                .put(update_credential)
+                .delete(revoke_credential),
+        )
         .route("/v1/audit", get(audit_records))
         .route("/v1/tokens", get(list_tokens).post(create_token))
         .route("/v1/tokens/{id}/revoke", post(revoke_token))
+        .route("/v1/users", get(users).post(create_user))
+        .route("/v1/users/{id}", get(user).put(update_user))
+        .route("/v1/roles", get(roles))
         .route("/v1/backups", post(create_backup_archive))
         .route("/v1/restore/validate", post(validate_restore_archive))
         .layer(axum::extract::DefaultBodyLimit::max(
@@ -749,6 +900,29 @@ async fn open_access_policy_store(path: PathBuf) -> Result<AccessPolicyStore, Ad
         .await
         .map_err(|error| AdminServerError::Initialization(error.to_string()))?
         .map_err(|_| AdminServerError::AccessPolicies)
+}
+
+async fn open_certificate_store(path: PathBuf) -> Result<CertificateStore, AdminServerError> {
+    tokio::task::spawn_blocking(move || CertificateStore::open(path))
+        .await
+        .map_err(|error| AdminServerError::Initialization(error.to_string()))?
+        .map_err(|_| AdminServerError::Certificates)
+}
+
+async fn open_stream_host_store(path: PathBuf) -> Result<StreamHostStore, AdminServerError> {
+    tokio::task::spawn_blocking(move || StreamHostStore::open(path))
+        .await
+        .map_err(|error| AdminServerError::Initialization(error.to_string()))?
+        .map_err(|_| AdminServerError::StreamHosts)
+}
+
+async fn open_discovery_source_store(
+    path: PathBuf,
+) -> Result<DiscoverySourceStore, AdminServerError> {
+    tokio::task::spawn_blocking(move || DiscoverySourceStore::open(path))
+        .await
+        .map_err(|error| AdminServerError::Initialization(error.to_string()))?
+        .map_err(|_| AdminServerError::DiscoverySources)
 }
 
 async fn bound_request(

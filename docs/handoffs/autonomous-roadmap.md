@@ -2,22 +2,20 @@
 
 Updated: 2026-07-28
 
-- Current branch: `work/autonomous-roadmap`
-- Current completed-unit commit: `edcb53b`
+- Current branch: `feat/phase-15-control-plane-completion`
+- Current completed-unit commit: `HEAD` (this handoff)
 - Current phase: Phase 15, in progress
-- Completed unit: library-only typed certificate ownership metadata
-- Implementation commit: `edcb53b`
+- Completed unit: generalized safe typed candidate diff
+- Implementation commit: `HEAD`
 - Documentation commit: this handoff's documentation commit
-- Remote target: `origin/work/autonomous-roadmap`
+- Remote target: `origin/feat/phase-15-control-plane-completion`
 - Expected working tree after documentation commit: clean
 
 ## Validation status
 
-Format, all-target/all-feature workspace check, Clippy with denied warnings, 322 workspace tests,
-doc tests, Rustdoc, feature tree, fuzz-manifest check, targeted revision/object-store/Admin CLI
-tests, repository documentation links, added-line secret review, and `git diff --check` passed. Two
-intentional ignored tests remain:
-manual reload benchmark and Docker-backed Pebble integration.
+The all-target/all-feature workspace check, 77 proxy-admin tests, focused schema-2/OpenAPI tests,
+Rust CLI tests, formatting, and `git diff --check` passed for this unit. Full final gates remain due
+after the remaining Phase 15 units.
 
 ## Completed Access Policy boundary
 
@@ -46,19 +44,17 @@ older binaries cannot consume new policy-bearing private candidate files.
 
 ## Remaining Phase 15 work
 
-Certificate persistence/RBAC/endpoints and Proxy Host wiring; remaining domain objects and
-contracts; migration/compatibility tests; transport module split; full authorization/security
+Remaining migration/compatibility tests; transport module split; full authorization/security
 review.
 
 ## Exact next task
 
-Add bounded private Certificate ownership persistence without copying certificate secrets.
+Split remaining oversized production modules and freeze migration contracts.
 
 ## Known risks
 
 - Activation is intentionally global and Admin-only until candidate ownership/approval metadata
   supports safe narrower authority.
-- Managed HTTPS endpoints remain blocked until Certificate ownership persistence and wiring land.
 - Local Unix peer identity maps to stable `uid-<uid>`; user/session identity remains Phase 15/16.
 - Transitive `proc-macro-error2 2.0.1` has a pre-existing future-incompatibility warning.
 - Product remains production NO-GO pending later phases and independent review.

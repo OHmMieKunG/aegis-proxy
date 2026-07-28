@@ -1,8 +1,10 @@
 //! Versioned high-level administration contracts.
 
-use std::{fmt, net::IpAddr, str::FromStr};
+use std::{fmt, net::IpAddr, path::Path, str::FromStr};
 
-use aegisproxy_config::{validate_exact_host, validate_upstream_hostname};
+use aegisproxy_config::{
+    provider::ProviderScheme, validate_exact_host, validate_upstream_hostname,
+};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
@@ -15,6 +17,7 @@ const MAX_FORWARD_HOST_BYTES: usize = 253;
 const MAX_ACCESS_POLICY_SHARES: usize = 128;
 const MAX_ACCESS_POLICY_MIDDLEWARES: usize = 64;
 const MAX_CERTIFICATE_SHARES: usize = 128;
+const MAX_SNI_HOSTS: usize = 64;
 
 /// Exact supported high-level administration contract version.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -283,6 +286,197 @@ pub struct ProxyHostSpec {
     pub enabled: bool,
 }
 
+/// Raw stream-listener protocol exposed by the typed control plane.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamProtocol {
+    /// Plain TCP with one default route.
+    Tcp,
+    /// TLS ClientHello SNI passthrough using exact host names.
+    TlsPassthrough,
+}
+
+/// Strict typed Stream Host desired state.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct StreamHostSpec {
+    /// Port bound on the unique public HTTP listener's IP.
+    pub listen_port: u16,
+    /// Plain TCP or exact-SNI TLS passthrough.
+    pub protocol: StreamProtocol,
+    /// Configured forward host name or IP address.
+    pub forward_host: String,
+    /// Configured forward TCP port.
+    pub forward_port: u16,
+    /// Exact canonical ASCII SNI names; TLS passthrough only.
+    #[serde(default)]
+    pub sni_hosts: Vec<String>,
+    /// Whether this object contributes runtime resources.
+    pub enabled: bool,
+}
+
+impl StreamHostSpec {
+    /// Validate the strict transport contract before canonical compilation.
+    pub fn validate_shape(&self) -> Result<(), ContractError> {
+        if self.listen_port == 0
+            || self.forward_port == 0
+            || self.forward_host.is_empty()
+            || self.forward_host.len() > MAX_FORWARD_HOST_BYTES
+            || (self.forward_host.parse::<IpAddr>().is_err()
+                && validate_upstream_hostname(&self.forward_host).is_err())
+            || self.sni_hosts.len() > MAX_SNI_HOSTS
+        {
+            return Err(ContractError::InvalidStreamHost);
+        }
+        match self.protocol {
+            StreamProtocol::Tcp if !self.sni_hosts.is_empty() => {
+                return Err(ContractError::InvalidStreamHost);
+            }
+            StreamProtocol::TlsPassthrough if self.sni_hosts.is_empty() => {
+                return Err(ContractError::InvalidStreamHost);
+            }
+            _ => {}
+        }
+        let hosts = self
+            .sni_hosts
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        if hosts.len() != self.sni_hosts.len()
+            || self.sni_hosts.iter().any(|host| {
+                host.is_empty()
+                    || host.len() > MAX_DOMAIN_BYTES
+                    || !host.is_ascii()
+                    || host.contains('*')
+                    || host.ends_with('.')
+                    || host.parse::<IpAddr>().is_ok()
+                    || validate_exact_host(host).is_err()
+            })
+        {
+            return Err(ContractError::InvalidStreamHost);
+        }
+        Ok(())
+    }
+}
+
+/// Strict file or DNS A/AAAA discovery desired state.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DiscoverySourceSpec {
+    /// Bounded local file endpoint source.
+    File {
+        /// Explicit activation.
+        enabled: bool,
+        /// Existing upstream group owned by this source.
+        upstream_group: ObjectId,
+        /// Absolute bounded provider document path.
+        path: String,
+        /// Fixed endpoint transport.
+        scheme: ProviderScheme,
+        /// Exact HTTPS server name.
+        server_name: Option<String>,
+        /// Refresh interval.
+        refresh_secs: u64,
+        /// Stable-file debounce period.
+        debounce_millis: u64,
+        /// Maximum last-valid age.
+        stale_after_secs: u64,
+        /// Maximum accepted endpoints.
+        max_endpoints: usize,
+    },
+    /// Bounded DNS A/AAAA endpoint source.
+    Dns {
+        /// Explicit activation.
+        enabled: bool,
+        /// Existing upstream group owned by this source.
+        upstream_group: ObjectId,
+        /// Canonical A/AAAA hostname.
+        hostname: String,
+        /// Fixed destination port.
+        port: u16,
+        /// Fixed endpoint transport.
+        scheme: ProviderScheme,
+        /// Exact HTTPS server name.
+        server_name: Option<String>,
+        /// Weight assigned to each answer.
+        weight: u32,
+        /// Refresh interval.
+        refresh_secs: u64,
+        /// Maximum last-valid age.
+        stale_after_secs: u64,
+        /// Maximum accepted A/AAAA answers.
+        max_answers: usize,
+    },
+}
+
+impl DiscoverySourceSpec {
+    /// Validate fields that do not require canonical configuration context.
+    pub fn validate_shape(&self) -> Result<(), ContractError> {
+        let (refresh, stale, scheme, server_name) = match self {
+            Self::File {
+                path,
+                scheme,
+                server_name,
+                refresh_secs,
+                debounce_millis,
+                stale_after_secs,
+                max_endpoints,
+                ..
+            } => {
+                let path_value = Path::new(path);
+                if path.is_empty()
+                    || path.len() > 4_096
+                    || !path_value.is_absolute()
+                    || path_value.file_name().is_none()
+                    || path.contains(['$', '~'])
+                    || path.bytes().any(|byte| byte.is_ascii_control())
+                    || path_value
+                        .components()
+                        .any(|component| component == std::path::Component::ParentDir)
+                    || !(50..=5_000).contains(debounce_millis)
+                    || !(1..=256).contains(max_endpoints)
+                {
+                    return Err(ContractError::InvalidDiscoverySource);
+                }
+                (*refresh_secs, *stale_after_secs, *scheme, server_name)
+            }
+            Self::Dns {
+                hostname,
+                port,
+                scheme,
+                server_name,
+                weight,
+                refresh_secs,
+                stale_after_secs,
+                max_answers,
+                ..
+            } => {
+                if hostname.parse::<IpAddr>().is_ok()
+                    || validate_upstream_hostname(hostname).is_err()
+                    || *port == 0
+                    || !(1..=10_000).contains(weight)
+                    || !(1..=64).contains(max_answers)
+                {
+                    return Err(ContractError::InvalidDiscoverySource);
+                }
+                (*refresh_secs, *stale_after_secs, *scheme, server_name)
+            }
+        };
+        if !(1..=300).contains(&refresh)
+            || stale < refresh
+            || stale > 86_400
+            || match scheme {
+                ProviderScheme::Https => server_name.as_deref().is_none_or(|name| {
+                    name.starts_with("*.") || validate_exact_host(name).is_err()
+                }),
+                ProviderScheme::Http | ProviderScheme::Tcp => server_name.is_some(),
+            }
+        {
+            return Err(ContractError::InvalidDiscoverySource);
+        }
+        Ok(())
+    }
+}
+
 impl ProxyHostSpec {
     /// Validate bounded contract shape before canonical configuration compilation.
     pub fn validate_shape(&self) -> Result<(), ContractError> {
@@ -337,6 +531,12 @@ pub enum ContractError {
     /// Certificate ownership is duplicated, self-shared, or exceeds its fixed bound.
     #[error("invalid certificate ownership")]
     InvalidCertificate,
+    /// Stream Host transport, host, port, or SNI shape is invalid.
+    #[error("invalid stream host")]
+    InvalidStreamHost,
+    /// Discovery Source variant or bounded provider field is invalid.
+    #[error("invalid discovery source")]
+    InvalidDiscoverySource,
 }
 
 #[cfg(test)]
@@ -552,5 +752,66 @@ mod tests {
         let mut invalid = source;
         invalid["spec"]["private_key"] = serde_json::json!("file:///secret.pem");
         assert!(serde_json::from_value::<ApiObject<CertificateSpec>>(invalid).is_err());
+    }
+
+    #[test]
+    fn stream_host_contract_rejects_wildcards_and_protocol_mismatch() {
+        let source = serde_json::json!({
+            "api_version": "v1",
+            "metadata": {"id": "database", "owner_id": "alice"},
+            "spec": {
+                "listen_port": 5432,
+                "protocol": "tls_passthrough",
+                "forward_host": "10.0.0.8",
+                "forward_port": 5432,
+                "sni_hosts": ["db.example.test"],
+                "enabled": true
+            }
+        });
+        let mut object: ApiObject<StreamHostSpec> =
+            serde_json::from_value(source).expect("stream host");
+        object.spec.validate_shape().expect("valid stream host");
+        object.spec.sni_hosts = vec!["*.example.test".into()];
+        assert_eq!(
+            object.spec.validate_shape(),
+            Err(ContractError::InvalidStreamHost)
+        );
+        object.spec.protocol = StreamProtocol::Tcp;
+        object.spec.sni_hosts = vec!["db.example.test".into()];
+        assert_eq!(
+            object.spec.validate_shape(),
+            Err(ContractError::InvalidStreamHost)
+        );
+    }
+
+    #[test]
+    fn discovery_contract_is_strict_bounded_and_credential_free() {
+        let source = serde_json::json!({
+            "api_version": "v1",
+            "metadata": {"id": "nodes", "owner_id": "alice"},
+            "spec": {
+                "kind": "dns",
+                "enabled": true,
+                "upstream_group": "app",
+                "hostname": "nodes.example.test",
+                "port": 8443,
+                "scheme": "https",
+                "server_name": "nodes.example.test",
+                "weight": 1,
+                "refresh_secs": 30,
+                "stale_after_secs": 300,
+                "max_answers": 16
+            }
+        });
+        let object: ApiObject<DiscoverySourceSpec> =
+            serde_json::from_value(source.clone()).expect("discovery source");
+        object.spec.validate_shape().expect("valid source");
+        let encoded = serde_json::to_string(&object).expect("source JSON");
+        for forbidden in ["credential", "password", "token", "ca_bundle"] {
+            assert!(!encoded.contains(forbidden));
+        }
+        let mut unsupported = source;
+        unsupported["spec"]["kind"] = serde_json::json!("docker");
+        assert!(serde_json::from_value::<ApiObject<DiscoverySourceSpec>>(unsupported).is_err());
     }
 }

@@ -52,7 +52,10 @@ Invalid refresh never replaces active snapshot. Last accepted provider endpoints
 
 ## Status and metrics
 
-Authenticated users allowed to read upstreams can call private Unix-socket endpoint `GET /v1/providers`. Response contains only configured ID, kind, bounded state/error class, SHA-256 source hash, last-success/stale timestamps, and endpoint count. It never returns path, hostname, source records, or secret references.
+Authenticated users allowed to read upstreams can call private Unix-socket endpoint
+`GET /v1/runtime/providers`. Response contains only configured ID, kind, bounded state/error class,
+SHA-256 source hash, last-success/stale timestamps, and endpoint count. It never returns path,
+hostname, source records, or secret references.
 
 OpenMetrics exposes four bounded series per configured provider:
 

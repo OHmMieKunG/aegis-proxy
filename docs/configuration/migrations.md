@@ -9,7 +9,7 @@ Phase 15 adds a required `scopes` list to token creation. Each value is one chec
 action. A token is authorized only when both its role and scopes allow the action. The CLI requires
 one or more repeated `--scope` options.
 
-Existing private `admin/tokens.json` records without `scopes` or `owner_id` still parse under
+Existing private `admin/tokens.json` records without `scopes`, `owner_id`, or `user_ref` still parse under
 token-file schema 1. Missing scopes become an empty set and authorize no action. A missing owner also
 prevents typed-object access. This is intentional fail-closed compatibility, not an automatic
 privilege migration. Token hashes and plaintext cannot be converted into newly scoped and owned
@@ -26,7 +26,7 @@ To replace a legacy token:
 Example:
 
 ```text
-rust-proxy token create --socket SOCKET --expect REV --role operator \
+rust-proxy token create --socket SOCKET --expect REV --user-ref operator \
   --scope read-status --scope read-proxy-hosts
 ```
 

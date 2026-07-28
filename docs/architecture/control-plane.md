@@ -65,11 +65,12 @@ durable object without its candidate. Activation remains available only through 
 revision coordinator and is not performed by this endpoint.
 
 Each typed candidate revision stores an optional lowercase SHA-256 `binding_hash` in immutable
-revision metadata. Before desired-state mutation, administration writes a strict schema-v1,
-owner/object-ordered snapshot under the private bounded `admin/proxy-host-candidates` directory.
-The hash covers schema version and the complete seven-field object set, including disabled objects
-that generate no runtime resources. Low-level configuration candidates remain unbound. Identical
-configuration with different typed state is not deduplicated into one revision.
+revision metadata. New mutations write schema 2 under the private bounded
+`admin/proxy-host-candidates` directory. Its canonical hash covers complete Proxy Hosts, Stream
+Hosts, Discovery Sources, disabled objects, and exact referenced Access Policy and Certificate
+records. Schema-1 Proxy-Host-only snapshots remain readable without rewrite. Low-level
+configuration candidates remain unbound. Identical configuration with different typed state is
+not deduplicated into one revision.
 The configuration revision store remains the retention authority. Admin startup and typed
 candidate creation reconcile the bounded snapshot directory against its retained metadata.
 Reconciliation validates every entry before deletion, preserves every retained matching binding,
@@ -108,20 +109,22 @@ before publication. Policy owners may update or revoke policies; consumers canno
 The process-wide administrative mutation permit serializes policy mutation with candidate creation
 and activation.
 
-`ApiObject<CertificateSpec>` is currently library-only. It binds owner, explicit shares, enabled
+`ApiObject<CertificateSpec>` binds owner, explicit shares, enabled
 state, and one opaque existing certificate ID. Metadata compilation validates canonical
 configuration, retains only covered hosts plus exactly one HTTPS listener/certificate ID pair, and
 copies no certificate-chain or private-key reference. Selection requires enabled exact or
-single-label wildcard coverage, owner/share authorization, and one unambiguous match. Persistence,
-RBAC/endpoints, and Proxy Host endpoint integration remain incomplete.
+single-label wildcard coverage, owner/share authorization, and one unambiguous match. The private
+API exposes bounded owner-scoped CRUD; observed status and direct runtime renewal remain isolated
+under `/v1/runtime/certificates`.
 
 `PUT` and `DELETE /v1/proxy-hosts/{id}` follow the same ordering. They require
 `X-Aegis-Object-Generation` in addition to active-revision `If-Match`. Update enforces path/body
 identity and owner equality; delete resolves only within authenticated owner. Stale generation or
 store epoch returns fixed conflict without desired/runtime mutation.
 
-`POST /v1/proxy-hosts/candidates/{id}/activate` is the only typed activation boundary. It requires
-Admin role plus exact `activate_proxy_host` scope for tokens and exact active-revision `If-Match`.
+`POST /v1/config/typed-candidates/{id}/activate` is the canonical typed activation boundary. It
+requires Admin role plus exact `activate_typed_candidate` scope for tokens and exact
+active-revision `If-Match`.
 While the durable mutation audit is open, a single bounded permit serializes administrative
 mutations. The handler snapshots every stored Proxy Host, recompiles the complete desired set
 against the active configuration, compares canonical content hashes with the immutable revision,
@@ -131,8 +134,8 @@ candidates fail without publication. The compiler itself still has no activation
 capability. Operator activation stays disabled until candidates carry safe ownership and approval
 metadata.
 
-`POST /v1/proxy-hosts/revisions/{id}/rollback` is the separate typed rollback boundary. It requires
-Admin role, exact `rollback_proxy_host` token scope, and exact active-revision CAS. The target must
+`POST /v1/config/typed-revisions/{id}/rollback` is the canonical typed rollback boundary. It
+requires Admin role, exact `rollback_typed_revision` token scope, and exact active-revision CAS. The target must
 have valid bound typed desired state and policy records equal to current dependencies. The handler
 compiles that historical object set against the
 current manual configuration, creates a new immutable bound forward revision, journals previous
@@ -140,6 +143,8 @@ and target object records, then invokes the same activation coordinator. It neve
 historical revision directly or rewrites history. Activation failure restores previous objects;
 an indeterminate activation retains the journal and blocks mutation. Startup selects target versus
 previous desired state from the durable active revision before serving Admin requests.
+The former Proxy Host activation and rollback paths are deprecated schema-1-only aliases; their
+existing token scopes gain no schema-2 authority.
 
 Machine contract: [`config/schema/admin-openapi.yaml`](../../config/schema/admin-openapi.yaml).
 The checked contract requires nonempty canonical scopes when creating tokens and returns only token

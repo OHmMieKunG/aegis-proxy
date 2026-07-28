@@ -71,6 +71,20 @@ AegisProxy has not published a supported release.
   publication.
 - Added a strict secret-free Certificate ownership contract and deterministic managed-HTTPS
   selection metadata for existing certificate identities and HTTPS listeners.
+- Added bounded typed Certificate persistence, exact owner-scoped CRUD permissions and CLI,
+  managed-HTTPS selection, typed renewal, and separate runtime certificate status routes.
+- Added strict Stream Host and file/DNS Discovery Source contracts, deterministic no-I/O compilers,
+  bounded owner-scoped stores, exact scopes, previews, non-active candidates, and CLI commands.
+- Added deterministic schema-2 unified typed snapshots, canonical preview/activation/rollback
+  routes, exact Access Policy and Certificate dependency binding, and schema-1 compatibility
+  limited to deprecated Proxy Host aliases.
+- Added bounded encrypted Stored Credentials with write-only create/rotation values, redacted
+  owner-scoped metadata, exact scopes, CLI lifecycle, and ciphertext removal on revoke.
+- Added durable Users, read-only built-in Roles, exact identity/token scopes, and subject-bound
+  token issuance; disabled users cannot authenticate and legacy subjectless tokens gain nothing.
+- Generalized schema-2 candidate preview differences across every typed object and dependency using
+  closed field-name allowlists with no raw values or secret-bearing representation.
+- Prevented low-level configuration activation and rollback from accepting typed-bound revisions.
 - Fixed token revocation CLI parsing for valid generated token IDs that begin with a hyphen.
 
 See [`STATUS.md`](STATUS.md) and [`docs/history/`](docs/history/README.md).

@@ -49,6 +49,10 @@ pub enum Action {
     ActivateProxyHost,
     /// Restore bound typed Proxy Host desired state through a forward revision.
     RollbackProxyHost,
+    /// Activate a verified unified typed candidate.
+    ActivateTypedCandidate,
+    /// Restore a unified typed snapshot through a forward revision.
+    RollbackTypedRevision,
     /// Read typed Access Policies within authenticated owner scope.
     ReadAccessPolicies,
     /// Create an owned typed Access Policy.
@@ -65,6 +69,38 @@ pub enum Action {
     Drain,
     /// Read certificate metadata.
     ReadCertificates,
+    /// Read owned typed Certificate objects.
+    ReadCertificateObjects,
+    /// Create an owned typed Certificate object.
+    CreateCertificate,
+    /// Update an owned typed Certificate object.
+    UpdateCertificate,
+    /// Delete an owned typed Certificate object.
+    DeleteCertificate,
+    /// Read owned typed Stream Hosts.
+    ReadStreamHosts,
+    /// Create an owned typed Stream Host.
+    CreateStreamHost,
+    /// Update an owned typed Stream Host.
+    UpdateStreamHost,
+    /// Delete an owned typed Stream Host.
+    DeleteStreamHost,
+    /// Read owned typed Discovery Sources.
+    ReadDiscoverySources,
+    /// Create an owned typed Discovery Source.
+    CreateDiscoverySource,
+    /// Update an owned typed Discovery Source.
+    UpdateDiscoverySource,
+    /// Delete an owned typed Discovery Source.
+    DeleteDiscoverySource,
+    /// Read owned Stored Credential metadata.
+    ReadCredentials,
+    /// Create an encrypted owned Stored Credential.
+    CreateCredential,
+    /// Update or rotate an owned Stored Credential.
+    UpdateCredential,
+    /// Revoke an owned Stored Credential.
+    RevokeCredential,
     /// Request managed certificate renewal.
     RenewCertificate,
     /// Read or export audit records.
@@ -75,6 +111,20 @@ pub enum Action {
     ValidateRestore,
     /// Manage administrative identities and roles.
     ManageIdentities,
+    /// Read redacted API-token metadata.
+    ReadTokens,
+    /// Create a subject-bound API token.
+    CreateToken,
+    /// Revoke an API token.
+    RevokeToken,
+    /// Read user identities.
+    ReadUsers,
+    /// Create a user identity.
+    CreateUser,
+    /// Update a user identity.
+    UpdateUser,
+    /// Read immutable built-in roles.
+    ReadRoles,
 }
 
 /// Invalid API-token scope set.
@@ -171,6 +221,22 @@ impl Role {
                     | Action::ReadUpstreams
                     | Action::Drain
                     | Action::ReadCertificates
+                    | Action::ReadCertificateObjects
+                    | Action::CreateCertificate
+                    | Action::UpdateCertificate
+                    | Action::DeleteCertificate
+                    | Action::ReadStreamHosts
+                    | Action::CreateStreamHost
+                    | Action::UpdateStreamHost
+                    | Action::DeleteStreamHost
+                    | Action::ReadDiscoverySources
+                    | Action::CreateDiscoverySource
+                    | Action::UpdateDiscoverySource
+                    | Action::DeleteDiscoverySource
+                    | Action::ReadCredentials
+                    | Action::CreateCredential
+                    | Action::UpdateCredential
+                    | Action::RevokeCredential
                     | Action::RenewCertificate
             ),
             Self::Auditor => matches!(
@@ -183,6 +249,9 @@ impl Role {
                     | Action::ReadRoutes
                     | Action::ReadUpstreams
                     | Action::ReadCertificates
+                    | Action::ReadCertificateObjects
+                    | Action::ReadStreamHosts
+                    | Action::ReadDiscoverySources
                     | Action::ReadAudit
             ),
             Self::Viewer => matches!(
@@ -195,6 +264,9 @@ impl Role {
                     | Action::ReadRoutes
                     | Action::ReadUpstreams
                     | Action::ReadCertificates
+                    | Action::ReadCertificateObjects
+                    | Action::ReadStreamHosts
+                    | Action::ReadDiscoverySources
             ),
         }
     }
@@ -204,7 +276,7 @@ impl Role {
 mod tests {
     use super::{Action, Role, TokenScopeError, TokenScopes};
 
-    const ACTIONS: [Action; 27] = [
+    const ACTIONS: [Action; 52] = [
         Action::ReadStatus,
         Action::ReadConfig,
         Action::ValidateConfig,
@@ -219,6 +291,8 @@ mod tests {
         Action::DeleteProxyHost,
         Action::ActivateProxyHost,
         Action::RollbackProxyHost,
+        Action::ActivateTypedCandidate,
+        Action::RollbackTypedRevision,
         Action::ReadAccessPolicies,
         Action::CreateAccessPolicy,
         Action::UpdateAccessPolicy,
@@ -227,19 +301,42 @@ mod tests {
         Action::ReadUpstreams,
         Action::Drain,
         Action::ReadCertificates,
+        Action::ReadCertificateObjects,
+        Action::CreateCertificate,
+        Action::UpdateCertificate,
+        Action::DeleteCertificate,
+        Action::ReadStreamHosts,
+        Action::CreateStreamHost,
+        Action::UpdateStreamHost,
+        Action::DeleteStreamHost,
+        Action::ReadDiscoverySources,
+        Action::CreateDiscoverySource,
+        Action::UpdateDiscoverySource,
+        Action::DeleteDiscoverySource,
+        Action::ReadCredentials,
+        Action::CreateCredential,
+        Action::UpdateCredential,
+        Action::RevokeCredential,
         Action::RenewCertificate,
         Action::ReadAudit,
         Action::CreateBackup,
         Action::ValidateRestore,
         Action::ManageIdentities,
+        Action::ReadTokens,
+        Action::CreateToken,
+        Action::RevokeToken,
+        Action::ReadUsers,
+        Action::CreateUser,
+        Action::UpdateUser,
+        Action::ReadRoles,
     ];
 
     #[test]
     fn role_matrix_is_deny_by_default() {
         let expected = [
-            (Role::Viewer, 8),
-            (Role::Auditor, 9),
-            (Role::Operator, 19),
+            (Role::Viewer, 11),
+            (Role::Auditor, 12),
+            (Role::Operator, 35),
             (Role::Admin, ACTIONS.len()),
         ];
         for (role, count) in expected {

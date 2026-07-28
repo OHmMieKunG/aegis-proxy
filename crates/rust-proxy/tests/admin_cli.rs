@@ -140,6 +140,18 @@ allow = ["127.0.0.1/32"]
         response
     }
 
+    fn raw_post(socket: &str, path: &str, expected_revision: &str) -> String {
+        let mut stream = UnixStream::connect(socket).expect("connect admin socket");
+        write!(
+            stream,
+            "POST {path} HTTP/1.1\r\nHost: localhost\r\nIf-Match: \"{expected_revision}\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+        .expect("write request");
+        let mut response = String::new();
+        stream.read_to_string(&mut response).expect("read response");
+        response
+    }
+
     #[test]
     fn private_cli_enforces_cas_rbac_token_and_audit_contracts() {
         let root = root();
@@ -321,6 +333,61 @@ allow = ["127.0.0.1/32"]
         assert_eq!(typed_get_json["generation"], 3);
 
         let expected = active_revision(&state);
+        for (command, object) in [
+            (
+                "stream-host",
+                serde_json::json!({
+                    "api_version": "v1",
+                    "metadata": {"id": "stream-cli", "owner_id": owner.clone()},
+                    "spec": {
+                        "listen_port": 9443,
+                        "protocol": "tls_passthrough",
+                        "forward_host": "127.0.0.1",
+                        "forward_port": 9000,
+                        "sni_hosts": ["stream.example.test"],
+                        "enabled": false
+                    }
+                }),
+            ),
+            (
+                "discovery-source",
+                serde_json::json!({
+                    "api_version": "v1",
+                    "metadata": {"id": "discovery-cli", "owner_id": owner.clone()},
+                    "spec": {
+                        "kind": "dns",
+                        "enabled": false,
+                        "upstream_group": "app",
+                        "hostname": "nodes.example.test",
+                        "port": 9000,
+                        "scheme": "http",
+                        "server_name": null,
+                        "weight": 1,
+                        "refresh_secs": 30,
+                        "stale_after_secs": 300,
+                        "max_answers": 16
+                    }
+                }),
+            ),
+        ] {
+            let path = daemon.root.join(format!("{command}.json"));
+            fs::write(
+                &path,
+                serde_json::to_vec_pretty(&object).expect("typed domain JSON"),
+            )
+            .expect("typed domain file");
+            let create = Command::new(binary())
+                .args([command, "create", "--socket", socket, "--expect", &expected])
+                .arg(&path)
+                .output()
+                .expect("typed domain create");
+            assert!(create.status.success(), "{:?}", create.stderr);
+            let list = run(&[command, "list", "--socket", socket]);
+            assert!(list.status.success(), "{:?}", list.stderr);
+            let listed: serde_json::Value =
+                serde_json::from_slice(&list.stdout).expect("typed domain list");
+            assert_eq!(listed.as_array().map(Vec::len), Some(1));
+        }
         let first_activation = Command::new(binary())
             .args(["config", "activate", "--socket", socket, "--file"])
             .arg(&first)
@@ -502,6 +569,29 @@ allow = ["127.0.0.1/32"]
         ]);
         assert_eq!(denied_owner.status.code(), Some(5));
 
+        for (id, role) in [("viewer-user", "viewer"), (owner.as_str(), "operator")] {
+            let path = daemon.root.join(format!("{id}.json"));
+            fs::write(
+                &path,
+                serde_json::to_vec(&serde_json::json!({
+                    "api_version": "v1",
+                    "metadata": {"id": id, "owner_id": id},
+                    "spec": {"display_name": id, "role": role, "enabled": true}
+                }))
+                .expect("user JSON"),
+            )
+            .expect("user file");
+            assert!(
+                Command::new(binary())
+                    .args(["user", "create", "--socket", socket, "--expect", &current])
+                    .arg(path)
+                    .output()
+                    .expect("create user")
+                    .status
+                    .success()
+            );
+        }
+
         let escalation = run(&[
             "token",
             "create",
@@ -509,8 +599,8 @@ allow = ["127.0.0.1/32"]
             socket,
             "--expect",
             &current,
-            "--role",
-            "viewer",
+            "--user-ref",
+            "viewer-user",
             "--scope",
             "activate-config",
             "--ttl-secs",
@@ -524,8 +614,8 @@ allow = ["127.0.0.1/32"]
             socket,
             "--expect",
             &current,
-            "--role",
-            "viewer",
+            "--user-ref",
+            "viewer-user",
             "--scope",
             "read-status",
             "--ttl-secs",
@@ -618,8 +708,8 @@ allow = ["127.0.0.1/32"]
             socket,
             "--expect",
             &current,
-            "--role",
-            "operator",
+            "--user-ref",
+            &owner,
             "--scope",
             "read-status",
             "--scope",
@@ -1320,6 +1410,14 @@ allow = ["127.0.0.1/32"]
         );
         assert_eq!(candidate_binding["access_policies"][0]["generation"], 2);
         assert_eq!(active_revision(&state), current);
+        for path in [
+            format!("/v1/config/candidates/{candidate_id}/activate"),
+            format!("/v1/config/revisions/{candidate_id}/rollback"),
+        ] {
+            let bypass = raw_post(socket, &path, &current);
+            assert!(bypass.starts_with("HTTP/1.1 409 "), "{bypass}");
+            assert_eq!(active_revision(&state), current);
+        }
         let created_list = run(&["proxy-host", "list", "--socket", socket]);
         assert!(created_list.status.success(), "{:?}", created_list.stderr);
         let created_list_json: serde_json::Value =
@@ -1688,8 +1786,8 @@ allow = ["127.0.0.1/32"]
         assert!(audit.contains("\"action\":\"proxy_host_create\""));
         assert!(audit.contains("\"action\":\"proxy_host_update\""));
         assert!(audit.contains("\"action\":\"proxy_host_delete\""));
-        assert!(audit.contains("\"action\":\"proxy_host_activate\""));
-        assert!(audit.contains("\"action\":\"proxy_host_rollback\""));
+        assert!(audit.contains("\"action\":\"typed_candidate_activate\""));
+        assert!(audit.contains("\"action\":\"typed_revision_rollback\""));
         assert!(audit.contains("\"action\":\"access_policy_create\""));
         assert!(audit.contains("\"action\":\"access_policy_update\""));
         assert!(audit.contains("\"action\":\"access_policy_delete\""));

@@ -271,6 +271,137 @@ paths:
         "200":
           description: Bound typed desired state restored through a new active forward revision
         default: {$ref: "#/components/responses/Error"}
+  /v1/config/typed-candidates/{id}/preview:
+    get:
+      operationId: previewTypedCandidate
+      parameters: [{$ref: "#/components/parameters/RevisionId"}]
+      responses:
+        "200": {description: Redacted unified typed candidate preview}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/config/typed-candidates/{id}/activate:
+    post:
+      operationId: activateTypedCandidate
+      parameters:
+        - {$ref: "#/components/parameters/RevisionId"}
+        - {$ref: "#/components/parameters/IfMatch"}
+      responses:
+        "200": {description: Verified schema-2 typed candidate activated}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/config/typed-revisions/{id}/rollback:
+    post:
+      operationId: rollbackTypedRevision
+      parameters:
+        - {$ref: "#/components/parameters/RevisionId"}
+        - {$ref: "#/components/parameters/IfMatch"}
+      responses:
+        "200": {description: Unified typed state restored through a forward revision}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/stream-hosts:
+    get:
+      operationId: listStreamHosts
+      responses:
+        "200": {description: Owner-scoped Stream Hosts}
+        default: {$ref: "#/components/responses/Error"}
+    post:
+      operationId: createStreamHost
+      parameters: [{$ref: "#/components/parameters/IfMatch"}]
+      requestBody: {$ref: "#/components/requestBodies/StreamHostObject"}
+      responses:
+        "201": {description: Stream Host and non-active candidate created}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/stream-hosts/{id}:
+    get:
+      operationId: getStreamHost
+      parameters: [{$ref: "#/components/parameters/TypedObjectId"}]
+      responses:
+        "200": {description: Owner-scoped Stream Host}
+        default: {$ref: "#/components/responses/Error"}
+    put:
+      operationId: updateStreamHost
+      parameters:
+        - {$ref: "#/components/parameters/TypedObjectId"}
+        - {$ref: "#/components/parameters/IfMatch"}
+        - {$ref: "#/components/parameters/ObjectGeneration"}
+      requestBody: {$ref: "#/components/requestBodies/StreamHostObject"}
+      responses:
+        "200": {description: Stream Host replaced and non-active candidate created}
+        default: {$ref: "#/components/responses/Error"}
+    delete:
+      operationId: deleteStreamHost
+      parameters:
+        - {$ref: "#/components/parameters/TypedObjectId"}
+        - {$ref: "#/components/parameters/IfMatch"}
+        - {$ref: "#/components/parameters/ObjectGeneration"}
+      responses:
+        "200": {description: Stream Host deleted and non-active candidate created}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/stream-hosts/validate:
+    post:
+      operationId: validateStreamHost
+      requestBody: {$ref: "#/components/requestBodies/StreamHostObject"}
+      responses:
+        "200": {description: Stream Host is valid without persistence}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/stream-hosts/preview:
+    post:
+      operationId: previewStreamHost
+      requestBody: {$ref: "#/components/requestBodies/StreamHostObject"}
+      responses:
+        "200": {description: Redacted non-active Stream Host candidate preview}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/discovery-sources:
+    get:
+      operationId: listDiscoverySources
+      responses:
+        "200": {description: Owner-scoped Discovery Sources}
+        default: {$ref: "#/components/responses/Error"}
+    post:
+      operationId: createDiscoverySource
+      parameters: [{$ref: "#/components/parameters/IfMatch"}]
+      requestBody: {$ref: "#/components/requestBodies/DiscoverySourceObject"}
+      responses:
+        "201": {description: Discovery Source and non-active candidate created}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/discovery-sources/{id}:
+    get:
+      operationId: getDiscoverySource
+      parameters: [{$ref: "#/components/parameters/TypedObjectId"}]
+      responses:
+        "200": {description: Owner-scoped Discovery Source}
+        default: {$ref: "#/components/responses/Error"}
+    put:
+      operationId: updateDiscoverySource
+      parameters:
+        - {$ref: "#/components/parameters/TypedObjectId"}
+        - {$ref: "#/components/parameters/IfMatch"}
+        - {$ref: "#/components/parameters/ObjectGeneration"}
+      requestBody: {$ref: "#/components/requestBodies/DiscoverySourceObject"}
+      responses:
+        "200": {description: Discovery Source replaced and non-active candidate created}
+        default: {$ref: "#/components/responses/Error"}
+    delete:
+      operationId: deleteDiscoverySource
+      parameters:
+        - {$ref: "#/components/parameters/TypedObjectId"}
+        - {$ref: "#/components/parameters/IfMatch"}
+        - {$ref: "#/components/parameters/ObjectGeneration"}
+      responses:
+        "200": {description: Discovery Source deleted and non-active candidate created}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/discovery-sources/validate:
+    post:
+      operationId: validateDiscoverySource
+      requestBody: {$ref: "#/components/requestBodies/DiscoverySourceObject"}
+      responses:
+        "200": {description: Discovery Source is valid without persistence or I/O}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/discovery-sources/preview:
+    post:
+      operationId: previewDiscoverySource
+      requestBody: {$ref: "#/components/requestBodies/DiscoverySourceObject"}
+      responses:
+        "200": {description: Redacted non-active Discovery Source candidate preview}
+        default: {$ref: "#/components/responses/Error"}
   /v1/config/candidates:
     post:
       operationId: createCandidate
@@ -325,7 +456,7 @@ paths:
       responses:
         "200": {description: Redacted upstream summaries}
         default: {$ref: "#/components/responses/Error"}
-  /v1/providers:
+  /v1/runtime/providers:
     get:
       operationId: listProviders
       responses:
@@ -335,7 +466,40 @@ paths:
     get:
       operationId: listCertificates
       responses:
-        "200": {description: Certificate policy metadata}
+        "200": {description: Owner-scoped typed Certificate objects}
+        default: {$ref: "#/components/responses/Error"}
+    post:
+      operationId: createCertificate
+      parameters: [{$ref: "#/components/parameters/IfMatch"}]
+      requestBody: {$ref: "#/components/requestBodies/CertificateObject"}
+      responses:
+        "201": {description: Certificate object persisted}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/certificates/{id}:
+    get:
+      operationId: getCertificate
+      parameters: [{$ref: "#/components/parameters/TypedObjectId"}]
+      responses:
+        "200": {description: Owner-scoped typed Certificate object}
+        default: {$ref: "#/components/responses/Error"}
+    put:
+      operationId: updateCertificate
+      parameters:
+        - {$ref: "#/components/parameters/TypedObjectId"}
+        - {$ref: "#/components/parameters/IfMatch"}
+        - {$ref: "#/components/parameters/ObjectGeneration"}
+      requestBody: {$ref: "#/components/requestBodies/CertificateObject"}
+      responses:
+        "200": {description: Certificate object replaced}
+        default: {$ref: "#/components/responses/Error"}
+    delete:
+      operationId: deleteCertificate
+      parameters:
+        - {$ref: "#/components/parameters/TypedObjectId"}
+        - {$ref: "#/components/parameters/IfMatch"}
+        - {$ref: "#/components/parameters/ObjectGeneration"}
+      responses:
+        "200": {description: Certificate object deleted}
         default: {$ref: "#/components/responses/Error"}
   /v1/certificates/{id}/renew:
     post:
@@ -345,6 +509,60 @@ paths:
         - {$ref: "#/components/parameters/IfMatch"}
       responses:
         "200": {description: Renewal request persisted}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/runtime/certificates:
+    get:
+      operationId: listRuntimeCertificates
+      responses:
+        "200": {description: Observed runtime certificate status}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/runtime/certificates/{id}/renew:
+    post:
+      operationId: renewRuntimeCertificate
+      parameters:
+        - {$ref: "#/components/parameters/ObjectId"}
+        - {$ref: "#/components/parameters/IfMatch"}
+      responses:
+        "200": {description: Runtime certificate renewal request persisted}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/credentials:
+    get:
+      operationId: listCredentials
+      responses:
+        "200": {description: Owner-scoped secret-free Stored Credential metadata}
+        default: {$ref: "#/components/responses/Error"}
+    post:
+      operationId: createCredential
+      parameters: [{$ref: "#/components/parameters/IfMatch"}]
+      requestBody: {$ref: "#/components/requestBodies/CredentialObject"}
+      responses:
+        "201": {description: Credential encrypted and metadata returned}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/credentials/{id}:
+    get:
+      operationId: getCredential
+      parameters: [{$ref: "#/components/parameters/TypedObjectId"}]
+      responses:
+        "200": {description: Secret-free Stored Credential metadata}
+        default: {$ref: "#/components/responses/Error"}
+    put:
+      operationId: updateCredential
+      parameters:
+        - {$ref: "#/components/parameters/TypedObjectId"}
+        - {$ref: "#/components/parameters/IfMatch"}
+        - {$ref: "#/components/parameters/ObjectGeneration"}
+      requestBody: {$ref: "#/components/requestBodies/CredentialObject"}
+      responses:
+        "200": {description: Credential metadata updated or value rotated}
+        default: {$ref: "#/components/responses/Error"}
+    delete:
+      operationId: revokeCredential
+      parameters:
+        - {$ref: "#/components/parameters/TypedObjectId"}
+        - {$ref: "#/components/parameters/IfMatch"}
+        - {$ref: "#/components/parameters/ObjectGeneration"}
+      responses:
+        "200": {description: Usable ciphertext removed}
         default: {$ref: "#/components/responses/Error"}
   /v1/audit:
     get:
@@ -378,13 +596,13 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [role, scopes, expires_unix_secs]
+              required: [user_ref, scopes, expires_unix_secs]
               properties:
-                role: {type: string, enum: [viewer, auditor, operator, admin]}
+                user_ref: {$ref: "#/components/schemas/ObjectId"}
                 scopes:
                   type: array
                   minItems: 1
-                  maxItems: 27
+                  maxItems: 52
                   uniqueItems: true
                   items:
                     $ref: "#/components/schemas/TokenScope"
@@ -404,6 +622,42 @@ paths:
         - {$ref: "#/components/parameters/IfMatch"}
       responses:
         "200": {description: Token revoked}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/users:
+    get:
+      operationId: listUsers
+      responses:
+        "200": {description: User identities}
+        default: {$ref: "#/components/responses/Error"}
+    post:
+      operationId: createUser
+      parameters: [{$ref: "#/components/parameters/IfMatch"}]
+      requestBody: {$ref: "#/components/requestBodies/UserObject"}
+      responses:
+        "201": {description: User created}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/users/{id}:
+    get:
+      operationId: getUser
+      parameters: [{$ref: "#/components/parameters/TypedObjectId"}]
+      responses:
+        "200": {description: User identity}
+        default: {$ref: "#/components/responses/Error"}
+    put:
+      operationId: updateUser
+      parameters:
+        - {$ref: "#/components/parameters/TypedObjectId"}
+        - {$ref: "#/components/parameters/IfMatch"}
+        - {$ref: "#/components/parameters/ObjectGeneration"}
+      requestBody: {$ref: "#/components/requestBodies/UserObject"}
+      responses:
+        "200": {description: User updated}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/roles:
+    get:
+      operationId: listRoles
+      responses:
+        "200": {description: Immutable built-in roles}
         default: {$ref: "#/components/responses/Error"}
   /v1/backups:
     post:
@@ -493,6 +747,31 @@ components:
       content:
         application/json:
           schema: {$ref: "#/components/schemas/ProxyHostObject"}
+    CertificateObject:
+      required: true
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/CertificateObject"}
+    StreamHostObject:
+      required: true
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/StreamHostObject"}
+    DiscoverySourceObject:
+      required: true
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/DiscoverySourceObject"}
+    CredentialObject:
+      required: true
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/CredentialObject"}
+    UserObject:
+      required: true
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/UserObject"}
   responses:
     Error:
       description: Stable redacted error
@@ -504,6 +783,49 @@ components:
     ObjectId:
       type: string
       pattern: '^[a-z][a-z0-9_-]{0,63}$'
+    CredentialObject:
+      type: object
+      additionalProperties: false
+      required: [api_version, metadata, spec]
+      properties:
+        api_version: {const: v1}
+        metadata:
+          type: object
+          additionalProperties: false
+          required: [id, owner_id]
+          properties:
+            id: {$ref: "#/components/schemas/ObjectId"}
+            owner_id: {$ref: "#/components/schemas/ObjectId"}
+        spec:
+          type: object
+          additionalProperties: false
+          required: [label, enabled, expires_unix_secs]
+          properties:
+            label: {type: string, minLength: 1, maxLength: 128}
+            enabled: {type: boolean}
+            expires_unix_secs: {type: [integer, "null"], minimum: 1}
+            value: {type: string, minLength: 1, maxLength: 65536, writeOnly: true}
+    UserObject:
+      type: object
+      additionalProperties: false
+      required: [api_version, metadata, spec]
+      properties:
+        api_version: {const: v1}
+        metadata:
+          type: object
+          additionalProperties: false
+          required: [id, owner_id]
+          properties:
+            id: {$ref: "#/components/schemas/ObjectId"}
+            owner_id: {$ref: "#/components/schemas/ObjectId"}
+        spec:
+          type: object
+          additionalProperties: false
+          required: [display_name, role, enabled]
+          properties:
+            display_name: {type: string, minLength: 1, maxLength: 128}
+            role: {type: string, enum: [viewer, auditor, operator, admin]}
+            enabled: {type: boolean}
     MiddlewareRef:
       type: string
       pattern: '^[a-z][a-z0-9_-]{0,62}$'
@@ -579,6 +901,109 @@ components:
       properties:
         generation: {type: integer, minimum: 1}
         object: {$ref: "#/components/schemas/AccessPolicyObject"}
+    CertificateObject:
+      type: object
+      additionalProperties: false
+      required: [api_version, metadata, spec]
+      properties:
+        api_version: {const: v1}
+        metadata:
+          type: object
+          additionalProperties: false
+          required: [id, owner_id]
+          properties:
+            id: {$ref: "#/components/schemas/ObjectId"}
+            owner_id: {$ref: "#/components/schemas/ObjectId"}
+        spec:
+          type: object
+          additionalProperties: false
+          required: [enabled, certificate_ref]
+          properties:
+            enabled: {type: boolean}
+            shared_with:
+              type: array
+              maxItems: 128
+              uniqueItems: true
+              items: {$ref: "#/components/schemas/ObjectId"}
+            certificate_ref: {$ref: "#/components/schemas/ObjectId"}
+    StoredCertificate:
+      type: object
+      additionalProperties: false
+      required: [generation, object]
+      properties:
+        generation: {type: integer, minimum: 1}
+        object: {$ref: "#/components/schemas/CertificateObject"}
+    StreamHostObject:
+      type: object
+      additionalProperties: false
+      required: [api_version, metadata, spec]
+      properties:
+        api_version: {const: v1}
+        metadata: {$ref: "#/components/schemas/ObjectMetadata"}
+        spec:
+          type: object
+          additionalProperties: false
+          required: [listen_port, protocol, forward_host, forward_port, sni_hosts, enabled]
+          properties:
+            listen_port: {type: integer, minimum: 1, maximum: 65535}
+            protocol: {type: string, enum: [tcp, tls_passthrough]}
+            forward_host: {type: string, minLength: 1, maxLength: 253}
+            forward_port: {type: integer, minimum: 1, maximum: 65535}
+            sni_hosts:
+              type: array
+              maxItems: 64
+              uniqueItems: true
+              items: {type: string, minLength: 1, maxLength: 253}
+            enabled: {type: boolean}
+    DiscoverySourceObject:
+      type: object
+      additionalProperties: false
+      required: [api_version, metadata, spec]
+      properties:
+        api_version: {const: v1}
+        metadata: {$ref: "#/components/schemas/ObjectMetadata"}
+        spec:
+          oneOf:
+            - {$ref: "#/components/schemas/FileDiscoverySource"}
+            - {$ref: "#/components/schemas/DnsDiscoverySource"}
+    ObjectMetadata:
+      type: object
+      additionalProperties: false
+      required: [id, owner_id]
+      properties:
+        id: {$ref: "#/components/schemas/ObjectId"}
+        owner_id: {$ref: "#/components/schemas/ObjectId"}
+    FileDiscoverySource:
+      type: object
+      additionalProperties: false
+      required: [kind, enabled, upstream_group, path, scheme, server_name, refresh_secs, debounce_millis, stale_after_secs, max_endpoints]
+      properties:
+        kind: {const: file}
+        enabled: {type: boolean}
+        upstream_group: {$ref: "#/components/schemas/ObjectId"}
+        path: {type: string, maxLength: 4096}
+        scheme: {type: string, enum: [http, https, tcp]}
+        server_name: {oneOf: [{type: string}, {type: "null"}]}
+        refresh_secs: {type: integer, minimum: 1, maximum: 300}
+        debounce_millis: {type: integer, minimum: 50, maximum: 5000}
+        stale_after_secs: {type: integer, minimum: 1, maximum: 86400}
+        max_endpoints: {type: integer, minimum: 1, maximum: 256}
+    DnsDiscoverySource:
+      type: object
+      additionalProperties: false
+      required: [kind, enabled, upstream_group, hostname, port, scheme, server_name, weight, refresh_secs, stale_after_secs, max_answers]
+      properties:
+        kind: {const: dns}
+        enabled: {type: boolean}
+        upstream_group: {$ref: "#/components/schemas/ObjectId"}
+        hostname: {type: string, minLength: 1, maxLength: 253}
+        port: {type: integer, minimum: 1, maximum: 65535}
+        scheme: {type: string, enum: [http, https, tcp]}
+        server_name: {oneOf: [{type: string}, {type: "null"}]}
+        weight: {type: integer, minimum: 1, maximum: 10000}
+        refresh_secs: {type: integer, minimum: 1, maximum: 300}
+        stale_after_secs: {type: integer, minimum: 1, maximum: 86400}
+        max_answers: {type: integer, minimum: 1, maximum: 64}
     Candidate:
       type: object
       additionalProperties: false
@@ -669,11 +1094,11 @@ components:
             changes: {type: array, minItems: 7, maxItems: 8, items: {type: object}}
     TokenScope:
       type: string
-      enum: [read_status, read_config, validate_config, preview_config, create_candidate, activate_config, rollback_config, read_revisions, read_proxy_hosts, create_proxy_host, update_proxy_host, delete_proxy_host, activate_proxy_host, rollback_proxy_host, read_access_policies, create_access_policy, update_access_policy, delete_access_policy, read_routes, read_upstreams, drain, read_certificates, renew_certificate, read_audit, create_backup, validate_restore, manage_identities]
+      enum: [read_status, read_config, validate_config, preview_config, create_candidate, activate_config, rollback_config, read_revisions, read_proxy_hosts, create_proxy_host, update_proxy_host, delete_proxy_host, activate_proxy_host, rollback_proxy_host, activate_typed_candidate, rollback_typed_revision, read_access_policies, create_access_policy, update_access_policy, delete_access_policy, read_routes, read_upstreams, drain, read_certificates, read_certificate_objects, create_certificate, update_certificate, delete_certificate, read_stream_hosts, create_stream_host, update_stream_host, delete_stream_host, read_discovery_sources, create_discovery_source, update_discovery_source, delete_discovery_source, read_credentials, create_credential, update_credential, revoke_credential, renew_certificate, read_audit, create_backup, validate_restore, manage_identities, read_tokens, create_token, revoke_token, read_users, create_user, update_user, read_roles]
     TokenMetadata:
       type: object
       additionalProperties: false
-      required: [id, role, owner_id, scopes, expires_unix_secs, revoked]
+      required: [id, role, owner_id, user_ref, scopes, expires_unix_secs, revoked]
       properties:
         id: {type: string, pattern: '^[A-Za-z0-9_-]{16}$'}
         role: {type: string, enum: [viewer, auditor, operator, admin]}
@@ -681,9 +1106,13 @@ components:
           oneOf:
             - {$ref: "#/components/schemas/ObjectId"}
             - {type: "null"}
+        user_ref:
+          oneOf:
+            - {$ref: "#/components/schemas/ObjectId"}
+            - {type: "null"}
         scopes:
           type: array
-          maxItems: 27
+          maxItems: 52
           uniqueItems: true
           items: {$ref: "#/components/schemas/TokenScope"}
         expires_unix_secs: {type: integer, minimum: 1}

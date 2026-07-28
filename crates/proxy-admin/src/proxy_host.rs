@@ -7,11 +7,11 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::{
-    AccessPolicyMetadata, ApiObject, AutomaticHttps, CompileContext, ContractError, ObjectId,
-    ProxyHostCandidatePreview, ProxyHostClaims, ProxyHostCompileError, ProxyHostDiff,
-    ProxyHostDiffError, ProxyHostPreviewError, ProxyHostSetCandidate, ProxyHostSetCompileContext,
-    ProxyHostSpec, compile_proxy_host, compile_proxy_hosts, diff_proxy_host_previews,
-    preview_proxy_host_candidate,
+    AccessPolicyMetadata, ApiObject, AutomaticHttps, CertificateMetadata, CompileContext,
+    ContractError, ObjectId, ProxyHostCandidatePreview, ProxyHostClaims, ProxyHostCompileError,
+    ProxyHostDiff, ProxyHostDiffError, ProxyHostPreviewError, ProxyHostSetCandidate,
+    ProxyHostSetCompileContext, ProxyHostSpec, compile_proxy_host, compile_proxy_hosts,
+    diff_proxy_host_previews, preview_proxy_host_candidate, select_managed_https_policy,
 };
 
 /// Fully validated, non-active Proxy Host preview and creation diff.
@@ -67,6 +67,7 @@ pub fn prepare_proxy_host(
         authenticated_owner,
         &ProxyHostClaims::default(),
         &BTreeMap::new(),
+        &BTreeMap::new(),
     )
 }
 
@@ -76,14 +77,22 @@ pub(crate) fn prepare_proxy_host_with_claims(
     authenticated_owner: &ObjectId,
     claims: &ProxyHostClaims,
     access_policies: &BTreeMap<ObjectId, AccessPolicyMetadata>,
+    certificates: &BTreeMap<ObjectId, CertificateMetadata>,
 ) -> Result<PreparedProxyHost, ProxyHostPreparationError> {
     if &object.metadata.owner_id != authenticated_owner {
         return Err(ProxyHostPreparationError::UnauthorizedOwner);
     }
     object.spec.validate_shape().map_err(map_contract_error)?;
-    if object.spec.automatic_https == AutomaticHttps::Managed {
-        return Err(ProxyHostPreparationError::ManagedHttpsUnavailable);
-    }
+    let managed_https = (object.spec.automatic_https == AutomaticHttps::Managed)
+        .then(|| {
+            select_managed_https_policy(
+                certificates,
+                &object.metadata.owner_id,
+                &object.spec.domain,
+            )
+            .map_err(|_| ProxyHostPreparationError::ManagedHttpsUnavailable)
+        })
+        .transpose()?;
 
     let http_listener_id = single_http_listener(active)?;
     let upstream_template_id = single_http_upstream_template(active)?;
@@ -95,7 +104,7 @@ pub(crate) fn prepare_proxy_host_with_claims(
         access_policies,
         claimed_objects: &claims.objects,
         claimed_domains: &claims.domains,
-        managed_https: None,
+        managed_https: managed_https.as_ref(),
     };
     let candidate = compile_proxy_host(object, &context).map_err(map_compile_error)?;
     let preview = preview_proxy_host_candidate(&candidate, active)
@@ -110,10 +119,28 @@ pub(crate) fn prepare_proxy_host_set(
     desired: &[ApiObject<ProxyHostSpec>],
     active: &Config,
     access_policies: &BTreeMap<ObjectId, AccessPolicyMetadata>,
+    certificates: &BTreeMap<ObjectId, CertificateMetadata>,
 ) -> Result<ProxyHostSetCandidate, ProxyHostPreparationError> {
     let http_listener_id = single_http_listener(active)?;
     let upstream_template_id = single_http_upstream_template_for_set(active, current)?;
-    let managed_https = BTreeMap::new();
+    let managed_https = desired
+        .iter()
+        .filter(|object| object.spec.automatic_https == AutomaticHttps::Managed)
+        .map(|object| {
+            select_managed_https_policy(
+                certificates,
+                &object.metadata.owner_id,
+                &object.spec.domain,
+            )
+            .map(|policy| {
+                (
+                    (object.metadata.owner_id.clone(), object.metadata.id.clone()),
+                    policy,
+                )
+            })
+            .map_err(|_| ProxyHostPreparationError::ManagedHttpsUnavailable)
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
     compile_proxy_hosts(
         current,
         desired,
@@ -293,10 +320,17 @@ mod tests {
             aegisproxy_config::load_bytes(include_bytes!("../../../config/examples/minimal.toml"))
                 .expect("active config");
         let current = vec![object("uid-1000")];
-        let activated = prepare_proxy_host_set(&[], &current, &base, &BTreeMap::new())
-            .expect("initial candidate");
-        let removed = prepare_proxy_host_set(&current, &[], activated.config(), &BTreeMap::new())
-            .expect("candidate after activation");
+        let activated =
+            prepare_proxy_host_set(&[], &current, &base, &BTreeMap::new(), &BTreeMap::new())
+                .expect("initial candidate");
+        let removed = prepare_proxy_host_set(
+            &current,
+            &[],
+            activated.config(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .expect("candidate after activation");
 
         assert_eq!(
             serde_json::to_vec(removed.config()).expect("removed candidate"),

@@ -8,9 +8,10 @@ Resolved bytes are size-limited, permission-checked where supported, zeroized wh
 redacted in formatting. Private keys and ACME account credentials are age-encrypted at rest.
 
 API tokens return plaintext once at creation; only Argon2 hashes and safe metadata persist. New
-tokens require explicit bounded action scopes and inherit creator's stable typed owner. Effective
+tokens require an enabled stored user and explicit bounded action scopes, inherit that user's fixed
+role/owner, and cannot exceed it. Disabling the user blocks subject authentication. Effective
 permission is the intersection of role and scope, while legacy records without scopes authorize no
-action until replaced. Legacy records without owner metadata cannot use typed-object endpoints.
+action until replaced. Subjectless records remain legacy automation identities.
 Mutation audit intent applies this same intersection before any state change; role permission alone
 is insufficient for a bearer token.
 Certificate, provider, audit, authentication, backup, and age identities are never returned as
@@ -49,7 +50,11 @@ cannot activate. Access-policy update/delete likewise cannot create or activate 
 revisions. Validation/preview and persisted candidate creation consume only policy secret-free
 metadata after owner/share checks. Candidate bindings retain exact policy records; activation and
 rollback require current records to match before publication.
-Managed-HTTPS preparation and remaining stored-credential contracts are still Phase 15 work.
+Stored Credential values are accepted only on create or optional rotation, bounded to 64 KiB,
+zeroized after encryption where practical, and encrypted independently to configured age
+recipients. The private bounded store persists ciphertext plus safe metadata. API, CLI, audit,
+errors, and `Debug` expose neither ciphertext nor plaintext; revocation removes usable ciphertext
+while retaining its fingerprint and lifecycle metadata.
 The library-only Certificate ownership object contains only owner/share IDs, enabled state, and an
 opaque certificate ID. Compiled metadata retains public host coverage and listener/certificate IDs;
 it never copies chain/key references. Redacted `Debug` reports only enabled state and counts.

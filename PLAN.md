@@ -152,10 +152,21 @@ A strict library-only Certificate object now binds owner/shares to an opaque exi
 ID. Its metadata compiler resolves only canonical hosts and exactly one HTTPS listener, copies no
 private-key or chain reference, and selects exact or single-label wildcard coverage with explicit
 ownership and ambiguity checks.
+Low-level configuration activation and rollback reject typed-bound revisions so broad
+configuration scopes cannot bypass typed authorization.
+Typed Certificate objects now have bounded private persistence, exact CRUD scopes, audited
+owner-scoped API/CLI operations, managed-HTTPS selection, and typed renewal. Observed certificate
+status and direct runtime-ID renewal are isolated under `/v1/runtime/certificates`.
+Strict Stream Host and file/DNS Discovery Source objects now have deterministic compilers, bounded
+private stores, exact CRUD scopes, owner-scoped API/CLI operations, side-effect-free previews, and
+typed-bound non-active candidate creation.
+Schema-2 unified candidates now bind complete Proxy Host, Stream Host, and Discovery Source desired
+state plus exact referenced Access Policy and Certificate records. Canonical typed preview,
+Admin-only activation, and forward rollback routes reject dependency drift; schema-1 snapshots
+remain readable and are limited to deprecated Proxy-Host-only aliases.
 
-**Remaining units:** certificate persistence/RBAC/endpoints and Proxy Host wiring; remaining domain
-objects; remaining OpenAPI and CLI contracts; migration/compatibility policy and tests; transport
-module split; full authorization/security review.
+**Remaining units:** remaining authorization and migration contracts; module split; full
+authorization/security review.
 
 **Objective:** provide versioned high-level objects usable by GUI and advanced automation.
 
