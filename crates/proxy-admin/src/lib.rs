@@ -10,11 +10,13 @@ mod backup;
 mod certificate;
 mod compile;
 mod diff;
+mod discovery_source;
 mod object_store;
 mod preview;
 mod proxy_host;
 mod rbac;
 mod server;
+mod stream_host;
 mod typed_store;
 
 pub use access_policy::{
@@ -23,8 +25,8 @@ pub use access_policy::{
 };
 pub use api::{
     API_VERSION, AccessPolicyRef, AccessPolicySpec, ApiObject, ApiVersion, AutomaticHttps,
-    CertificateRef, CertificateSpec, ContractError, ForwardProtocol, MiddlewareRef, ObjectId,
-    ObjectMetadata, ProxyHostSpec,
+    CertificateRef, CertificateSpec, ContractError, DiscoverySourceSpec, ForwardProtocol,
+    MiddlewareRef, ObjectId, ObjectMetadata, ProxyHostSpec, StreamHostSpec, StreamProtocol,
 };
 pub use audit::{AuditError, AuditEvent, AuditLog, AuditOutcome, AuditRecord};
 pub use auth::{IssuedToken, TokenError, TokenMetadata, TokenRecord, TokenStore, TokenStoreError};
@@ -41,6 +43,10 @@ pub use diff::{
     DiffOperation, ProxyHostDiff, ProxyHostDiffError, ProxyHostDiffValue, ProxyHostField,
     ProxyHostFieldChange, diff_proxy_host_previews,
 };
+pub use discovery_source::{
+    DiscoverySourceCompileError, DiscoverySourceStore, DiscoverySourceStoreError,
+    StoredDiscoverySource, compile_discovery_sources,
+};
 pub use object_store::{
     BoundProxyHostCandidate, ProxyHostClaims, ProxyHostSnapshot, ProxyHostStore,
     ProxyHostStoreError, StoredProxyHost,
@@ -52,3 +58,7 @@ pub use preview::{
 pub use proxy_host::{PreparedProxyHost, ProxyHostPreparationError, prepare_proxy_host};
 pub use rbac::{Action, Role, TokenScopeError, TokenScopes};
 pub use server::{AdminServerError, serve};
+pub use stream_host::{
+    StoredStreamHost, StreamHostCompileError, StreamHostStore, StreamHostStoreError,
+    compile_stream_hosts,
+};

@@ -333,6 +333,61 @@ allow = ["127.0.0.1/32"]
         assert_eq!(typed_get_json["generation"], 3);
 
         let expected = active_revision(&state);
+        for (command, object) in [
+            (
+                "stream-host",
+                serde_json::json!({
+                    "api_version": "v1",
+                    "metadata": {"id": "stream-cli", "owner_id": owner.clone()},
+                    "spec": {
+                        "listen_port": 9443,
+                        "protocol": "tls_passthrough",
+                        "forward_host": "127.0.0.1",
+                        "forward_port": 9000,
+                        "sni_hosts": ["stream.example.test"],
+                        "enabled": false
+                    }
+                }),
+            ),
+            (
+                "discovery-source",
+                serde_json::json!({
+                    "api_version": "v1",
+                    "metadata": {"id": "discovery-cli", "owner_id": owner.clone()},
+                    "spec": {
+                        "kind": "dns",
+                        "enabled": false,
+                        "upstream_group": "app",
+                        "hostname": "nodes.example.test",
+                        "port": 9000,
+                        "scheme": "http",
+                        "server_name": null,
+                        "weight": 1,
+                        "refresh_secs": 30,
+                        "stale_after_secs": 300,
+                        "max_answers": 16
+                    }
+                }),
+            ),
+        ] {
+            let path = daemon.root.join(format!("{command}.json"));
+            fs::write(
+                &path,
+                serde_json::to_vec_pretty(&object).expect("typed domain JSON"),
+            )
+            .expect("typed domain file");
+            let create = Command::new(binary())
+                .args([command, "create", "--socket", socket, "--expect", &expected])
+                .arg(&path)
+                .output()
+                .expect("typed domain create");
+            assert!(create.status.success(), "{:?}", create.stderr);
+            let list = run(&[command, "list", "--socket", socket]);
+            assert!(list.status.success(), "{:?}", list.stderr);
+            let listed: serde_json::Value =
+                serde_json::from_slice(&list.stdout).expect("typed domain list");
+            assert_eq!(listed.as_array().map(Vec::len), Some(1));
+        }
         let first_activation = Command::new(binary())
             .args(["config", "activate", "--socket", socket, "--file"])
             .arg(&first)

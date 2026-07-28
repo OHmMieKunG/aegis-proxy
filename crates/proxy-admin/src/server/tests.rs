@@ -65,6 +65,14 @@ fn checked_openapi_contains_every_private_route() {
         "/v1/proxy-hosts/preview:",
         "/v1/proxy-hosts/candidates/{id}/activate:",
         "/v1/proxy-hosts/revisions/{id}/rollback:",
+        "/v1/stream-hosts:",
+        "/v1/stream-hosts/{id}:",
+        "/v1/stream-hosts/validate:",
+        "/v1/stream-hosts/preview:",
+        "/v1/discovery-sources:",
+        "/v1/discovery-sources/{id}:",
+        "/v1/discovery-sources/validate:",
+        "/v1/discovery-sources/preview:",
         "/v1/config/candidates:",
         "/v1/config/candidates/{id}/activate:",
         "/v1/config/revisions:",
@@ -72,7 +80,7 @@ fn checked_openapi_contains_every_private_route() {
         "/v1/config/revisions/{id}/rollback:",
         "/v1/routes:",
         "/v1/upstreams:",
-        "/v1/providers:",
+        "/v1/runtime/providers:",
         "/v1/certificates:",
         "/v1/certificates/{id}:",
         "/v1/certificates/{id}/renew:",
@@ -117,6 +125,14 @@ fn checked_openapi_contains_every_private_route() {
         "create_certificate",
         "update_certificate",
         "delete_certificate",
+        "read_stream_hosts",
+        "create_stream_host",
+        "update_stream_host",
+        "delete_stream_host",
+        "read_discovery_sources",
+        "create_discovery_source",
+        "update_discovery_source",
+        "delete_discovery_source",
         "renew_certificate",
         "read_audit",
         "create_backup",
@@ -138,7 +154,7 @@ fn checked_openapi_contains_every_private_route() {
             .collect::<Vec<_>>(),
         scopes
     );
-    assert_eq!(openapi.matches("maxItems: 31").count(), 2);
+    assert_eq!(openapi.matches("maxItems: 39").count(), 2);
     assert!(openapi.contains("operationId: createAccessPolicy"));
     assert!(openapi.contains("operationId: updateAccessPolicy"));
     assert!(openapi.contains("operationId: deleteAccessPolicy"));

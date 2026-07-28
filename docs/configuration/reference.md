@@ -116,6 +116,18 @@ scoped, stable, and require `read_proxy_hosts`. Validation/preview reject its cl
 This store is not active configuration. Create writes only after complete-state compilation,
 semantic validation, immutable revision creation, and an unchanged process-local store epoch.
 
+Typed Stream Hosts use the strict fields `listen_port`, `protocol`, `forward_host`, `forward_port`,
+`sni_hosts`, and `enabled`. TCP requires empty SNI; TLS passthrough accepts exact canonical ASCII
+hosts only. Wildcards remain available only in validated low-level configuration. The bind IP
+derives from the unique HTTP listener, and generated listener/route/upstream/endpoint IDs are
+deterministic. Disabled objects remain stored without runtime resources.
+
+Typed Discovery Sources support only strict file and DNS A/AAAA variants. Compilation maps them to
+the existing provider schemas without reading files, resolving DNS, or using the network.
+Docker/Kubernetes/Consul/SRV/custom providers and provider credentials are unsupported. Stream
+Hosts and Discovery Sources have owner-scoped CRUD, validation, preview, typed-bound non-active
+candidates, and matching `rust-proxy stream-host` / `rust-proxy discovery-source` commands.
+
 Access Policy desired state uses a separate strict schema-v1 JSON store bounded to 1,024 objects
 and 1 MiB. It has globally unique IDs, owner-scoped stable reads, exact generations, canonical
 share/middleware ordering, exclusive ownership, and private permissions. Administration opens it

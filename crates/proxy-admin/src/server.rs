@@ -1,6 +1,7 @@
 //! Private Unix-socket administrative HTTP service.
 
 mod certificates;
+mod domains;
 mod handlers;
 mod support;
 
@@ -47,11 +48,13 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     AccessPolicyMetadata, AccessPolicySpec, AccessPolicyStore, AccessPolicyStoreError, Action,
     ApiObject, AuditEvent, AuditLog, AuditOutcome, CertificateSpec, CertificateStore,
-    CertificateStoreError, ObjectId, PreparedProxyHost, ProxyHostPreparationError,
-    ProxyHostPreviewSummary, ProxyHostSpec, ProxyHostStore, ProxyHostStoreError, Role,
-    StoredAccessPolicy, StoredCertificate, StoredProxyHost, TokenScopes, TokenStore,
+    CertificateStoreError, DiscoverySourceSpec, DiscoverySourceStore, ObjectId, PreparedProxyHost,
+    ProxyHostPreparationError, ProxyHostPreviewSummary, ProxyHostSpec, ProxyHostStore,
+    ProxyHostStoreError, Role, StoredAccessPolicy, StoredCertificate, StoredDiscoverySource,
+    StoredProxyHost, StoredStreamHost, StreamHostSpec, StreamHostStore, TokenScopes, TokenStore,
 };
 use certificates::*;
+use domains::*;
 use handlers::*;
 use support::*;
 
@@ -81,6 +84,12 @@ pub enum AdminServerError {
     /// Typed Certificate desired state could not be loaded safely.
     #[error("administrative Certificate store failed")]
     Certificates,
+    /// Typed Stream Host desired state could not be loaded safely.
+    #[error("administrative Stream Host store failed")]
+    StreamHosts,
+    /// Typed Discovery Source desired state could not be loaded safely.
+    #[error("administrative Discovery Source store failed")]
+    DiscoverySources,
     /// Blocking initialization task failed.
     #[error("administrative initialization task failed: {0}")]
     Initialization(String),
@@ -93,6 +102,8 @@ struct AppState {
     proxy_hosts: Arc<ProxyHostStore>,
     access_policies: Arc<AccessPolicyStore>,
     certificates: Arc<CertificateStore>,
+    stream_hosts: Arc<StreamHostStore>,
+    discovery_sources: Arc<DiscoverySourceStore>,
     audit: Option<Arc<AuditLog>>,
     allowed_uids: Arc<[u32]>,
     auth_permits: Arc<Semaphore>,
@@ -633,6 +644,10 @@ pub async fn serve(
         open_access_policy_store(state_dir.join("admin/access-policies.json")).await?;
     let certificate_store =
         open_certificate_store(state_dir.join("admin/certificate-objects.json")).await?;
+    let stream_host_store =
+        open_stream_host_store(state_dir.join("admin/stream-hosts.json")).await?;
+    let discovery_source_store =
+        open_discovery_source_store(state_dir.join("admin/discovery-sources.json")).await?;
     let audit = match config.admin.audit_key.clone() {
         Some(reference) => {
             let audit_path = state_dir.join("audit/admin.jsonl");
@@ -662,6 +677,8 @@ pub async fn serve(
         proxy_hosts: Arc::new(proxy_host_store),
         access_policies: Arc::new(access_policy_store),
         certificates: Arc::new(certificate_store),
+        stream_hosts: Arc::new(stream_host_store),
+        discovery_sources: Arc::new(discovery_source_store),
         audit,
         allowed_uids: Arc::from(config.admin.allowed_uids.clone()),
         auth_permits: Arc::new(Semaphore::new(config.admin.max_auth_in_flight)),
@@ -710,6 +727,36 @@ pub async fn serve(
         .route("/v1/proxy-hosts/validate", post(validate_proxy_host))
         .route("/v1/proxy-hosts/preview", post(preview_proxy_host))
         .route(
+            "/v1/stream-hosts",
+            get(stream_hosts).post(create_stream_host),
+        )
+        .route(
+            "/v1/stream-hosts/{id}",
+            get(stream_host)
+                .put(update_stream_host)
+                .delete(delete_stream_host),
+        )
+        .route("/v1/stream-hosts/validate", post(validate_stream_host))
+        .route("/v1/stream-hosts/preview", post(preview_stream_host))
+        .route(
+            "/v1/discovery-sources",
+            get(discovery_sources).post(create_discovery_source),
+        )
+        .route(
+            "/v1/discovery-sources/{id}",
+            get(discovery_source)
+                .put(update_discovery_source)
+                .delete(delete_discovery_source),
+        )
+        .route(
+            "/v1/discovery-sources/validate",
+            post(validate_discovery_source),
+        )
+        .route(
+            "/v1/discovery-sources/preview",
+            post(preview_discovery_source),
+        )
+        .route(
             "/v1/proxy-hosts/candidates/{id}/activate",
             post(activate_proxy_host_candidate),
         )
@@ -730,7 +777,7 @@ pub async fn serve(
         )
         .route("/v1/routes", get(routes))
         .route("/v1/upstreams", get(upstreams))
-        .route("/v1/providers", get(providers))
+        .route("/v1/runtime/providers", get(providers))
         .route(
             "/v1/certificates",
             get(certificate_objects).post(create_certificate),
@@ -783,6 +830,22 @@ async fn open_certificate_store(path: PathBuf) -> Result<CertificateStore, Admin
         .await
         .map_err(|error| AdminServerError::Initialization(error.to_string()))?
         .map_err(|_| AdminServerError::Certificates)
+}
+
+async fn open_stream_host_store(path: PathBuf) -> Result<StreamHostStore, AdminServerError> {
+    tokio::task::spawn_blocking(move || StreamHostStore::open(path))
+        .await
+        .map_err(|error| AdminServerError::Initialization(error.to_string()))?
+        .map_err(|_| AdminServerError::StreamHosts)
+}
+
+async fn open_discovery_source_store(
+    path: PathBuf,
+) -> Result<DiscoverySourceStore, AdminServerError> {
+    tokio::task::spawn_blocking(move || DiscoverySourceStore::open(path))
+        .await
+        .map_err(|error| AdminServerError::Initialization(error.to_string()))?
+        .map_err(|_| AdminServerError::DiscoverySources)
 }
 
 async fn bound_request(

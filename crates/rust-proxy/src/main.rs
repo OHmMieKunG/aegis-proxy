@@ -91,6 +91,16 @@ enum Command {
         #[command(subcommand)]
         command: AccessPolicyCommand,
     },
+    /// Manage typed Stream Hosts through the private socket.
+    StreamHost {
+        #[command(subcommand)]
+        command: TypedDomainCommand,
+    },
+    /// Manage typed Discovery Sources through the private socket.
+    DiscoverySource {
+        #[command(subcommand)]
+        command: TypedDomainCommand,
+    },
     /// Create or verify encrypted state backups.
     Backup {
         #[command(subcommand)]
@@ -387,6 +397,62 @@ enum CertificateObjectCommand {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum TypedDomainCommand {
+    /// List objects owned by authenticated principal.
+    List {
+        #[command(flatten)]
+        admin: AdminConnection,
+    },
+    /// Get one object owned by authenticated principal.
+    Get {
+        #[command(flatten)]
+        admin: AdminConnection,
+        id: String,
+    },
+    /// Validate, persist, and create a non-active candidate.
+    Create {
+        #[command(flatten)]
+        admin: AdminConnection,
+        #[arg(long)]
+        expect: String,
+        file: PathBuf,
+    },
+    /// Replace one object and create a non-active candidate.
+    Update {
+        #[command(flatten)]
+        admin: AdminConnection,
+        #[arg(long)]
+        expect: String,
+        #[arg(long)]
+        generation: u64,
+        id: String,
+        file: PathBuf,
+    },
+    /// Delete one object and create a non-active candidate.
+    Delete {
+        #[command(flatten)]
+        admin: AdminConnection,
+        #[arg(long)]
+        expect: String,
+        #[arg(long)]
+        generation: u64,
+        id: String,
+    },
+    /// Validate one object without persistence.
+    Validate {
+        #[command(flatten)]
+        admin: AdminConnection,
+        file: PathBuf,
+    },
+    /// Preview one object without persistence or activation.
+    Preview {
+        #[command(flatten)]
+        admin: AdminConnection,
+        file: PathBuf,
+    },
+}
+
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum CliRole {
     Viewer,
@@ -423,6 +489,14 @@ enum CliScope {
     CreateCertificate,
     UpdateCertificate,
     DeleteCertificate,
+    ReadStreamHosts,
+    CreateStreamHost,
+    UpdateStreamHost,
+    DeleteStreamHost,
+    ReadDiscoverySources,
+    CreateDiscoverySource,
+    UpdateDiscoverySource,
+    DeleteDiscoverySource,
     RenewCertificate,
     ReadAudit,
     CreateBackup,
@@ -459,6 +533,14 @@ impl CliScope {
             Self::CreateCertificate => "create_certificate",
             Self::UpdateCertificate => "update_certificate",
             Self::DeleteCertificate => "delete_certificate",
+            Self::ReadStreamHosts => "read_stream_hosts",
+            Self::CreateStreamHost => "create_stream_host",
+            Self::UpdateStreamHost => "update_stream_host",
+            Self::DeleteStreamHost => "delete_stream_host",
+            Self::ReadDiscoverySources => "read_discovery_sources",
+            Self::CreateDiscoverySource => "create_discovery_source",
+            Self::UpdateDiscoverySource => "update_discovery_source",
+            Self::DeleteDiscoverySource => "delete_discovery_source",
             Self::RenewCertificate => "renew_certificate",
             Self::ReadAudit => "read_audit",
             Self::CreateBackup => "create_backup",
@@ -670,6 +752,12 @@ async fn run(cli: Cli) -> Result<(), BoxError> {
         Command::Token { command } => run_token_command(command).await?,
         Command::ProxyHost { command } => run_proxy_host_command(command).await?,
         Command::AccessPolicy { command } => run_access_policy_command(command).await?,
+        Command::StreamHost { command } => {
+            run_typed_domain_command(command, "stream-hosts").await?
+        }
+        Command::DiscoverySource { command } => {
+            run_typed_domain_command(command, "discovery-sources").await?
+        }
         Command::Backup { command } => run_backup_command(command).await?,
         Command::Restore { command } => run_restore_command(command).await?,
         Command::Health { admin } => {
@@ -1237,6 +1325,117 @@ async fn run_certificate_object_command(command: CertificateObjectCommand) -> Re
                 Some(expect),
                 None,
                 Vec::new(),
+            )
+            .await?
+        }
+    };
+    require_admin_success(&response)?;
+    io::stdout().lock().write_all(&response.body)?;
+    writeln!(io::stdout().lock())?;
+    Ok(())
+}
+
+async fn run_typed_domain_command(
+    command: TypedDomainCommand,
+    collection: &str,
+) -> Result<(), BoxError> {
+    let response = match command {
+        TypedDomainCommand::List { admin } => {
+            admin_request(
+                &admin,
+                Method::GET,
+                &format!("/v1/{collection}"),
+                None,
+                None,
+                Vec::new(),
+            )
+            .await?
+        }
+        TypedDomainCommand::Get { admin, id } => {
+            let id = id.parse::<aegisproxy_admin::ObjectId>()?;
+            admin_request(
+                &admin,
+                Method::GET,
+                &format!("/v1/{collection}/{id}"),
+                None,
+                None,
+                Vec::new(),
+            )
+            .await?
+        }
+        TypedDomainCommand::Create {
+            admin,
+            expect,
+            file,
+        } => {
+            let body = read_bounded(file, aegisproxy_config::MAX_CONFIG_BYTES).await?;
+            admin_request(
+                &admin,
+                Method::POST,
+                &format!("/v1/{collection}"),
+                Some(expect),
+                Some("application/json"),
+                body,
+            )
+            .await?
+        }
+        TypedDomainCommand::Update {
+            admin,
+            expect,
+            generation,
+            id,
+            file,
+        } => {
+            let body = read_bounded(file, aegisproxy_config::MAX_CONFIG_BYTES).await?;
+            admin_request_with_generation(
+                &admin,
+                Method::PUT,
+                &format!("/v1/{collection}/{id}"),
+                Some(expect),
+                Some(generation),
+                Some("application/json"),
+                body,
+            )
+            .await?
+        }
+        TypedDomainCommand::Delete {
+            admin,
+            expect,
+            generation,
+            id,
+        } => {
+            admin_request_with_generation(
+                &admin,
+                Method::DELETE,
+                &format!("/v1/{collection}/{id}"),
+                Some(expect),
+                Some(generation),
+                None,
+                Vec::new(),
+            )
+            .await?
+        }
+        TypedDomainCommand::Validate { admin, file } => {
+            let body = read_bounded(file, aegisproxy_config::MAX_CONFIG_BYTES).await?;
+            admin_request(
+                &admin,
+                Method::POST,
+                &format!("/v1/{collection}/validate"),
+                None,
+                Some("application/json"),
+                body,
+            )
+            .await?
+        }
+        TypedDomainCommand::Preview { admin, file } => {
+            let body = read_bounded(file, aegisproxy_config::MAX_CONFIG_BYTES).await?;
+            admin_request(
+                &admin,
+                Method::POST,
+                &format!("/v1/{collection}/preview"),
+                None,
+                Some("application/json"),
+                body,
             )
             .await?
         }

@@ -19,6 +19,9 @@ content; activation and rollback revalidate current policy state (`20449a3`).
 Typed certificate ownership and managed-HTTPS selection metadata (`edcb53b`) now have bounded
 private persistence, exact owner-scoped CRUD permissions, API/CLI operations, and separated runtime
 status and direct-renewal routes.
+Strict typed Stream Hosts and file/DNS Discovery Sources now compile deterministically without
+source I/O, persist in bounded owner-scoped stores, expose exact CRUD/preview/CLI contracts, and
+create typed-bound non-active candidates.
 Low-level configuration activation and rollback reject typed-bound revisions, preventing broad
 configuration scopes from bypassing typed authorization.
 

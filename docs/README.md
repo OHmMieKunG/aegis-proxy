@@ -57,6 +57,8 @@
   exact dependency generations, activation/rollback revalidation, and compatibility evidence.
 - [Phase 15 certificate ownership](reviews/phase-15-certificate-ownership.md): secret-free existing
   certificate binding and fail-closed managed-HTTPS selection evidence.
+- [Phase 15 Stream Host and Discovery Source review](reviews/phase-15-stream-discovery.md): strict
+  transport/provider contracts, persistence, no-I/O compilation, and authorization evidence.
 
 ## Operators
 

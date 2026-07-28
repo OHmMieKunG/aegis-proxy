@@ -73,6 +73,22 @@ pub enum Action {
     UpdateCertificate,
     /// Delete an owned typed Certificate object.
     DeleteCertificate,
+    /// Read owned typed Stream Hosts.
+    ReadStreamHosts,
+    /// Create an owned typed Stream Host.
+    CreateStreamHost,
+    /// Update an owned typed Stream Host.
+    UpdateStreamHost,
+    /// Delete an owned typed Stream Host.
+    DeleteStreamHost,
+    /// Read owned typed Discovery Sources.
+    ReadDiscoverySources,
+    /// Create an owned typed Discovery Source.
+    CreateDiscoverySource,
+    /// Update an owned typed Discovery Source.
+    UpdateDiscoverySource,
+    /// Delete an owned typed Discovery Source.
+    DeleteDiscoverySource,
     /// Request managed certificate renewal.
     RenewCertificate,
     /// Read or export audit records.
@@ -183,6 +199,14 @@ impl Role {
                     | Action::CreateCertificate
                     | Action::UpdateCertificate
                     | Action::DeleteCertificate
+                    | Action::ReadStreamHosts
+                    | Action::CreateStreamHost
+                    | Action::UpdateStreamHost
+                    | Action::DeleteStreamHost
+                    | Action::ReadDiscoverySources
+                    | Action::CreateDiscoverySource
+                    | Action::UpdateDiscoverySource
+                    | Action::DeleteDiscoverySource
                     | Action::RenewCertificate
             ),
             Self::Auditor => matches!(
@@ -196,6 +220,8 @@ impl Role {
                     | Action::ReadUpstreams
                     | Action::ReadCertificates
                     | Action::ReadCertificateObjects
+                    | Action::ReadStreamHosts
+                    | Action::ReadDiscoverySources
                     | Action::ReadAudit
             ),
             Self::Viewer => matches!(
@@ -209,6 +235,8 @@ impl Role {
                     | Action::ReadUpstreams
                     | Action::ReadCertificates
                     | Action::ReadCertificateObjects
+                    | Action::ReadStreamHosts
+                    | Action::ReadDiscoverySources
             ),
         }
     }
@@ -218,7 +246,7 @@ impl Role {
 mod tests {
     use super::{Action, Role, TokenScopeError, TokenScopes};
 
-    const ACTIONS: [Action; 31] = [
+    const ACTIONS: [Action; 39] = [
         Action::ReadStatus,
         Action::ReadConfig,
         Action::ValidateConfig,
@@ -245,6 +273,14 @@ mod tests {
         Action::CreateCertificate,
         Action::UpdateCertificate,
         Action::DeleteCertificate,
+        Action::ReadStreamHosts,
+        Action::CreateStreamHost,
+        Action::UpdateStreamHost,
+        Action::DeleteStreamHost,
+        Action::ReadDiscoverySources,
+        Action::CreateDiscoverySource,
+        Action::UpdateDiscoverySource,
+        Action::DeleteDiscoverySource,
         Action::RenewCertificate,
         Action::ReadAudit,
         Action::CreateBackup,
@@ -255,9 +291,9 @@ mod tests {
     #[test]
     fn role_matrix_is_deny_by_default() {
         let expected = [
-            (Role::Viewer, 9),
-            (Role::Auditor, 10),
-            (Role::Operator, 23),
+            (Role::Viewer, 11),
+            (Role::Auditor, 12),
+            (Role::Operator, 31),
             (Role::Admin, ACTIONS.len()),
         ];
         for (role, count) in expected {

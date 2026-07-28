@@ -157,6 +157,9 @@ configuration scopes cannot bypass typed authorization.
 Typed Certificate objects now have bounded private persistence, exact CRUD scopes, audited
 owner-scoped API/CLI operations, managed-HTTPS selection, and typed renewal. Observed certificate
 status and direct runtime-ID renewal are isolated under `/v1/runtime/certificates`.
+Strict Stream Host and file/DNS Discovery Source objects now have deterministic compilers, bounded
+private stores, exact CRUD scopes, owner-scoped API/CLI operations, side-effect-free previews, and
+typed-bound non-active candidate creation. Unified schema-2 activation remains pending.
 
 **Remaining units:** certificate persistence/RBAC/endpoints and Proxy Host wiring; remaining domain
 objects; remaining OpenAPI and CLI contracts; migration/compatibility policy and tests; transport

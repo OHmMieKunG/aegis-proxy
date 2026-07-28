@@ -73,6 +73,8 @@ AegisProxy has not published a supported release.
   selection metadata for existing certificate identities and HTTPS listeners.
 - Added bounded typed Certificate persistence, exact owner-scoped CRUD permissions and CLI,
   managed-HTTPS selection, typed renewal, and separate runtime certificate status routes.
+- Added strict Stream Host and file/DNS Discovery Source contracts, deterministic no-I/O compilers,
+  bounded owner-scoped stores, exact scopes, previews, non-active candidates, and CLI commands.
 - Prevented low-level configuration activation and rollback from accepting typed-bound revisions.
 - Fixed token revocation CLI parsing for valid generated token IDs that begin with a hyphen.
 

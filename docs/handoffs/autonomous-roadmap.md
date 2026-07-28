@@ -5,7 +5,7 @@ Updated: 2026-07-28
 - Current branch: `feat/phase-15-control-plane-completion`
 - Current completed-unit commit: pending
 - Current phase: Phase 15, in progress
-- Completed unit: durable typed Certificate objects and runtime route migration
+- Completed unit: strict Stream Host and Discovery Source typed boundaries
 - Implementation commit: pending
 - Documentation commit: this handoff's documentation commit
 - Remote target: `origin/work/autonomous-roadmap`
@@ -51,7 +51,7 @@ migration/compatibility tests; transport module split; full authorization/securi
 
 ## Exact next task
 
-Add strict Stream Host and Discovery Source contracts, stores, compilers, and focused tests.
+Introduce schema-2 unified typed candidate snapshots and activation.
 
 ## Known risks
 
