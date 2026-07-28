@@ -1,7 +1,7 @@
 # AegisProxy verified status
 
 Verification date: 2026-07-28
-Branch: `feat/phase-15-control-plane-completion`
+Branch: `chore/phase-15-closeout`
 Verification basis: Phase 14 plus Phase 15 compiler `fa7913f`, preview service `d3de105`, typed diff
 `2617f0e`, API-token scopes `81bd500`, owned Proxy Host endpoints `00cfa32`, typed object store
 `5c8898b`, owner-scoped typed reads `d1514dd`, aggregate compiler `35d7d38`, mutation-scope fix
@@ -38,6 +38,12 @@ legacy subjectless automation tokens remain parseable without gaining new scopes
 Unified candidate preview now emits stable add/update/remove records for every typed domain and
 bound dependency. Updates expose only closed per-kind field-name allowlists; object values,
 configuration secrets, ciphertext, and internal paths cannot enter the diff.
+Phase 15 candidate `efcd0c3` keeps accepted requests running under their bounded in-flight
+permits after a response deadline so blocking mutations cannot outlive
+serialization or terminal audit, and shutdown drains those permits before the administrative
+service exits. Token, backup, and restore JSON now passes exact action
+authorization, durable audit intent, and exact content-type validation before deserialization.
+User mutations preserve missing, invalid, stale, capacity, and unavailable error classes.
 
 Working tree at Phase 14 start: clean at `10aae8c`
 
@@ -77,7 +83,7 @@ evidence.
   side-effect-free typed preview, and bounded field-level diff. Existing primitives validate
   ownership, references, domains, conflicts, listener/certificate policy, generated configuration,
   redaction, fingerprints, restart classification, and owner/object identity during diff. Existing
-  low-level API tokens use a complete 27-action role-and-scope intersection. Private typed Proxy
+  low-level API tokens use a complete 52-action role-and-scope intersection. Private typed Proxy
   Host validation and preview endpoints authenticate and authorize before JSON deserialization,
   enforce principal ownership, reject persisted identity/domain conflicts, and cannot persist or
   activate. The bounded private typed object store is opened at administration startup and exposes
@@ -101,8 +107,9 @@ evidence.
   orphan snapshots and fails closed on malformed or tampered state. A strict library-only
   certificate object now binds an owner and explicit shares to one opaque existing certificate ID.
   Metadata compilation copies no key/chain references, requires exactly one HTTPS listener, and
-  selects exact or single-label wildcard coverage fail closed. Persistence, endpoints, and Proxy
-  Host endpoint wiring do not exist yet. A strict Access Policy
+  selects exact or single-label wildcard coverage fail closed. Bounded private persistence,
+  owner-scoped API/CLI operations, Proxy Host wiring, and isolated runtime-certificate routes are
+  implemented. A strict Access Policy
   contract now compiles owner/share/enable metadata and canonical access-control middleware IDs,
   rejecting missing, duplicate-stage, incompatible, invalid, or secret-bearing shapes. Its bounded
   private store provides global IDs, owner-scoped reads, canonical serialization, generation CAS,
@@ -140,12 +147,10 @@ evidence.
 
 ## Immediate phase
 
-[Phase 15 stable typed control plane](PLAN.md#phase-15--stable-typed-control-plane). Phase 14
-completed behavior-preserving modularization: inline tests are focused and production ownership is
-split by domain. At Phase 14 completion no production Rust module exceeded 1,200 measured lines.
-Phase 15 endpoint growth now places `server/handlers.rs` at 2,296 lines and CLI `main.rs` at 1,451;
-their single transport-orchestration ownership is an explicit temporary exception that must be
-split after Phase 15 contracts stabilize. See the [completion evidence](docs/reviews/phase-14-completion.md).
+[Phase 16 NPMPlus-style GUI MVP](PLAN.md#phase-16--npmplus-style-gui-mvp). Phase 15 is complete for
+roadmap progression under the project-owner exception recorded in
+[the completion report](docs/reviews/phase-15-completion.md). Independent application-security
+review remains a production-release blocker. Phase 16 browser work has not started.
 
 ## Release blockers
 
@@ -163,28 +168,30 @@ split after Phase 15 contracts stabilize. See the [completion evidence](docs/rev
 | `cargo fmt --all -- --check` | passed |
 | `cargo check --workspace --all-targets --all-features` | passed; transitive warning below |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | passed |
-| `cargo test --workspace --all-features` | passed: 322 passed, 2 intentionally ignored |
+| `cargo test --workspace --all-features` | passed: 339 passed, 2 intentionally ignored |
 | `cargo test --workspace --doc` | passed; no doctests defined |
 | valid configuration corpus | seven accepted |
 | invalid configuration corpus | three rejected as expected |
-| changed documentation link targets | passed; every added/changed relative target exists |
+| changed documentation link targets | passed: seven changed Markdown files; every relative target exists |
 | `cargo tree -e features` | passed; 2,440 output lines |
-| Phase 15 config-schema comparison against `2d533a8` | passed; no differences |
-| Phase 15 manifest comparison against `2d533a8` | expected differences; Admin now directly declares already-locked `fs2` for Access Policy ownership |
-| Admin OpenAPI | checked in Rust and parsed with Python/PyYAML; includes typed rollback and 27 token scopes |
+| `cargo check --manifest-path fuzz/Cargo.toml --all-targets` | passed |
+| Phase 15 OpenAPI/config-schema/manifest/lock comparison against `dev@eb107ec` | passed; no differences |
+| Admin OpenAPI | checked in Rust and parsed with Python/PyYAML; includes typed rollback and 52 token scopes |
+| Phase 15 production-module size gate | passed; largest measured module is 1,129 lines |
+| authorization/ownership/migration/secret/tamper/recovery coverage | passed in the 86-test Admin suite and CLI integration |
 
 ## Unavailable or incomplete checks
 
 - `cargo nextest`, `cargo audit`, `cargo deny`, `cargo machete`, and `cargo llvm-cov`: Cargo reports
   `no such command`. Dated Elysium audit/deny results are not current scans.
-- Docker/Compose: Docker Desktop reports WSL integration unavailable.
-- `systemd-analyze verify`: sandbox blocked its credential sockets with `Operation not permitted`;
-  unit validation did not complete.
+- Docker and Compose both report: `The command 'docker' could not be found in this WSL 2 distro.`
+- `systemd-analyze verify deploy/systemd/aegisproxy.service deploy/ha/aegisproxy@.service` exits 1
+  because `/usr/local/bin/rust-proxy` is not installed in this validation environment.
 - `cargo fuzz`: Cargo reports `no such command`; dated smoke evidence is not current execution.
 - `markdownlint` and `lychee`: shell reports `command not found`; changed targets were checked
   directly, but a repository-wide automated Markdown scan was not rerun.
-- Pebble, long fuzz/soak, AppArmor enforcement, independent review, SBOM, signing, and container
-  scan were not run during this verification.
+- Pebble, long fuzz/soak, AppArmor enforcement, independent review, SBOM, signing, container build,
+  and container scan were not run during this verification.
 
 Cargo warns that transitive `proc-macro-error2 2.0.1` contains code rejected by a future Rust
 release. Dated exception: [dependency review](docs/security/dependency-unsafe-review.md).
@@ -192,6 +199,7 @@ release. Dated exception: [dependency review](docs/security/dependency-unsafe-re
 ## Evidence
 
 - [Repository documentation audit](docs/reviews/repository-documentation-audit.md)
+- [Phase 15 completion](docs/reviews/phase-15-completion.md)
 - [Architecture](docs/architecture/overview.md)
 - [Testing](docs/development/testing.md)
 - [Threat/control matrix](docs/security/threat-control-matrix.md)

@@ -86,5 +86,13 @@ AegisProxy has not published a supported release.
   closed field-name allowlists with no raw values or secret-bearing representation.
 - Prevented low-level configuration activation and rollback from accepting typed-bound revisions.
 - Fixed token revocation CLI parsing for valid generated token IDs that begin with a hyphen.
+- Split Phase 15 transport, candidate-store, compiler/test, Access Policy/test, and CLI dispatch
+  ownership without changing API, schema, defaults, fingerprints, or dependencies.
+- Froze the exact 52-action role matrix, authorization-before-deserialization ordering,
+  cross-owner hiding, legacy-token behavior, and schema-1/schema-2 route separation in regression
+  coverage. Phase 15 completion remains pending independent API/security review.
+- Fixed the Phase 15 maintainer-review findings: accepted requests retain bounded execution and
+  mutation/audit ownership after response timeout, operational JSON is authorized before strict
+  parsing, and User mutations preserve not-found, invalid-request, and conflict responses.
 
 See [`STATUS.md`](STATUS.md) and [`docs/history/`](docs/history/README.md).

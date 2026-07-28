@@ -56,7 +56,7 @@ use crate::{
     ProxyHostPreparationError, ProxyHostPreviewSummary, ProxyHostSpec, ProxyHostStore,
     ProxyHostStoreError, Role, StoredAccessPolicy, StoredCertificate, StoredCredential,
     StoredDiscoverySource, StoredProxyHost, StoredStreamHost, StoredUser, StreamHostSpec,
-    StreamHostStore, TokenScopes, TokenStore, UserSpec, UserStore,
+    StreamHostStore, TokenScopes, TokenStore, UserSpec, UserStore, UserStoreError,
 };
 use certificates::*;
 use credentials::*;
@@ -70,6 +70,10 @@ const AUDIT_KEY_BYTES: usize = 64;
 const REQUEST_ID_BYTES: usize = 16;
 const MAX_RATE_LIMIT_KEYS: usize = 2_048;
 const MAX_TOKEN_LIFETIME_SECS: u64 = 365 * 24 * 60 * 60;
+
+const fn candidate_schema_matches_route(schema_version: u32, legacy_alias: bool) -> bool {
+    schema_version == if legacy_alias { 1 } else { 2 }
+}
 
 /// Administrative service startup or listener failure.
 #[derive(Debug, Error)]
@@ -107,6 +111,9 @@ pub enum AdminServerError {
     /// Blocking initialization task failed.
     #[error("administrative initialization task failed: {0}")]
     Initialization(String),
+    /// Accepted administrative requests could not be drained safely.
+    #[error("administrative request drain failed")]
+    RequestDrain,
 }
 
 #[derive(Clone, Debug)]
@@ -724,6 +731,10 @@ pub async fn serve(
         tokio::task::spawn_blocking(move || bind_private_socket(&socket_path_for_bind))
             .await
             .map_err(|error| AdminServerError::Initialization(error.to_string()))??;
+    let request_capacity = u32::try_from(config.admin.max_in_flight).map_err(|_| {
+        AdminServerError::Initialization("administrative request capacity is too large".into())
+    })?;
+    let request_permits = Arc::new(Semaphore::new(config.admin.max_in_flight));
     let state = AppState {
         control,
         tokens: Arc::new(tokens),
@@ -737,7 +748,7 @@ pub async fn serve(
         audit,
         allowed_uids: Arc::from(config.admin.allowed_uids.clone()),
         auth_permits: Arc::new(Semaphore::new(config.admin.max_auth_in_flight)),
-        request_permits: Arc::new(Semaphore::new(config.admin.max_in_flight)),
+        request_permits: Arc::clone(&request_permits),
         mutation_permits: Arc::new(Semaphore::new(1)),
         rate_limiter: Arc::new(RateLimiter::new(
             config.admin.requests_per_second,
@@ -891,6 +902,7 @@ pub async fn serve(
     )
     .with_graceful_shutdown(shutdown.cancelled_owned())
     .await;
+    drain_requests(request_permits, request_capacity).await?;
     drop(guard);
     result.map_err(AdminServerError::Io)
 }
@@ -931,17 +943,16 @@ async fn bound_request(
     next: Next,
 ) -> Response {
     let request_id = request_id().unwrap_or_else(|| "request-id-unavailable".into());
-    let _permit = match Arc::clone(&state.request_permits).try_acquire_owned() {
+    let permit = match Arc::clone(&state.request_permits).try_acquire_owned() {
         Ok(permit) => permit,
         Err(_) => return error_contract(ApiError::Busy.into_response(), &request_id),
     };
     request
         .extensions_mut()
         .insert(RequestId(request_id.clone()));
-    let response = match tokio::time::timeout(state.timeout, next.run(request)).await {
-        Ok(response) => response,
-        Err(_) => ApiError::Timeout.into_response(),
-    };
+    let response = run_request_to_completion(state.timeout, permit, next.run(request))
+        .await
+        .unwrap_or_else(IntoResponse::into_response);
     let mut response = if response.status().is_client_error()
         || (response.status().is_server_error()
             && !response
@@ -957,6 +968,30 @@ async fn bound_request(
         response.headers_mut().insert("x-request-id", value);
     }
     response
+}
+
+async fn run_request_to_completion(
+    timeout: Duration,
+    permit: OwnedSemaphorePermit,
+    request: impl Future<Output = Response> + Send + 'static,
+) -> Result<Response, ApiError> {
+    let task = tokio::spawn(async move {
+        let _permit = permit;
+        request.await
+    });
+    match tokio::time::timeout(timeout, task).await {
+        Ok(Ok(response)) => Ok(response),
+        Ok(Err(_)) => Err(ApiError::Internal),
+        Err(_) => Err(ApiError::Timeout),
+    }
+}
+
+async fn drain_requests(permits: Arc<Semaphore>, capacity: u32) -> Result<(), AdminServerError> {
+    let _permits = permits
+        .acquire_many_owned(capacity)
+        .await
+        .map_err(|_| AdminServerError::RequestDrain)?;
+    Ok(())
 }
 
 fn error_contract(mut response: Response, request_id: &str) -> Response {

@@ -71,15 +71,17 @@ getters. Library callers using the earlier public field literal must migrate to 
 constructor. No JSON, TOML, OpenAPI, CLI, persisted-state, or data-plane schema changed in this
 unit.
 
-Typed candidate snapshots use strict schema version 1 under
-`<state_dir>/admin/proxy-host-candidates/`. Revision metadata's optional `binding_hash` is additive:
-old low-level revisions without it still load and remain usable through low-level configuration
-operations, but typed activation rejects them. No automatic binding is inferred from runtime
-configuration because disabled typed objects cannot be recovered from generated routes.
-Current binaries also read earlier typed snapshots without `access_policies`; their original hash
-remains valid. New policy-bearing snapshots add that field and bind its canonical records. Older
-binaries cannot read those newer private derived-state files, so downgrade requires restoring the
-matching binary/state backup rather than reusing a policy-bearing candidate directory.
+Typed candidate snapshots use strict schema versions 1 and 2 under
+`<state_dir>/admin/proxy-host-candidates/`. Schema 1 contains Proxy Hosts plus optional Access
+Policy bindings and remains accepted only by the deprecated Proxy Host activation/rollback aliases.
+Schema 2 binds complete Proxy Host, Stream Host, Discovery Source, Access Policy, and Certificate
+state and is accepted only by canonical typed activation/rollback routes. Revision metadata's
+optional `binding_hash` is additive: old low-level revisions without it still load and remain
+usable through low-level configuration operations, but every typed route rejects them. No
+automatic binding is inferred from runtime configuration because disabled typed objects cannot be
+recovered from generated routes. Older binaries cannot read schema-2 private derived state, so
+downgrade requires restoring the matching binary/state backup rather than reusing that candidate
+directory.
 The configuration revision list is authoritative for snapshot retention. Admin startup and
 pre-bind reconciliation remove valid snapshots only after their revision metadata has been pruned.
 Operators must not manually add, edit, or remove entries: malformed, symlinked, insecure, or

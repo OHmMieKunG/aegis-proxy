@@ -333,20 +333,72 @@ mod tests {
 
     #[test]
     fn role_matrix_is_deny_by_default() {
-        let expected = [
-            (Role::Viewer, 11),
-            (Role::Auditor, 12),
-            (Role::Operator, 35),
-            (Role::Admin, ACTIONS.len()),
+        let viewer = [
+            Action::ReadStatus,
+            Action::ReadConfig,
+            Action::ReadRevisions,
+            Action::ReadProxyHosts,
+            Action::ReadAccessPolicies,
+            Action::ReadRoutes,
+            Action::ReadUpstreams,
+            Action::ReadCertificates,
+            Action::ReadCertificateObjects,
+            Action::ReadStreamHosts,
+            Action::ReadDiscoverySources,
         ];
-        for (role, count) in expected {
+        let mut auditor = viewer.to_vec();
+        auditor.push(Action::ReadAudit);
+        let operator = [
+            Action::ReadStatus,
+            Action::ReadConfig,
+            Action::ValidateConfig,
+            Action::PreviewConfig,
+            Action::CreateCandidate,
+            Action::ReadRevisions,
+            Action::ReadProxyHosts,
+            Action::CreateProxyHost,
+            Action::UpdateProxyHost,
+            Action::DeleteProxyHost,
+            Action::ReadAccessPolicies,
+            Action::CreateAccessPolicy,
+            Action::UpdateAccessPolicy,
+            Action::DeleteAccessPolicy,
+            Action::ReadRoutes,
+            Action::ReadUpstreams,
+            Action::Drain,
+            Action::ReadCertificates,
+            Action::ReadCertificateObjects,
+            Action::CreateCertificate,
+            Action::UpdateCertificate,
+            Action::DeleteCertificate,
+            Action::ReadStreamHosts,
+            Action::CreateStreamHost,
+            Action::UpdateStreamHost,
+            Action::DeleteStreamHost,
+            Action::ReadDiscoverySources,
+            Action::CreateDiscoverySource,
+            Action::UpdateDiscoverySource,
+            Action::DeleteDiscoverySource,
+            Action::ReadCredentials,
+            Action::CreateCredential,
+            Action::UpdateCredential,
+            Action::RevokeCredential,
+            Action::RenewCertificate,
+        ];
+        for (role, expected) in [
+            (Role::Viewer, viewer.as_slice()),
+            (Role::Auditor, auditor.as_slice()),
+            (Role::Operator, operator.as_slice()),
+            (Role::Admin, ACTIONS.as_slice()),
+        ] {
             assert_eq!(
                 ACTIONS
                     .iter()
-                    .filter(|action| role.allows(**action))
-                    .count(),
-                count,
-                "unexpected permission count for {role:?}"
+                    .copied()
+                    .filter(|action| role.allows(*action))
+                    .collect::<Vec<_>>(),
+                expected,
+                "unexpected permissions for {role:?}"
             );
         }
         assert!(!Role::Viewer.allows(Action::ValidateConfig));

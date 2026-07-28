@@ -224,6 +224,194 @@ fn checked_openapi_contains_every_private_route() {
     );
 }
 
+#[test]
+fn body_deserialization_remains_behind_authorization() {
+    fn ordered(source: &str, start: &str, authorization: &str, deserialization: &str) {
+        let source = source
+            .split_once(start)
+            .unwrap_or_else(|| panic!("missing function marker {start}"))
+            .1;
+        let authorization = source
+            .find(authorization)
+            .unwrap_or_else(|| panic!("missing authorization marker after {start}"));
+        let deserialization = source
+            .find(deserialization)
+            .unwrap_or_else(|| panic!("missing deserialization marker after {start}"));
+        assert!(
+            authorization < deserialization,
+            "{start} deserializes before authorization"
+        );
+    }
+
+    let access = include_str!("handlers/access_policies.rs");
+    ordered(
+        access,
+        "async fn create_access_policy",
+        "begin_mutation(",
+        "serde_json::from_slice",
+    );
+    ordered(
+        access,
+        "async fn update_access_policy",
+        "begin_mutation(",
+        "serde_json::from_slice",
+    );
+    let proxy = include_str!("handlers/proxy_hosts.rs");
+    ordered(
+        proxy,
+        "async fn create_proxy_host",
+        "begin_mutation(",
+        "serde_json::from_slice",
+    );
+    ordered(
+        proxy,
+        "async fn update_proxy_host",
+        "begin_mutation(",
+        "serde_json::from_slice",
+    );
+    let domains = include_str!("domains.rs");
+    ordered(
+        domains,
+        "async fn create<D: Domain>",
+        "begin_domain_mutation(",
+        "parse_owned::<D>",
+    );
+    ordered(
+        domains,
+        "async fn update<D: Domain>",
+        "begin_domain_mutation(",
+        "parse_owned::<D>",
+    );
+    let certificates = include_str!("certificates.rs");
+    ordered(
+        certificates,
+        "async fn create_certificate",
+        "begin_mutation(",
+        "serde_json::from_slice",
+    );
+    ordered(
+        certificates,
+        "async fn update_certificate",
+        "begin_mutation(",
+        "serde_json::from_slice",
+    );
+    let credentials = include_str!("credentials.rs");
+    ordered(
+        credentials,
+        "async fn create_credential",
+        "begin_credential_mutation(",
+        "parse_credential(",
+    );
+    ordered(
+        credentials,
+        "async fn update_credential",
+        "begin_credential_mutation(",
+        "parse_credential(",
+    );
+    let users = include_str!("users.rs");
+    ordered(
+        users,
+        "async fn mutate_user",
+        "begin_mutation(",
+        "serde_json::from_slice",
+    );
+    let operations = include_str!("handlers/operations.rs");
+    for start in [
+        "async fn create_token",
+        "async fn create_backup_archive",
+        "async fn validate_restore_archive",
+    ] {
+        ordered(
+            operations,
+            start,
+            "begin_mutation(",
+            "parse_operation_json(",
+        );
+    }
+    ordered(
+        operations,
+        "async fn parse_operation_json",
+        "require_json(",
+        "serde_json::from_slice",
+    );
+}
+
+#[tokio::test]
+async fn timed_out_requests_finish_before_shutdown_drain() {
+    let permits = Arc::new(Semaphore::new(1));
+    let permit = Arc::clone(&permits)
+        .acquire_owned()
+        .await
+        .expect("request permit");
+    let (release, released) = tokio::sync::oneshot::channel();
+    let (completed, completion) = tokio::sync::oneshot::channel();
+    let result = run_request_to_completion(Duration::from_millis(10), permit, async move {
+        let _ = released.await;
+        let _ = completed.send(());
+        StatusCode::NO_CONTENT.into_response()
+    })
+    .await;
+    assert!(matches!(result, Err(ApiError::Timeout)));
+    assert_eq!(permits.available_permits(), 0);
+    let mut drain = Box::pin(drain_requests(Arc::clone(&permits), 1));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(10), &mut drain)
+            .await
+            .is_err()
+    );
+    release.send(()).expect("release request");
+    tokio::time::timeout(Duration::from_secs(1), completion)
+        .await
+        .expect("request completion")
+        .expect("completion signal");
+    tokio::time::timeout(Duration::from_secs(1), drain)
+        .await
+        .expect("request drain")
+        .expect("drain result");
+    assert_eq!(permits.available_permits(), 1);
+}
+
+#[test]
+fn user_store_errors_preserve_client_contracts() {
+    for (error, status, code) in [
+        (
+            UserStoreError::Conflict,
+            StatusCode::CONFLICT,
+            "object_conflict",
+        ),
+        (
+            UserStoreError::Invalid,
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+        ),
+        (
+            UserStoreError::Limit,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "capacity_exhausted",
+        ),
+        (
+            UserStoreError::RecoveryRequired,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+        ),
+    ] {
+        let (audit_code, api_error) = user_store_error_contract(&error);
+        assert!(!audit_code.is_empty());
+        assert_eq!(api_error.contract().0, status);
+        assert_eq!(api_error.contract().1, code);
+    }
+}
+
+#[test]
+fn candidate_route_migration_is_fail_closed() {
+    assert!(candidate_schema_matches_route(1, true));
+    assert!(candidate_schema_matches_route(2, false));
+    assert!(!candidate_schema_matches_route(2, true));
+    assert!(!candidate_schema_matches_route(1, false));
+    assert!(!candidate_schema_matches_route(0, true));
+    assert!(!candidate_schema_matches_route(3, false));
+}
+
 #[tokio::test]
 async fn invalid_access_policy_state_fails_admin_initialization_closed() {
     let root = temporary_directory("access-policy-init");

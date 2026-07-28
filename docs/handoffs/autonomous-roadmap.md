@@ -2,67 +2,55 @@
 
 Updated: 2026-07-28
 
-- Current branch: `feat/phase-15-control-plane-completion`
-- Current completed-unit commit: `HEAD` (this handoff)
-- Current phase: Phase 15, in progress
-- Completed unit: generalized safe typed candidate diff
-- Implementation commit: `HEAD`
-- Documentation commit: this handoff's documentation commit
-- Remote target: `origin/feat/phase-15-control-plane-completion`
-- Expected working tree after documentation commit: clean
+- Current branch: `chore/phase-15-closeout`
+- Baseline: `dev@eb107ec`
+- Current phase: Phase 15 completion
+- Phase 16 status: approved to begin after merge
+- Expected working tree after closeout commit: clean
 
-## Validation status
+## Completed closeout work
 
-The all-target/all-feature workspace check, 77 proxy-admin tests, focused schema-2/OpenAPI tests,
-Rust CLI tests, formatting, and `git diff --check` passed for this unit. Full final gates remain due
-after the remaining Phase 15 units.
+Expanded administration handlers are split by health/configuration, Access Policy, Proxy Host,
+runtime, and operational ownership. Candidate snapshot/rollback storage is separate from ordinary
+Proxy Host persistence. Compiler, Access Policy, and object-store tests are external modules, and
+CLI administration dispatch is separate from process wiring. No production Rust module exceeds
+1,200 measured lines.
 
-## Completed Access Policy boundary
+Regression coverage freezes the exact 52-action role matrix, OpenAPI scope order, authorization
+before typed deserialization, shared-store cross-owner hiding, schema-1 deprecated aliases versus
+schema-2 canonical routes, legacy subjectless/unscoped token behavior, candidate tamper detection,
+retention, and rollback recovery. The checked OpenAPI, configuration schema, manifests, defaults,
+and dependency set are unchanged from `dev@eb107ec`.
+Maintainer review found response-timeout cancellation, pre-authorization JSON parsing in
+token/backup/restore handlers, and collapsed User mutation error classes. Follow-up review found
+that timed-out handlers also needed an explicit shutdown drain and that User store limits needed a
+capacity response. Candidate `efcd0c3` fixes all five findings. Candidates `5a32495` and `f1bfd08`
+are retired; independent review must use `efcd0c3`.
 
-The strict library object binds a globally unique ID and owner to explicit sharing, enabled state,
-and bounded canonical middleware references. Its metadata compiler validates configuration,
-permits only existing IP/limit/authentication stages, rejects ambiguous fixed-stage combinations,
-canonicalizes order, and exposes no middleware contents or credentials. Proxy Host single and
-aggregate compilers enforce sharing and complete route semantics. The bounded private store adds
-global IDs, owner reads, canonical records, generation CAS, exclusive ownership, strict restart
-validation, and failure-safe atomic replacement. Distinct read/create/update/delete actions
-flow through roles, explicit token scopes, CLI issuance, and OpenAPI. Admin owns the store before
-socket bind. Owner-scoped list/get now enforce exact read permission, stable order, cross-owner
-not-found, and generation ETags. A post-rename durability failure now blocks every later mutation
-until restart reloads the visible atomic file; reads remain available. Create authorizes and
-records audit intent before parsing, requires exact
-active-revision concurrency and owner equality, validates middleware references against active
-configuration, persists generation one, returns an ETag, and never creates or activates a
-configuration revision. Update/delete require their distinct scopes, exact active revision, and
-exact object generation. Update validates replacement middleware before persistence; delete and
-update hide cross-owner existence. Both preserve runtime and configuration revisions.
+Administration documentation now describes all implemented Phase 15 typed domains, current
+certificate route separation, compatibility, and downgrade rules. No frontend dependency, TCP
+listener, browser route, OIDC state, or session code has entered the branch.
 
-Candidate creation/update/delete now bind exact referenced policy generations and canonical
-secret-free content. Activation and rollback snapshot current dependencies and reject drift before
-semantic compilation or runtime publication. Legacy no-policy typed snapshots remain readable;
-older binaries cannot consume new policy-bearing private candidate files.
+## Phase 15 decision
 
-## Remaining Phase 15 work
-
-Remaining migration/compatibility tests; transport module split; full authorization/security
-review.
+The project owner approved merging and Phase 16 progression on 2026-07-28, waiving the independent
+review prerequisite for phase progression only. The completion report records the exception.
+Independent application-security review remains required for production release.
 
 ## Exact next task
 
-Split remaining oversized production modules and freeze migration contracts.
+Merge closeout to `dev`, branch `feat/phase-16-gui-mvp`, and begin the frontend/packaging ADR plus
+default-disabled loopback web configuration.
 
 ## Known risks
 
-- Activation is intentionally global and Admin-only until candidate ownership/approval metadata
-  supports safe narrower authority.
-- Local Unix peer identity maps to stable `uid-<uid>`; user/session identity remains Phase 15/16.
+- Activation is global and Admin-only until candidate ownership/approval metadata supports safe
+  narrower authority.
+- Local Unix peer identity remains `uid-<uid>`; browser identity and ownership binding are Phase 16.
 - Transitive `proc-macro-error2 2.0.1` has a pre-existing future-incompatibility warning.
 - Product remains production NO-GO pending later phases and independent review.
-- Phase 15 transport modules exceed approximate size guidance; split after contracts stabilize and
-  before Phase 15 exit.
 
-## Unavailable tooling
+## Tooling
 
-`cargo nextest`, `cargo audit`, `cargo deny`, `cargo machete`, `cargo llvm-cov`, `cargo fuzz`,
-`markdownlint`, and `lychee` are unavailable in this environment. Python/PyYAML validated OpenAPI;
-dated evidence is not substituted for current execution.
+Final command results and exact unavailable-tool failures are recorded in `STATUS.md`. Historical
+audit/deny/fuzz evidence is not substituted for current execution.

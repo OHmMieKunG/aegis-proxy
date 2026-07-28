@@ -7,13 +7,19 @@ tokens authenticate requests. Fixed roles authorize actions; tokens additionally
 explicit action scope, so effective permission is role intersection scope. Mutations require exact
 quoted `If-Match`, durable HMAC-chained audit intent, validated candidate state, and atomic
 activation.
+An accepted request owns one bounded in-flight permit until its handler finishes. The configured
+request deadline can return `504` to the caller, but it does not cancel an accepted handler or
+release mutation serialization while non-cancelable blocking storage work is still running. Every
+mutation therefore reaches terminal audit before its permit is released, including after client
+disconnect or response timeout.
 
 Current API supports low-level validation, redacted preview, candidates, activation, revisions,
-rollback, routes/upstreams/providers/certificates/status, token management, certificate renewal
-requests, backup creation, and restore validation. It also exposes owner-scoped typed Proxy Host
-list/get, non-persistent validation/preview, audited create/update/delete of desired state plus a
-non-active immutable candidate, verified Admin-only candidate activation, and Admin-only typed
-forward rollback. Restore does not extract state. No TCP/public admin listener or web GUI exists.
+rollback, routes/upstreams/providers/certificates/status, token management, certificate renewal,
+backup creation, and restore validation. Owner-scoped typed APIs cover Proxy Hosts, Stream Hosts,
+Discovery Sources, Certificates, Access Policies, write-only Stored Credentials, Users, and
+immutable Roles. Runtime-changing typed mutations create non-active schema-2 candidates; verified
+Admin-only activation and forward rollback remain explicit. Restore does not extract state. No
+TCP/public admin listener, browser session, or web GUI exists.
 
 Phase 15 now includes a library-only strict Proxy Host object and side-effect-free compiler. Caller
 RBAC supplies immutable owner, object, domain, policy, listener, certificate, and upstream-template
@@ -149,10 +155,14 @@ existing token scopes gain no schema-2 authority.
 Machine contract: [`config/schema/admin-openapi.yaml`](../../config/schema/admin-openapi.yaml).
 The checked contract requires nonempty canonical scopes when creating tokens and returns only token
 ID, role, owner ID, scopes, expiry, and revocation metadata after the one-time plaintext response.
+Token creation, backup creation, and restore validation accept a bounded raw body, authorize and
+write audit intent first, require one exact `application/json` content type, and only then
+deserialize. User-store conflicts remain `409`, invalid objects remain `400`, and missing users
+remain `404`.
 
 ## Target model
 
-Phase 15 adds stable high-level objects shared by GUI and automation. Phase 16 adds GUI as a
+Phase 15 provides stable high-level objects shared by GUI and automation. Phase 16 adds GUI as a
 removable API client. Both compile through the existing strict validation, revision, secret, audit,
 and activation path. No separate GUI-owned authorization or state is allowed.
 

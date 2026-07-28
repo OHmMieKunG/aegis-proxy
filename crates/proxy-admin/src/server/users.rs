@@ -107,10 +107,9 @@ async fn mutate_user(
     let (stored, status) = match id {
         None => match tokio::task::spawn_blocking(move || store.create(object)).await {
             Ok(Ok(stored)) => (stored, StatusCode::CREATED),
-            Ok(Err(_)) | Err(_) => {
-                return Err(
-                    audited_failure(&audit, "user_store_failed", ApiError::Unavailable).await,
-                );
+            Ok(Err(error)) => return Err(map_user_store_error(&audit, error).await),
+            Err(_) => {
+                return Err(audited_failure(&audit, "user_store_failed", ApiError::Internal).await);
             }
         },
         Some(id) => {
@@ -125,21 +124,51 @@ async fn mutate_user(
                     audited_failure(&audit, "invalid_object_id", ApiError::InvalidRequest).await,
                 );
             }
+            let object_id = object.metadata.id.clone();
+            let lookup = Arc::clone(&store);
+            match tokio::task::spawn_blocking(move || lookup.get(&object_id)).await {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    return Err(
+                        audited_failure(&audit, "user_not_found", ApiError::NotFound).await,
+                    );
+                }
+                Err(_) => {
+                    return Err(
+                        audited_failure(&audit, "user_store_failed", ApiError::Internal).await,
+                    );
+                }
+            }
             match tokio::task::spawn_blocking(move || store.update(object, generation)).await {
                 Ok(Ok(stored)) => (stored, StatusCode::OK),
-                Ok(Err(_)) | Err(_) => {
-                    return Err(audited_failure(
-                        &audit,
-                        "user_store_failed",
-                        ApiError::Unavailable,
-                    )
-                    .await);
+                Ok(Err(error)) => return Err(map_user_store_error(&audit, error).await),
+                Err(_) => {
+                    return Err(
+                        audited_failure(&audit, "user_store_failed", ApiError::Internal).await,
+                    );
                 }
             }
         }
     };
     audit.record(AuditOutcome::Success, None, None).await?;
     user_response(stored, status)
+}
+
+async fn map_user_store_error(audit: &MutationAudit, error: UserStoreError) -> ApiError {
+    let (code, error) = user_store_error_contract(&error);
+    audited_failure(audit, code, error).await
+}
+
+pub(super) fn user_store_error_contract(error: &UserStoreError) -> (&'static str, ApiError) {
+    match error {
+        UserStoreError::Conflict => ("object_conflict", ApiError::ObjectConflict),
+        UserStoreError::Invalid => ("invalid_user", ApiError::InvalidRequest),
+        UserStoreError::Limit => ("user_store_limit", ApiError::Busy),
+        UserStoreError::Io(_)
+        | UserStoreError::Indeterminate(_)
+        | UserStoreError::RecoveryRequired
+        | UserStoreError::Locked => ("user_store_failed", ApiError::Unavailable),
+    }
 }
 
 fn user_response(stored: StoredUser, status: StatusCode) -> Result<Response, ApiError> {

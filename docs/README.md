@@ -59,6 +59,9 @@
   certificate binding and fail-closed managed-HTTPS selection evidence.
 - [Phase 15 Stream Host and Discovery Source review](reviews/phase-15-stream-discovery.md): strict
   transport/provider contracts, persistence, no-I/O compilation, and authorization evidence.
+- [Phase 15 independent review request](reviews/phase-15-independent-review-request.md): immutable
+  candidate, reviewer scope, required attacks, evidence, and signoff format. This is not completion
+  evidence.
 
 ## Operators
 
@@ -107,5 +110,5 @@
 [Historical phase, validation, and security evidence](history/README.md) is retained for
 traceability. Dated results are not current test results.
 
-User-facing GUI guides do not exist yet because GUI and stable high-level domain objects are planned,
-not implemented. Creating them now would document fictional behavior.
+User-facing GUI guides do not exist yet because Phase 16 GUI behavior is not implemented. Creating
+them now would document fictional behavior.
