@@ -56,7 +56,7 @@ use crate::{
     ProxyHostPreparationError, ProxyHostPreviewSummary, ProxyHostSpec, ProxyHostStore,
     ProxyHostStoreError, Role, StoredAccessPolicy, StoredCertificate, StoredCredential,
     StoredDiscoverySource, StoredProxyHost, StoredStreamHost, StoredUser, StreamHostSpec,
-    StreamHostStore, TokenScopes, TokenStore, UserSpec, UserStore,
+    StreamHostStore, TokenScopes, TokenStore, UserSpec, UserStore, UserStoreError,
 };
 use certificates::*;
 use credentials::*;
@@ -935,17 +935,16 @@ async fn bound_request(
     next: Next,
 ) -> Response {
     let request_id = request_id().unwrap_or_else(|| "request-id-unavailable".into());
-    let _permit = match Arc::clone(&state.request_permits).try_acquire_owned() {
+    let permit = match Arc::clone(&state.request_permits).try_acquire_owned() {
         Ok(permit) => permit,
         Err(_) => return error_contract(ApiError::Busy.into_response(), &request_id),
     };
     request
         .extensions_mut()
         .insert(RequestId(request_id.clone()));
-    let response = match tokio::time::timeout(state.timeout, next.run(request)).await {
-        Ok(response) => response,
-        Err(_) => ApiError::Timeout.into_response(),
-    };
+    let response = run_request_to_completion(state.timeout, permit, next.run(request))
+        .await
+        .unwrap_or_else(IntoResponse::into_response);
     let mut response = if response.status().is_client_error()
         || (response.status().is_server_error()
             && !response
@@ -961,6 +960,22 @@ async fn bound_request(
         response.headers_mut().insert("x-request-id", value);
     }
     response
+}
+
+async fn run_request_to_completion(
+    timeout: Duration,
+    permit: OwnedSemaphorePermit,
+    request: impl Future<Output = Response> + Send + 'static,
+) -> Result<Response, ApiError> {
+    let task = tokio::spawn(async move {
+        let _permit = permit;
+        request.await
+    });
+    match tokio::time::timeout(timeout, task).await {
+        Ok(Ok(response)) => Ok(response),
+        Ok(Err(_)) => Err(ApiError::Internal),
+        Err(_) => Err(ApiError::Timeout),
+    }
 }
 
 fn error_contract(mut response: Response, request_id: &str) -> Response {

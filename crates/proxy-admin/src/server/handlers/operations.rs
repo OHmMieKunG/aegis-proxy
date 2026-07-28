@@ -40,7 +40,7 @@ pub(in crate::server) async fn create_token(
     Extension(request_id): Extension<RequestId>,
     headers: HeaderMap,
     principal: Principal,
-    payload: Result<Json<TokenCreateRequest>, JsonRejection>,
+    body: axum::body::Bytes,
 ) -> Result<Response, ApiError> {
     let current = state.control.runtime().revision().to_string();
     let audit = begin_mutation(
@@ -63,12 +63,7 @@ pub(in crate::server) async fn create_token(
     if current != expected || state.control.runtime().revision().as_ref() != expected {
         return Err(audited_failure(&audit, "revision_conflict", ApiError::Conflict).await);
     }
-    let request = match payload {
-        Ok(Json(request)) => request,
-        Err(_) => {
-            return Err(audited_failure(&audit, "invalid_json", ApiError::InvalidRequest).await);
-        }
-    };
+    let request: TokenCreateRequest = parse_operation_json(&headers, &body, &audit).await?;
     let now = unix_time().ok_or(ApiError::Internal)?;
     if request.expires_unix_secs <= now
         || request.expires_unix_secs > now.saturating_add(MAX_TOKEN_LIFETIME_SECS)
@@ -221,7 +216,7 @@ pub(in crate::server) async fn create_backup_archive(
     Extension(request_id): Extension<RequestId>,
     headers: HeaderMap,
     principal: Principal,
-    payload: Result<Json<BackupCreateRequest>, JsonRejection>,
+    body: axum::body::Bytes,
 ) -> Result<axum::Json<crate::BackupSummary>, ApiError> {
     let config = state.control.runtime().config();
     let current = state.control.runtime().revision().to_string();
@@ -245,12 +240,7 @@ pub(in crate::server) async fn create_backup_archive(
     if current != expected || state.control.runtime().revision().as_ref() != expected {
         return Err(audited_failure(&audit, "revision_conflict", ApiError::Conflict).await);
     }
-    let request = match payload {
-        Ok(Json(request)) => request,
-        Err(_) => {
-            return Err(audited_failure(&audit, "invalid_json", ApiError::InvalidRequest).await);
-        }
-    };
+    let request: BackupCreateRequest = parse_operation_json(&headers, &body, &audit).await?;
     let output = PathBuf::from(request.output);
     if !valid_api_path(&output) || config.tls.state_encryption_recipients.is_empty() {
         return Err(
@@ -278,7 +268,7 @@ pub(in crate::server) async fn validate_restore_archive(
     Extension(request_id): Extension<RequestId>,
     headers: HeaderMap,
     principal: Principal,
-    payload: Result<Json<RestoreValidateRequest>, JsonRejection>,
+    body: axum::body::Bytes,
 ) -> Result<axum::Json<crate::BackupSummary>, ApiError> {
     let current = state.control.runtime().revision().to_string();
     let audit = begin_mutation(
@@ -301,12 +291,7 @@ pub(in crate::server) async fn validate_restore_archive(
     if current != expected || state.control.runtime().revision().as_ref() != expected {
         return Err(audited_failure(&audit, "revision_conflict", ApiError::Conflict).await);
     }
-    let request = match payload {
-        Ok(Json(request)) => request,
-        Err(_) => {
-            return Err(audited_failure(&audit, "invalid_json", ApiError::InvalidRequest).await);
-        }
-    };
+    let request: RestoreValidateRequest = parse_operation_json(&headers, &body, &audit).await?;
     let input = PathBuf::from(request.input);
     if !valid_api_path(&input) {
         return Err(
@@ -333,4 +318,18 @@ pub(in crate::server) async fn validate_restore_archive(
     };
     audit.record(AuditOutcome::Success, None, None).await?;
     Ok(axum::Json(summary))
+}
+
+async fn parse_operation_json<T: serde::de::DeserializeOwned>(
+    headers: &HeaderMap,
+    body: &[u8],
+    audit: &MutationAudit,
+) -> Result<T, ApiError> {
+    if require_json(headers).is_err() {
+        return Err(audited_failure(audit, "invalid_content_type", ApiError::InvalidRequest).await);
+    }
+    match serde_json::from_slice(body) {
+        Ok(request) => Ok(request),
+        Err(_) => Err(audited_failure(audit, "invalid_json", ApiError::InvalidRequest).await),
+    }
 }

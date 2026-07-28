@@ -321,7 +321,80 @@ fn body_deserialization_remains_behind_authorization() {
         "async fn create_backup_archive",
         "async fn validate_restore_archive",
     ] {
-        ordered(operations, start, "principal: Principal", "payload:");
+        ordered(
+            operations,
+            start,
+            "begin_mutation(",
+            "parse_operation_json(",
+        );
+    }
+    ordered(
+        operations,
+        "async fn parse_operation_json",
+        "require_json(",
+        "serde_json::from_slice",
+    );
+}
+
+#[tokio::test]
+async fn timed_out_requests_finish_while_holding_capacity() {
+    let permits = Arc::new(Semaphore::new(1));
+    let permit = Arc::clone(&permits)
+        .acquire_owned()
+        .await
+        .expect("request permit");
+    let (release, released) = tokio::sync::oneshot::channel();
+    let (completed, completion) = tokio::sync::oneshot::channel();
+    let result = run_request_to_completion(Duration::from_millis(10), permit, async move {
+        let _ = released.await;
+        let _ = completed.send(());
+        StatusCode::NO_CONTENT.into_response()
+    })
+    .await;
+    assert!(matches!(result, Err(ApiError::Timeout)));
+    assert_eq!(permits.available_permits(), 0);
+    release.send(()).expect("release request");
+    tokio::time::timeout(Duration::from_secs(1), completion)
+        .await
+        .expect("request completion")
+        .expect("completion signal");
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while permits.available_permits() == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("permit release");
+}
+
+#[test]
+fn user_store_errors_preserve_client_contracts() {
+    for (error, status, code) in [
+        (
+            UserStoreError::Conflict,
+            StatusCode::CONFLICT,
+            "object_conflict",
+        ),
+        (
+            UserStoreError::Invalid,
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+        ),
+        (
+            UserStoreError::Limit,
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+        ),
+        (
+            UserStoreError::RecoveryRequired,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+        ),
+    ] {
+        let (audit_code, api_error) = user_store_error_contract(&error);
+        assert!(!audit_code.is_empty());
+        assert_eq!(api_error.contract().0, status);
+        assert_eq!(api_error.contract().1, code);
     }
 }
 

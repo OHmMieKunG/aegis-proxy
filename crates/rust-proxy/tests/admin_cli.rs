@@ -152,6 +152,29 @@ allow = ["127.0.0.1/32"]
         response
     }
 
+    fn raw_json_post(
+        socket: &str,
+        path: &str,
+        expected_revision: &str,
+        token: Option<&str>,
+        content_type: &str,
+        body: &str,
+    ) -> String {
+        let mut stream = UnixStream::connect(socket).expect("connect admin socket");
+        let authorization = token
+            .map(|token| format!("Authorization: Bearer {token}\r\n"))
+            .unwrap_or_default();
+        write!(
+            stream,
+            "POST {path} HTTP/1.1\r\nHost: localhost\r\n{authorization}If-Match: \"{expected_revision}\"\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .expect("write request");
+        let mut response = String::new();
+        stream.read_to_string(&mut response).expect("read response");
+        response
+    }
+
     #[test]
     fn private_cli_enforces_cas_rbac_token_and_audit_contracts() {
         let root = root();
@@ -591,6 +614,22 @@ allow = ["127.0.0.1/32"]
                     .success()
             );
         }
+        let stale_user_update = Command::new(binary())
+            .args([
+                "user",
+                "update",
+                "--socket",
+                socket,
+                "--expect",
+                &current,
+                "--generation",
+                "2",
+                &owner,
+            ])
+            .arg(daemon.root.join(format!("{owner}.json")))
+            .output()
+            .expect("stale user update");
+        assert_eq!(stale_user_update.status.code(), Some(4));
 
         let escalation = run(&[
             "token",
@@ -633,6 +672,30 @@ allow = ["127.0.0.1/32"]
         fs::set_permissions(&limited_file, fs::Permissions::from_mode(0o600))
             .expect("limited token mode");
         let limited_ref = format!("file://{}", limited_file.display());
+        let limited_plaintext = limited_json["token"].as_str().expect("limited plaintext");
+        for path in ["/v1/tokens", "/v1/backups", "/v1/restore/validate"] {
+            let denied = raw_json_post(
+                socket,
+                path,
+                &current,
+                Some(limited_plaintext),
+                "application/json",
+                "{",
+            );
+            assert!(denied.starts_with("HTTP/1.1 403 "), "{denied}");
+        }
+        let noncanonical_content_type = raw_json_post(
+            socket,
+            "/v1/backups",
+            &current,
+            None,
+            "application/json; charset=utf-8",
+            "{}",
+        );
+        assert!(
+            noncanonical_content_type.starts_with("HTTP/1.1 400 "),
+            "{noncanonical_content_type}"
+        );
         let invalid_policy_path = daemon.root.join("invalid-policy.json");
         fs::write(&invalid_policy_path, b"{").expect("invalid policy file");
         let denied_policy_create = Command::new(binary())
