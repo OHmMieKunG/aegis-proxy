@@ -90,6 +90,9 @@ pub struct TokenRecord {
     /// Stable owner for typed objects. Missing legacy ownership cannot use typed endpoints.
     #[serde(default)]
     pub owner_id: Option<ObjectId>,
+    /// Enabled user identity for newly issued tokens. Missing records remain legacy automation.
+    #[serde(default)]
+    pub user_ref: Option<ObjectId>,
     /// Explicit action scopes. Missing legacy scopes deserialize to deny-all.
     #[serde(default)]
     pub scopes: TokenScopes,
@@ -109,6 +112,8 @@ pub struct TokenMetadata {
     pub role: Role,
     /// Stable typed-object owner; absent only for legacy records.
     pub owner_id: Option<ObjectId>,
+    /// Bound user identity; absent only for legacy automation tokens.
+    pub user_ref: Option<ObjectId>,
     /// Explicit action scopes.
     pub scopes: TokenScopes,
     /// Absolute Unix expiry time.
@@ -149,6 +154,7 @@ impl fmt::Debug for TokenRecord {
             .field("id", &self.id)
             .field("role", &self.role)
             .field("owner_id", &self.owner_id)
+            .field("user_ref", &self.user_ref)
             .field("scopes", &self.scopes)
             .field("expires_unix_secs", &self.expires_unix_secs)
             .field("revoked", &self.revoked)
@@ -161,7 +167,7 @@ impl TokenRecord {
     /// Issue a 256-bit token and return its hash-only record.
     pub fn issue(
         role: Role,
-        owner_id: ObjectId,
+        user_ref: ObjectId,
         scopes: TokenScopes,
         expires_unix_secs: u64,
     ) -> Result<(Self, IssuedToken), TokenError> {
@@ -180,7 +186,8 @@ impl TokenRecord {
             Self {
                 id,
                 role,
-                owner_id: Some(owner_id),
+                owner_id: Some(user_ref.clone()),
+                user_ref: Some(user_ref),
                 scopes,
                 expires_unix_secs,
                 revoked: false,
@@ -225,6 +232,7 @@ impl TokenRecord {
             id: self.id.clone(),
             role: self.role,
             owner_id: self.owner_id.clone(),
+            user_ref: self.user_ref.clone(),
             scopes: self.scopes.clone(),
             expires_unix_secs: self.expires_unix_secs,
             revoked: self.revoked,
@@ -603,6 +611,10 @@ mod tests {
             .as_object_mut()
             .expect("token record")
             .remove("owner_id");
+        value["records"][0]
+            .as_object_mut()
+            .expect("token record")
+            .remove("user_ref");
         fs::write(
             &path,
             serde_json::to_vec_pretty(&value).expect("legacy JSON"),
@@ -615,6 +627,7 @@ mod tests {
             .expect("authenticate");
         assert!(authenticated.scopes.as_slice().is_empty());
         assert!(authenticated.owner_id.is_none());
+        assert!(authenticated.user_ref.is_none());
         assert!(!authenticated.scopes.allows(Action::ReadStatus));
         fs::remove_dir_all(directory).expect("remove");
     }

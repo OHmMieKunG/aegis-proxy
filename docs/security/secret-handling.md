@@ -8,9 +8,10 @@ Resolved bytes are size-limited, permission-checked where supported, zeroized wh
 redacted in formatting. Private keys and ACME account credentials are age-encrypted at rest.
 
 API tokens return plaintext once at creation; only Argon2 hashes and safe metadata persist. New
-tokens require explicit bounded action scopes and inherit creator's stable typed owner. Effective
+tokens require an enabled stored user and explicit bounded action scopes, inherit that user's fixed
+role/owner, and cannot exceed it. Disabling the user blocks subject authentication. Effective
 permission is the intersection of role and scope, while legacy records without scopes authorize no
-action until replaced. Legacy records without owner metadata cannot use typed-object endpoints.
+action until replaced. Subjectless records remain legacy automation identities.
 Mutation audit intent applies this same intersection before any state change; role permission alone
 is insufficient for a bearer token.
 Certificate, provider, audit, authentication, backup, and age identities are never returned as

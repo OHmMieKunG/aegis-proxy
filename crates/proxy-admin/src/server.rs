@@ -6,6 +6,7 @@ mod domains;
 mod handlers;
 mod support;
 mod unified;
+mod users;
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -54,8 +55,8 @@ use crate::{
     DiscoverySourceSpec, DiscoverySourceStore, ObjectId, PreparedProxyHost,
     ProxyHostPreparationError, ProxyHostPreviewSummary, ProxyHostSpec, ProxyHostStore,
     ProxyHostStoreError, Role, StoredAccessPolicy, StoredCertificate, StoredCredential,
-    StoredDiscoverySource, StoredProxyHost, StoredStreamHost, StreamHostSpec, StreamHostStore,
-    TokenScopes, TokenStore,
+    StoredDiscoverySource, StoredProxyHost, StoredStreamHost, StoredUser, StreamHostSpec,
+    StreamHostStore, TokenScopes, TokenStore, UserSpec, UserStore,
 };
 use certificates::*;
 use credentials::*;
@@ -63,6 +64,7 @@ use domains::*;
 use handlers::*;
 use support::*;
 use unified::*;
+use users::*;
 
 const AUDIT_KEY_BYTES: usize = 64;
 const REQUEST_ID_BYTES: usize = 16;
@@ -99,6 +101,9 @@ pub enum AdminServerError {
     /// Encrypted Stored Credential state could not be loaded safely.
     #[error("administrative Stored Credential store failed")]
     Credentials,
+    /// User identity state could not be loaded safely.
+    #[error("administrative User store failed")]
+    Users,
     /// Blocking initialization task failed.
     #[error("administrative initialization task failed: {0}")]
     Initialization(String),
@@ -114,6 +119,7 @@ struct AppState {
     stream_hosts: Arc<StreamHostStore>,
     discovery_sources: Arc<DiscoverySourceStore>,
     credentials: Arc<CredentialStore>,
+    users: Arc<UserStore>,
     audit: Option<Arc<AuditLog>>,
     allowed_uids: Arc<[u32]>,
     auth_permits: Arc<Semaphore>,
@@ -203,6 +209,9 @@ impl FromRequestParts<AppState> for Principal {
             .await
             .map_err(|_| ApiError::Internal)?
             .ok_or(ApiError::Unauthorized)?;
+            if !subject_is_enabled(&metadata, &state.users) {
+                return Err(ApiError::Unauthorized);
+            }
             let principal = Self {
                 actor_type: "api_token",
                 actor_id: metadata.id,
@@ -214,6 +223,17 @@ impl FromRequestParts<AppState> for Principal {
             Ok(principal)
         }
     }
+}
+
+fn subject_is_enabled(metadata: &crate::TokenMetadata, users: &UserStore) -> bool {
+    let Some(user_ref) = metadata.user_ref.as_ref() else {
+        return true;
+    };
+    users.get(user_ref).is_some_and(|user| {
+        user.object.spec.enabled
+            && user.object.spec.role == metadata.role
+            && metadata.owner_id.as_ref() == Some(user_ref)
+    })
 }
 
 #[derive(Debug)]
@@ -557,7 +577,7 @@ struct ActivationResponse {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TokenCreateRequest {
-    role: Role,
+    user_ref: ObjectId,
     scopes: Vec<Action>,
     expires_unix_secs: u64,
 }
@@ -666,6 +686,11 @@ pub async fn serve(
     .await
     .map_err(|error| AdminServerError::Initialization(error.to_string()))?
     .map_err(|_| AdminServerError::Credentials)?;
+    let user_path = state_dir.join("admin/users.json");
+    let user_store = tokio::task::spawn_blocking(move || UserStore::open(user_path))
+        .await
+        .map_err(|error| AdminServerError::Initialization(error.to_string()))?
+        .map_err(|_| AdminServerError::Users)?;
     let audit = match config.admin.audit_key.clone() {
         Some(reference) => {
             let audit_path = state_dir.join("audit/admin.jsonl");
@@ -698,6 +723,7 @@ pub async fn serve(
         stream_hosts: Arc::new(stream_host_store),
         discovery_sources: Arc::new(discovery_source_store),
         credentials: Arc::new(credential_store),
+        users: Arc::new(user_store),
         audit,
         allowed_uids: Arc::from(config.admin.allowed_uids.clone()),
         auth_permits: Arc::new(Semaphore::new(config.admin.max_auth_in_flight)),
@@ -838,6 +864,9 @@ pub async fn serve(
         .route("/v1/audit", get(audit_records))
         .route("/v1/tokens", get(list_tokens).post(create_token))
         .route("/v1/tokens/{id}/revoke", post(revoke_token))
+        .route("/v1/users", get(users).post(create_user))
+        .route("/v1/users/{id}", get(user).put(update_user))
+        .route("/v1/roles", get(roles))
         .route("/v1/backups", post(create_backup_archive))
         .route("/v1/restore/validate", post(validate_restore_archive))
         .layer(axum::extract::DefaultBodyLimit::max(

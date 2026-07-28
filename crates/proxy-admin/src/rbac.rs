@@ -111,6 +111,20 @@ pub enum Action {
     ValidateRestore,
     /// Manage administrative identities and roles.
     ManageIdentities,
+    /// Read redacted API-token metadata.
+    ReadTokens,
+    /// Create a subject-bound API token.
+    CreateToken,
+    /// Revoke an API token.
+    RevokeToken,
+    /// Read user identities.
+    ReadUsers,
+    /// Create a user identity.
+    CreateUser,
+    /// Update a user identity.
+    UpdateUser,
+    /// Read immutable built-in roles.
+    ReadRoles,
 }
 
 /// Invalid API-token scope set.
@@ -262,7 +276,7 @@ impl Role {
 mod tests {
     use super::{Action, Role, TokenScopeError, TokenScopes};
 
-    const ACTIONS: [Action; 45] = [
+    const ACTIONS: [Action; 52] = [
         Action::ReadStatus,
         Action::ReadConfig,
         Action::ValidateConfig,
@@ -308,6 +322,13 @@ mod tests {
         Action::CreateBackup,
         Action::ValidateRestore,
         Action::ManageIdentities,
+        Action::ReadTokens,
+        Action::CreateToken,
+        Action::RevokeToken,
+        Action::ReadUsers,
+        Action::CreateUser,
+        Action::UpdateUser,
+        Action::ReadRoles,
     ];
 
     #[test]

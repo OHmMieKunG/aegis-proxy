@@ -96,6 +96,16 @@ enum Command {
         #[command(subcommand)]
         command: AccessPolicyCommand,
     },
+    /// Manage administrative users and inspect immutable roles.
+    User {
+        #[command(subcommand)]
+        command: UserCommand,
+    },
+    /// List immutable built-in roles.
+    Role {
+        #[command(flatten)]
+        admin: AdminConnection,
+    },
     /// Manage typed Stream Hosts through the private socket.
     StreamHost {
         #[command(subcommand)]
@@ -209,8 +219,8 @@ enum TokenCommand {
         admin: AdminConnection,
         #[arg(long)]
         expect: String,
-        #[arg(long, value_enum)]
-        role: CliRole,
+        #[arg(long)]
+        user_ref: String,
         /// Explicit action scope; repeat for multiple scopes.
         #[arg(long, value_enum, required = true)]
         scope: Vec<CliScope>,
@@ -351,6 +361,40 @@ enum AccessPolicyCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum UserCommand {
+    /// List users.
+    List {
+        #[command(flatten)]
+        admin: AdminConnection,
+    },
+    /// Get one user.
+    Get {
+        #[command(flatten)]
+        admin: AdminConnection,
+        id: String,
+    },
+    /// Create one user.
+    Create {
+        #[command(flatten)]
+        admin: AdminConnection,
+        #[arg(long)]
+        expect: String,
+        file: PathBuf,
+    },
+    /// Replace one user.
+    Update {
+        #[command(flatten)]
+        admin: AdminConnection,
+        #[arg(long)]
+        expect: String,
+        #[arg(long)]
+        generation: u64,
+        id: String,
+        file: PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum CertificateObjectCommand {
     /// List typed Certificates owned by authenticated principal.
     List {
@@ -459,14 +503,6 @@ enum TypedDomainCommand {
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
-enum CliRole {
-    Viewer,
-    Auditor,
-    Operator,
-    Admin,
-}
-
-#[derive(Clone, Copy, Debug, ValueEnum)]
 enum CliScope {
     ReadStatus,
     ReadConfig,
@@ -508,6 +544,13 @@ enum CliScope {
     CreateCredential,
     UpdateCredential,
     RevokeCredential,
+    ReadTokens,
+    CreateToken,
+    RevokeToken,
+    ReadUsers,
+    CreateUser,
+    UpdateUser,
+    ReadRoles,
     RenewCertificate,
     ReadAudit,
     CreateBackup,
@@ -558,6 +601,13 @@ impl CliScope {
             Self::CreateCredential => "create_credential",
             Self::UpdateCredential => "update_credential",
             Self::RevokeCredential => "revoke_credential",
+            Self::ReadTokens => "read_tokens",
+            Self::CreateToken => "create_token",
+            Self::RevokeToken => "revoke_token",
+            Self::ReadUsers => "read_users",
+            Self::CreateUser => "create_user",
+            Self::UpdateUser => "update_user",
+            Self::ReadRoles => "read_roles",
             Self::RenewCertificate => "renew_certificate",
             Self::ReadAudit => "read_audit",
             Self::CreateBackup => "create_backup",
@@ -607,7 +657,7 @@ struct CandidateResponse {
 
 #[derive(Debug, Serialize)]
 struct TokenCreateBody<'a> {
-    role: &'a str,
+    user_ref: &'a str,
     scopes: Vec<&'static str>,
     expires_unix_secs: u64,
 }
@@ -772,6 +822,14 @@ async fn run(cli: Cli) -> Result<(), BoxError> {
             run_owned_object_command(command, "access-policies").await?
         }
         Command::Credential { command } => run_owned_object_command(command, "credentials").await?,
+        Command::User { command } => run_user_command(command).await?,
+        Command::Role { admin } => {
+            let response =
+                admin_request(&admin, Method::GET, "/v1/roles", None, None, Vec::new()).await?;
+            require_admin_success(&response)?;
+            io::stdout().lock().write_all(&response.body)?;
+            writeln!(io::stdout().lock())?;
+        }
         Command::StreamHost { command } => {
             run_typed_domain_command(command, "stream-hosts").await?
         }
@@ -977,7 +1035,7 @@ async fn run_token_command(command: TokenCommand) -> Result<(), BoxError> {
         TokenCommand::Create {
             admin,
             expect,
-            role,
+            user_ref,
             scope,
             ttl_secs,
         } => {
@@ -989,14 +1047,9 @@ async fn run_token_command(command: TokenCommand) -> Result<(), BoxError> {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)?
                 .as_secs();
-            let role = match role {
-                CliRole::Viewer => "viewer",
-                CliRole::Auditor => "auditor",
-                CliRole::Operator => "operator",
-                CliRole::Admin => "admin",
-            };
+            let user_ref = user_ref.parse::<aegisproxy_admin::ObjectId>()?;
             let body = serde_json::to_vec(&TokenCreateBody {
-                role,
+                user_ref: user_ref.as_str(),
                 scopes: scope.into_iter().map(CliScope::as_api_str).collect(),
                 expires_unix_secs: now.saturating_add(ttl_secs),
             })?;
@@ -1253,6 +1306,65 @@ async fn run_owned_object_command(
                 Some(generation),
                 None,
                 Vec::new(),
+            )
+            .await?
+        }
+    };
+    require_admin_success(&response)?;
+    io::stdout().lock().write_all(&response.body)?;
+    writeln!(io::stdout().lock())?;
+    Ok(())
+}
+
+async fn run_user_command(command: UserCommand) -> Result<(), BoxError> {
+    let response = match command {
+        UserCommand::List { admin } => {
+            admin_request(&admin, Method::GET, "/v1/users", None, None, Vec::new()).await?
+        }
+        UserCommand::Get { admin, id } => {
+            let id = id.parse::<aegisproxy_admin::ObjectId>()?;
+            admin_request(
+                &admin,
+                Method::GET,
+                &format!("/v1/users/{id}"),
+                None,
+                None,
+                Vec::new(),
+            )
+            .await?
+        }
+        UserCommand::Create {
+            admin,
+            expect,
+            file,
+        } => {
+            let body = read_bounded(file, aegisproxy_config::MAX_CONFIG_BYTES).await?;
+            admin_request(
+                &admin,
+                Method::POST,
+                "/v1/users",
+                Some(expect),
+                Some("application/json"),
+                body,
+            )
+            .await?
+        }
+        UserCommand::Update {
+            admin,
+            expect,
+            generation,
+            id,
+            file,
+        } => {
+            let body = read_bounded(file, aegisproxy_config::MAX_CONFIG_BYTES).await?;
+            admin_request_with_generation(
+                &admin,
+                Method::PUT,
+                &format!("/v1/users/{id}"),
+                Some(expect),
+                Some(generation),
+                Some("application/json"),
+                body,
             )
             .await?
         }

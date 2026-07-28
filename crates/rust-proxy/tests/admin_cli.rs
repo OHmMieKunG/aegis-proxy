@@ -569,6 +569,29 @@ allow = ["127.0.0.1/32"]
         ]);
         assert_eq!(denied_owner.status.code(), Some(5));
 
+        for (id, role) in [("viewer-user", "viewer"), (owner.as_str(), "operator")] {
+            let path = daemon.root.join(format!("{id}.json"));
+            fs::write(
+                &path,
+                serde_json::to_vec(&serde_json::json!({
+                    "api_version": "v1",
+                    "metadata": {"id": id, "owner_id": id},
+                    "spec": {"display_name": id, "role": role, "enabled": true}
+                }))
+                .expect("user JSON"),
+            )
+            .expect("user file");
+            assert!(
+                Command::new(binary())
+                    .args(["user", "create", "--socket", socket, "--expect", &current])
+                    .arg(path)
+                    .output()
+                    .expect("create user")
+                    .status
+                    .success()
+            );
+        }
+
         let escalation = run(&[
             "token",
             "create",
@@ -576,8 +599,8 @@ allow = ["127.0.0.1/32"]
             socket,
             "--expect",
             &current,
-            "--role",
-            "viewer",
+            "--user-ref",
+            "viewer-user",
             "--scope",
             "activate-config",
             "--ttl-secs",
@@ -591,8 +614,8 @@ allow = ["127.0.0.1/32"]
             socket,
             "--expect",
             &current,
-            "--role",
-            "viewer",
+            "--user-ref",
+            "viewer-user",
             "--scope",
             "read-status",
             "--ttl-secs",
@@ -685,8 +708,8 @@ allow = ["127.0.0.1/32"]
             socket,
             "--expect",
             &current,
-            "--role",
-            "operator",
+            "--user-ref",
+            &owner,
             "--scope",
             "read-status",
             "--scope",
@@ -1763,8 +1786,8 @@ allow = ["127.0.0.1/32"]
         assert!(audit.contains("\"action\":\"proxy_host_create\""));
         assert!(audit.contains("\"action\":\"proxy_host_update\""));
         assert!(audit.contains("\"action\":\"proxy_host_delete\""));
-        assert!(audit.contains("\"action\":\"proxy_host_activate\""));
-        assert!(audit.contains("\"action\":\"proxy_host_rollback\""));
+        assert!(audit.contains("\"action\":\"typed_candidate_activate\""));
+        assert!(audit.contains("\"action\":\"typed_revision_rollback\""));
         assert!(audit.contains("\"action\":\"access_policy_create\""));
         assert!(audit.contains("\"action\":\"access_policy_update\""));
         assert!(audit.contains("\"action\":\"access_policy_delete\""));

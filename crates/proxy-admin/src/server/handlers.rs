@@ -2234,7 +2234,7 @@ pub(super) async fn list_tokens(
     State(state): State<AppState>,
     principal: Principal,
 ) -> Result<axum::Json<Vec<crate::TokenMetadata>>, ApiError> {
-    authorize(&principal, Action::ManageIdentities)?;
+    authorize(&principal, Action::ReadTokens)?;
     Ok(axum::Json(state.tokens.list()))
 }
 
@@ -2252,7 +2252,7 @@ pub(super) async fn create_token(
         &request_id,
         Some(current.clone()),
         MutationSpec {
-            permission: Action::ManageIdentities,
+            permission: Action::CreateToken,
             action: "token_create",
             resource_id: "token",
             new_revision: None,
@@ -2278,18 +2278,23 @@ pub(super) async fn create_token(
     {
         return Err(audited_failure(&audit, "invalid_expiry", ApiError::InvalidRequest).await);
     }
-    let scopes = match crate::TokenScopes::new(request.role, request.scopes) {
+    let users = Arc::clone(&state.users);
+    let user_ref = request.user_ref;
+    let user = match tokio::task::spawn_blocking(move || users.get(&user_ref)).await {
+        Ok(Some(user)) if user.object.spec.enabled => user,
+        Ok(_) => return Err(audited_failure(&audit, "user_not_found", ApiError::NotFound).await),
+        Err(_) => {
+            return Err(audited_failure(&audit, "user_store_failed", ApiError::Unavailable).await);
+        }
+    };
+    let scopes = match crate::TokenScopes::new(user.object.spec.role, request.scopes) {
         Ok(scopes) => scopes,
         Err(_) => {
             return Err(audited_failure(&audit, "invalid_scopes", ApiError::InvalidRequest).await);
         }
     };
-    let owner_id = match principal.owner_id.clone() {
-        Some(owner_id) => owner_id,
-        None => {
-            return Err(audited_failure(&audit, "owner_unavailable", ApiError::Forbidden).await);
-        }
-    };
+    let role = user.object.spec.role;
+    let user_ref = user.object.metadata.id;
     let permit = match Arc::clone(&state.auth_permits).try_acquire_owned() {
         Ok(permit) => permit,
         Err(_) => return Err(audited_failure(&audit, "capacity_exhausted", ApiError::Busy).await),
@@ -2297,7 +2302,7 @@ pub(super) async fn create_token(
     let store = Arc::clone(&state.tokens);
     let result = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        store.issue(request.role, owner_id, scopes, request.expires_unix_secs)
+        store.issue(role, user_ref, scopes, request.expires_unix_secs)
     })
     .await;
     let (metadata, issued) = match result {
@@ -2335,7 +2340,7 @@ pub(super) async fn revoke_token(
         &request_id,
         Some(current.clone()),
         MutationSpec {
-            permission: Action::ManageIdentities,
+            permission: Action::RevokeToken,
             action: "token_revoke",
             resource_id: &id,
             new_revision: None,

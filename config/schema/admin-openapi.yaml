@@ -596,13 +596,13 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [role, scopes, expires_unix_secs]
+              required: [user_ref, scopes, expires_unix_secs]
               properties:
-                role: {type: string, enum: [viewer, auditor, operator, admin]}
+                user_ref: {$ref: "#/components/schemas/ObjectId"}
                 scopes:
                   type: array
                   minItems: 1
-                  maxItems: 45
+                  maxItems: 52
                   uniqueItems: true
                   items:
                     $ref: "#/components/schemas/TokenScope"
@@ -622,6 +622,42 @@ paths:
         - {$ref: "#/components/parameters/IfMatch"}
       responses:
         "200": {description: Token revoked}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/users:
+    get:
+      operationId: listUsers
+      responses:
+        "200": {description: User identities}
+        default: {$ref: "#/components/responses/Error"}
+    post:
+      operationId: createUser
+      parameters: [{$ref: "#/components/parameters/IfMatch"}]
+      requestBody: {$ref: "#/components/requestBodies/UserObject"}
+      responses:
+        "201": {description: User created}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/users/{id}:
+    get:
+      operationId: getUser
+      parameters: [{$ref: "#/components/parameters/TypedObjectId"}]
+      responses:
+        "200": {description: User identity}
+        default: {$ref: "#/components/responses/Error"}
+    put:
+      operationId: updateUser
+      parameters:
+        - {$ref: "#/components/parameters/TypedObjectId"}
+        - {$ref: "#/components/parameters/IfMatch"}
+        - {$ref: "#/components/parameters/ObjectGeneration"}
+      requestBody: {$ref: "#/components/requestBodies/UserObject"}
+      responses:
+        "200": {description: User updated}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/roles:
+    get:
+      operationId: listRoles
+      responses:
+        "200": {description: Immutable built-in roles}
         default: {$ref: "#/components/responses/Error"}
   /v1/backups:
     post:
@@ -731,6 +767,11 @@ components:
       content:
         application/json:
           schema: {$ref: "#/components/schemas/CredentialObject"}
+    UserObject:
+      required: true
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/UserObject"}
   responses:
     Error:
       description: Stable redacted error
@@ -764,6 +805,27 @@ components:
             enabled: {type: boolean}
             expires_unix_secs: {type: [integer, "null"], minimum: 1}
             value: {type: string, minLength: 1, maxLength: 65536, writeOnly: true}
+    UserObject:
+      type: object
+      additionalProperties: false
+      required: [api_version, metadata, spec]
+      properties:
+        api_version: {const: v1}
+        metadata:
+          type: object
+          additionalProperties: false
+          required: [id, owner_id]
+          properties:
+            id: {$ref: "#/components/schemas/ObjectId"}
+            owner_id: {$ref: "#/components/schemas/ObjectId"}
+        spec:
+          type: object
+          additionalProperties: false
+          required: [display_name, role, enabled]
+          properties:
+            display_name: {type: string, minLength: 1, maxLength: 128}
+            role: {type: string, enum: [viewer, auditor, operator, admin]}
+            enabled: {type: boolean}
     MiddlewareRef:
       type: string
       pattern: '^[a-z][a-z0-9_-]{0,62}$'
@@ -1032,11 +1094,11 @@ components:
             changes: {type: array, minItems: 7, maxItems: 8, items: {type: object}}
     TokenScope:
       type: string
-      enum: [read_status, read_config, validate_config, preview_config, create_candidate, activate_config, rollback_config, read_revisions, read_proxy_hosts, create_proxy_host, update_proxy_host, delete_proxy_host, activate_proxy_host, rollback_proxy_host, activate_typed_candidate, rollback_typed_revision, read_access_policies, create_access_policy, update_access_policy, delete_access_policy, read_routes, read_upstreams, drain, read_certificates, read_certificate_objects, create_certificate, update_certificate, delete_certificate, read_stream_hosts, create_stream_host, update_stream_host, delete_stream_host, read_discovery_sources, create_discovery_source, update_discovery_source, delete_discovery_source, read_credentials, create_credential, update_credential, revoke_credential, renew_certificate, read_audit, create_backup, validate_restore, manage_identities]
+      enum: [read_status, read_config, validate_config, preview_config, create_candidate, activate_config, rollback_config, read_revisions, read_proxy_hosts, create_proxy_host, update_proxy_host, delete_proxy_host, activate_proxy_host, rollback_proxy_host, activate_typed_candidate, rollback_typed_revision, read_access_policies, create_access_policy, update_access_policy, delete_access_policy, read_routes, read_upstreams, drain, read_certificates, read_certificate_objects, create_certificate, update_certificate, delete_certificate, read_stream_hosts, create_stream_host, update_stream_host, delete_stream_host, read_discovery_sources, create_discovery_source, update_discovery_source, delete_discovery_source, read_credentials, create_credential, update_credential, revoke_credential, renew_certificate, read_audit, create_backup, validate_restore, manage_identities, read_tokens, create_token, revoke_token, read_users, create_user, update_user, read_roles]
     TokenMetadata:
       type: object
       additionalProperties: false
-      required: [id, role, owner_id, scopes, expires_unix_secs, revoked]
+      required: [id, role, owner_id, user_ref, scopes, expires_unix_secs, revoked]
       properties:
         id: {type: string, pattern: '^[A-Za-z0-9_-]{16}$'}
         role: {type: string, enum: [viewer, auditor, operator, admin]}
@@ -1044,9 +1106,13 @@ components:
           oneOf:
             - {$ref: "#/components/schemas/ObjectId"}
             - {type: "null"}
+        user_ref:
+          oneOf:
+            - {$ref: "#/components/schemas/ObjectId"}
+            - {type: "null"}
         scopes:
           type: array
-          maxItems: 45
+          maxItems: 52
           uniqueItems: true
           items: {$ref: "#/components/schemas/TokenScope"}
         expires_unix_secs: {type: integer, minimum: 1}

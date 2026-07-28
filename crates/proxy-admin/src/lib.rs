@@ -19,6 +19,7 @@ mod rbac;
 mod server;
 mod stream_host;
 mod typed_store;
+mod user;
 
 pub use access_policy::{
     AccessPolicyCompileError, AccessPolicyMetadata, AccessPolicyStore, AccessPolicyStoreError,
@@ -66,3 +67,4 @@ pub use stream_host::{
     StoredStreamHost, StreamHostCompileError, StreamHostStore, StreamHostStoreError,
     compile_stream_hosts,
 };
+pub use user::{StoredUser, UserSpec, UserStore, UserStoreError};

@@ -31,6 +31,10 @@ Stored Credentials now encrypt bounded write-only values to configured age recip
 only ciphertext and safe metadata, expose owner-scoped CRUD/rotation/revocation through exact
 scopes and CLI, and remove usable ciphertext on revoke. Responses never expose plaintext or
 ciphertext.
+Durable Users now bind identity/owner equality to a fixed built-in role and enabled state; Roles
+are read-only. New tokens require an enabled `user_ref`, inherit that user's role and owner, and
+accept only an explicit role-bounded scope subset. Disabling a user blocks its subject tokens while
+legacy subjectless automation tokens remain parseable without gaining new scopes.
 
 Working tree at Phase 14 start: clean at `10aae8c`
 

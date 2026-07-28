@@ -5,7 +5,7 @@ Updated: 2026-07-28
 - Current branch: `feat/phase-15-control-plane-completion`
 - Current completed-unit commit: `HEAD` (this handoff)
 - Current phase: Phase 15, in progress
-- Completed unit: encrypted Stored Credential lifecycle
+- Completed unit: Users, Roles, and subject-bound tokens
 - Implementation commit: `HEAD`
 - Documentation commit: this handoff's documentation commit
 - Remote target: `origin/feat/phase-15-control-plane-completion`
@@ -44,12 +44,12 @@ older binaries cannot consume new policy-bearing private candidate files.
 
 ## Remaining Phase 15 work
 
-Users/Roles and subject-bound tokens; generalized typed diff; remaining migration/compatibility
-tests; transport module split; full authorization/security review.
+Generalized typed diff; remaining migration/compatibility tests; transport module split; full
+authorization/security review.
 
 ## Exact next task
 
-Implement Users/Roles and subject-bound token issuance.
+Generalize typed preview/diff and complete the exact authorization matrix.
 
 ## Known risks
 

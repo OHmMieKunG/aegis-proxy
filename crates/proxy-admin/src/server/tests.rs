@@ -28,6 +28,39 @@ async fn socket_is_private_and_removed_only_by_its_guard() {
     fs::remove_dir(root).expect("remove root");
 }
 
+#[test]
+fn disabled_user_blocks_subject_token_but_legacy_identity_remains_parseable() {
+    let root = temporary_directory("subject-disable");
+    let store = UserStore::open(root.join("admin/users.json")).expect("user store");
+    let user: ApiObject<UserSpec> = serde_json::from_value(serde_json::json!({
+        "api_version": "v1",
+        "metadata": {"id": "alice", "owner_id": "alice"},
+        "spec": {"display_name": "Alice", "role": "operator", "enabled": true}
+    }))
+    .expect("user");
+    store.create(user.clone()).expect("create");
+    let metadata = crate::TokenMetadata {
+        id: "abcdefghijklmnop".into(),
+        role: Role::Operator,
+        owner_id: Some("alice".parse().expect("owner")),
+        user_ref: Some("alice".parse().expect("subject")),
+        scopes: TokenScopes::new(Role::Operator, vec![Action::ReadStatus]).expect("scopes"),
+        expires_unix_secs: u64::MAX,
+        revoked: false,
+    };
+    assert!(subject_is_enabled(&metadata, &store));
+    let mut disabled = user;
+    disabled.spec.enabled = false;
+    store.update(disabled, 1).expect("disable");
+    assert!(!subject_is_enabled(&metadata, &store));
+    let legacy = crate::TokenMetadata {
+        user_ref: None,
+        ..metadata
+    };
+    assert!(subject_is_enabled(&legacy, &store));
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
 #[tokio::test]
 async fn errors_use_stable_nested_contract_and_hide_internal_tag() {
     let response = error_contract(ApiError::Forbidden.into_response(), "request-123");
@@ -94,6 +127,9 @@ fn checked_openapi_contains_every_private_route() {
         "/v1/audit:",
         "/v1/tokens:",
         "/v1/tokens/{id}/revoke:",
+        "/v1/users:",
+        "/v1/users/{id}:",
+        "/v1/roles:",
         "/v1/backups:",
         "/v1/restore/validate:",
     ] {
@@ -149,6 +185,13 @@ fn checked_openapi_contains_every_private_route() {
         "create_backup",
         "validate_restore",
         "manage_identities",
+        "read_tokens",
+        "create_token",
+        "revoke_token",
+        "read_users",
+        "create_user",
+        "update_user",
+        "read_roles",
     ];
     let scope_line = openapi
         .lines()
@@ -165,7 +208,7 @@ fn checked_openapi_contains_every_private_route() {
             .collect::<Vec<_>>(),
         scopes
     );
-    assert_eq!(openapi.matches("maxItems: 45").count(), 2);
+    assert_eq!(openapi.matches("maxItems: 52").count(), 2);
     assert!(openapi.contains("operationId: createAccessPolicy"));
     assert!(openapi.contains("operationId: updateAccessPolicy"));
     assert!(openapi.contains("operationId: deleteAccessPolicy"));
