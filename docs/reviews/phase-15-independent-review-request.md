@@ -9,15 +9,27 @@ independent of the Phase 15 implementation author.
 
 ## Immutable candidate
 
-- Candidate commit: `5a32495`
+- Candidate commit: `f1bfd08`
 - Candidate branch: `chore/phase-15-closeout`
 - Phase 15 baseline: `b685449` (Phase 14 completion)
 - Immediate closeout base: `eb107ec`
 - Scope: private typed control plane and its closeout; no browser listener, OIDC, session, GUI, or
   frontend dependency exists
 
-Review the cumulative `b685449..5a32495` change. Use `eb107ec..5a32495` only to isolate the final
+Review the cumulative `b685449..f1bfd08` change. Use `eb107ec..f1bfd08` only to isolate the final
 module split and contract-freeze tests.
+
+The earlier `5a32495` candidate is retired. Maintainer review found one high, one medium, and one
+low issue; `f1bfd08` fixes all three:
+
+- response timeout no longer cancels an accepted handler and releases mutation serialization while
+  non-cancelable blocking writes continue;
+- token, backup, and restore payloads are authorized and durably audited before exact JSON
+  deserialization; and
+- User mutations preserve conflict, invalid-request, not-found, and unavailable response classes.
+
+These are maintainer findings and remediations, not independent closure. Reproduce them rather than
+accepting the maintainer assessment.
 
 ## Required qualifications and independence
 
@@ -89,8 +101,9 @@ reproduction but cannot supply the independent decision.
 The exact candidate passed:
 
 - formatting, all-target/all-feature check, and Clippy with warnings denied;
-- 337 workspace tests with two intentional ignores and the separate doc-test gate;
-- 84 Admin tests, including the exact action matrix, authorization ordering, owner hiding,
+- 339 workspace tests with two intentional ignores and the separate doc-test gate;
+- 86 Admin tests, including request-timeout completion, the exact action matrix, authorization
+  ordering, User conflict mapping, owner hiding,
   schema route separation, tamper detection, and recovery;
 - private Admin CLI integration, seven valid and three invalid configuration fixtures;
 - fuzz-crate manifest check and the 2,440-line feature tree;

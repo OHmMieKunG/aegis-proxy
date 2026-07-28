@@ -7,6 +7,11 @@ tokens authenticate requests. Fixed roles authorize actions; tokens additionally
 explicit action scope, so effective permission is role intersection scope. Mutations require exact
 quoted `If-Match`, durable HMAC-chained audit intent, validated candidate state, and atomic
 activation.
+An accepted request owns one bounded in-flight permit until its handler finishes. The configured
+request deadline can return `504` to the caller, but it does not cancel an accepted handler or
+release mutation serialization while non-cancelable blocking storage work is still running. Every
+mutation therefore reaches terminal audit before its permit is released, including after client
+disconnect or response timeout.
 
 Current API supports low-level validation, redacted preview, candidates, activation, revisions,
 rollback, routes/upstreams/providers/certificates/status, token management, certificate renewal,
@@ -150,6 +155,10 @@ existing token scopes gain no schema-2 authority.
 Machine contract: [`config/schema/admin-openapi.yaml`](../../config/schema/admin-openapi.yaml).
 The checked contract requires nonempty canonical scopes when creating tokens and returns only token
 ID, role, owner ID, scopes, expiry, and revocation metadata after the one-time plaintext response.
+Token creation, backup creation, and restore validation accept a bounded raw body, authorize and
+write audit intent first, require one exact `application/json` content type, and only then
+deserialize. User-store conflicts remain `409`, invalid objects remain `400`, and missing users
+remain `404`.
 
 ## Target model
 

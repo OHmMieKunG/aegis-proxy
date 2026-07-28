@@ -21,6 +21,9 @@ before typed deserialization, shared-store cross-owner hiding, schema-1 deprecat
 schema-2 canonical routes, legacy subjectless/unscoped token behavior, candidate tamper detection,
 retention, and rollback recovery. The checked OpenAPI, configuration schema, manifests, defaults,
 and dependency set are unchanged from `dev@eb107ec`.
+Maintainer review found and `f1bfd08` fixed cancellation of accepted mutations at response timeout,
+pre-authorization JSON parsing in token/backup/restore handlers, and collapsed User mutation error
+classes. The previous `5a32495` candidate is retired; independent review must use `f1bfd08`.
 
 Administration documentation now describes all implemented Phase 15 typed domains, current
 certificate route separation, compatibility, and downgrade rules. No frontend dependency, TCP

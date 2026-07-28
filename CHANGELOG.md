@@ -91,5 +91,8 @@ AegisProxy has not published a supported release.
 - Froze the exact 52-action role matrix, authorization-before-deserialization ordering,
   cross-owner hiding, legacy-token behavior, and schema-1/schema-2 route separation in regression
   coverage. Phase 15 completion remains pending independent API/security review.
+- Fixed the Phase 15 maintainer-review findings: accepted requests retain bounded execution and
+  mutation/audit ownership after response timeout, operational JSON is authorized before strict
+  parsing, and User mutations preserve not-found, invalid-request, and conflict responses.
 
 See [`STATUS.md`](STATUS.md) and [`docs/history/`](docs/history/README.md).
