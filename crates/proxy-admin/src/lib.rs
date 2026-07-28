@@ -7,6 +7,7 @@ mod api;
 mod audit;
 mod auth;
 mod backup;
+mod certificate;
 mod compile;
 mod diff;
 mod object_store;
@@ -21,11 +22,16 @@ pub use access_policy::{
 };
 pub use api::{
     API_VERSION, AccessPolicyRef, AccessPolicySpec, ApiObject, ApiVersion, AutomaticHttps,
-    ContractError, ForwardProtocol, MiddlewareRef, ObjectId, ObjectMetadata, ProxyHostSpec,
+    CertificateRef, CertificateSpec, ContractError, ForwardProtocol, MiddlewareRef, ObjectId,
+    ObjectMetadata, ProxyHostSpec,
 };
 pub use audit::{AuditError, AuditEvent, AuditLog, AuditOutcome, AuditRecord};
 pub use auth::{IssuedToken, TokenError, TokenMetadata, TokenRecord, TokenStore, TokenStoreError};
 pub use backup::{BackupError, BackupSummary, create_backup, validate_backup};
+pub use certificate::{
+    CertificateCompileError, CertificateMetadata, compile_certificate_metadata,
+    select_managed_https_policy,
+};
 pub use compile::{
     CompileContext, ManagedHttpsPolicy, ProxyHostCandidate, ProxyHostCompileError,
     ProxyHostSetCandidate, ProxyHostSetCompileContext, compile_proxy_host, compile_proxy_hosts,

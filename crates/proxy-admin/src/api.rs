@@ -14,6 +14,7 @@ const MAX_DOMAIN_BYTES: usize = 253;
 const MAX_FORWARD_HOST_BYTES: usize = 253;
 const MAX_ACCESS_POLICY_SHARES: usize = 128;
 const MAX_ACCESS_POLICY_MIDDLEWARES: usize = 64;
+const MAX_CERTIFICATE_SHARES: usize = 128;
 
 /// Exact supported high-level administration contract version.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -182,6 +183,39 @@ pub struct AccessPolicySpec {
     pub middlewares: Vec<MiddlewareRef>,
 }
 
+/// Reference to an existing canonical certificate identity.
+pub type CertificateRef = ObjectId;
+
+/// Secret-free ownership binding for an existing certificate identity.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CertificateSpec {
+    /// Whether automatic HTTPS may select this certificate.
+    pub enabled: bool,
+    /// Other owners explicitly allowed to use this certificate.
+    #[serde(default)]
+    pub shared_with: Vec<ObjectId>,
+    /// Existing configured certificate identity; never key material.
+    pub certificate_ref: CertificateRef,
+}
+
+impl CertificateSpec {
+    /// Validate bounded ownership shape.
+    pub fn validate_shape(&self, owner_id: &ObjectId) -> Result<(), ContractError> {
+        if self.shared_with.len() > MAX_CERTIFICATE_SHARES {
+            return Err(ContractError::InvalidCertificate);
+        }
+        let shared = self
+            .shared_with
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        if shared.len() != self.shared_with.len() || shared.contains(owner_id) {
+            return Err(ContractError::InvalidCertificate);
+        }
+        Ok(())
+    }
+}
+
 impl AccessPolicySpec {
     /// Validate bounded ownership and reference shape.
     pub fn validate_shape(&self, owner_id: &ObjectId) -> Result<(), ContractError> {
@@ -300,6 +334,9 @@ pub enum ContractError {
     /// Middleware reference is malformed or non-canonical.
     #[error("invalid middleware reference")]
     InvalidMiddlewareReference,
+    /// Certificate ownership is duplicated, self-shared, or exceeds its fixed bound.
+    #[error("invalid certificate ownership")]
+    InvalidCertificate,
 }
 
 #[cfg(test)]
@@ -489,5 +526,31 @@ mod tests {
             format!("{maximum}a").parse::<MiddlewareRef>(),
             Err(ContractError::InvalidMiddlewareReference)
         );
+    }
+
+    #[test]
+    fn certificate_contract_is_strict_bounded_and_secret_free() {
+        let source = serde_json::json!({
+            "api_version": "v1",
+            "metadata": {"id": "public-site", "owner_id": "alice"},
+            "spec": {
+                "enabled": true,
+                "shared_with": ["bob"],
+                "certificate_ref": "managed-public"
+            }
+        });
+        let object: ApiObject<CertificateSpec> =
+            serde_json::from_value(source.clone()).expect("certificate");
+        object
+            .spec
+            .validate_shape(&object.metadata.owner_id)
+            .expect("valid ownership");
+        let encoded = serde_json::to_string(&object).expect("certificate JSON");
+        for forbidden in ["secret", "password", "private_key", "certificate_chain"] {
+            assert!(!encoded.contains(forbidden));
+        }
+        let mut invalid = source;
+        invalid["spec"]["private_key"] = serde_json::json!("file:///secret.pem");
+        assert!(serde_json::from_value::<ApiObject<CertificateSpec>>(invalid).is_err());
     }
 }
