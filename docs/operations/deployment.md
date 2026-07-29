@@ -4,9 +4,10 @@ Deployment artifacts are evaluation examples, not production certification.
 
 ## Container
 
-`Dockerfile` builds `rust-proxy` and runs as UID/GID 65532. `compose.yaml` uses a read-only root,
-bounded tmpfs, no new privileges, dropped capabilities, resource limits, private loopback port, and
-no Docker socket. State is the only persistent writable volume.
+`Dockerfile` performs a clean Node build, embeds the generated UI into `rust-proxy`, and runs only
+that binary as UID/GID 65532. `compose.yaml` remains the data-plane-only bridge example. It uses a
+read-only root, bounded tmpfs, no new privileges, dropped capabilities, resource limits, a private
+loopback port, and no Docker socket. State is the only persistent writable volume.
 
 ```bash
 docker compose config
@@ -14,8 +15,13 @@ docker compose build proxy
 docker compose up
 ```
 
+The disposable [browser evaluation stack](../../deploy/evaluation/README.md) uses Linux host
+networking to preserve the loopback-only administration and OIDC boundaries. It is not a production
+deployment template.
+
 Optional seccomp/AppArmor examples live under `deploy/security/`. Validate them on target host;
-syntax checks do not prove runtime compatibility. Current WSL environment lacks Docker integration.
+syntax checks do not prove runtime compatibility. Docker Desktop runtime testing does not replace
+the evaluation stack's native Linux host-network requirement.
 
 ## systemd
 

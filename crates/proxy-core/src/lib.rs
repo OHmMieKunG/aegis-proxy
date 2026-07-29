@@ -85,7 +85,8 @@ use middleware::rate::{Outcome as RateOutcome, RateLimiters};
 pub use lifecycle::{
     load_last_known_good, run, run_last_known_good, run_last_known_good_with_control,
     run_last_known_good_with_control_on_node, run_managed, run_managed_config_with_control,
-    run_managed_config_with_control_on_node, run_managed_with_control,
+    run_managed_config_with_control_on_node, run_managed_revision_with_control_on_node,
+    run_managed_with_control,
 };
 pub use provider::{ProviderRegistry, ProviderStatus};
 pub use request::error_response;

@@ -153,7 +153,7 @@ export async function proxyHostAction({ request }: { request: Request }) {
   const intent = String(form.get("_intent"));
   const revision = String(form.get("revision"));
   if (intent === "activate") {
-    await authorized("activate_proxy_host");
+    await authorized("activate_typed_candidate");
     await activateProxyHost(String(form.get("candidate")), revision);
     return { kind: "activated" };
   }
@@ -197,7 +197,7 @@ export function ProxyHosts() {
             </div>
           </Form>
           {result?.data !== undefined && <Json value={result.data} />}
-          {result?.candidate && permits(session, "activate_proxy_host") && (
+          {result?.candidate && permits(session, "activate_typed_candidate") && (
             <Form method="post" onSubmit={(event) => { if (!confirm("Activate this exact candidate?")) event.preventDefault(); }}>
               <input type="hidden" name="revision" value={revision} />
               <input type="hidden" name="candidate" value={result.candidate} />

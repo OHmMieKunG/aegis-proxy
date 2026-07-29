@@ -1,7 +1,7 @@
 # Threat-to-control verification matrix
 
-Evidence review date: 2026-07-19
-Documentation rebaseline: 2026-07-22
+Evidence review date: 2026-07-29
+Documentation rebaseline: 2026-07-29
 
 Status meanings: **verified-local** means named automated/local evidence passed; **deferred** means
 the feature is absent and guarded by scope; **external-gate** means local evidence exists but
@@ -15,6 +15,7 @@ independent review is still required. A status is not a vulnerability-free claim
 | Host-header/open-proxy misuse | Host/authority consistency; configured route/upstream only; CONNECT/absolute-form rejection | route authority tests; `rejects_absolute_form_connect_and_missing_host` | external-gate: protocol review pending |
 | SSRF | configured endpoints; CIDR policy at resolve/refresh/connect; pinned socket addresses | egress policy, raw-answer, rebind, custom resolver tests | external-gate: target-network review pending |
 | DNS rebinding/poisoning | Hickory TTLs; bounded/deduplicated answers; revalidation and stale deadline | DNS rebind, mixed answer, stale/NXDOMAIN/provider tests | verified-local; DNSSEC not claimed |
+| Provider task availability | static fallback; bounded provider state; fail-closed source validation | provider unit/failure tests; typed-startup source audit | external-gate: typed startup currently omits provider reconciliation and must be fixed before controlled GO |
 | Path traversal/policy bypass | one ASCII canonical path; encoded separator/backslash/dot rejection | route property tests; encoded-separator integration test; path fuzz target | external-gate: corpus review pending |
 | TLS downgrade/weak policy | Rustls TLS 1.2/1.3 only; no plaintext/insecure verification fallback | TLS 1.2/1.3 matrix, ALPN, wrong-name/custom-CA tests | external-gate: independent TLS scanner pending |
 | Certificate/account-key theft | age-encrypted keys/accounts; restrictive files; redacted types | key/account round trips, permissions, wrong identity, backup tests | external-gate: host key custody review pending |
@@ -41,14 +42,14 @@ independent review is still required. A status is not a vulnerability-free claim
 | Insecure backups | age encryption, bounded archive, manifest hashes, symlink rejection | backup tamper, wrong identity, restore verification tests | external-gate: independent restore drill pending |
 | Rollback attacks | authorized forward revision; CAS; durable audit/hash chain | revision rollback/tamper/crash and admin authorization tests; local compromise tabletop | external-gate: independent live restore drill pending |
 | Configuration races | serialized coordinator; CAS; immutable snapshot and atomic pointer | concurrent candidate, activation, crash/probation/HA chaos tests | verified-local; formal concurrency review pending |
-| Certificate renewal races | per-certificate lock; staged validation; atomic generation; retained prior cert | scheduler single-flight, rotation/rejection, TLS challenge reload tests | external-gate: Pebble campaign unavailable without Docker |
+| Certificate renewal races | per-certificate lock; staged validation; atomic generation; retained prior cert | scheduler single-flight, rotation/rejection, TLS challenge reload tests | external-gate: current Pebble campaign not run |
 
 ## Release blockers
 
 - Qualified external HTTP/TLS/application/container review has not occurred.
 - Required 24-hour soak and long fuzz campaigns have not occurred.
 - Security-owner residual-risk recommendation is unsigned.
-- Container image scanning and Pebble interoperability are unavailable in this WSL environment
-  because Docker integration is absent.
+- Container image scanning and Pebble interoperability were not run. Docker Desktop's Linux engine
+  is available, but no scanner or current Pebble campaign was installed/executed.
 
 Any new threat, enabled deferred feature, or failed control changes this matrix before release.

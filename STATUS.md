@@ -19,6 +19,8 @@ content; activation and rollback revalidate current policy state (`20449a3`).
 Phase 16 adds browser OIDC sessions (`1b395ba`), durable setup identity binding (`7b0aa7a`), the
 embedded typed client shell (`eaf5025`), administration workflows (`ea499b8`), and browser
 regression coverage (`4ddef29`). Closed asset-cache and exact action allowlists are in `9205971`.
+The current working tree adds typed startup reconciliation and its focused, daemon, and Compose
+restart regressions; it is not yet an immutable reviewed candidate.
 Typed certificate ownership and managed-HTTPS selection metadata (`edcb53b`) now have bounded
 private persistence, exact owner-scoped CRUD permissions, API/CLI operations, and separated runtime
 status and direct-renewal routes.
@@ -56,6 +58,25 @@ Working tree at Phase 14 start: clean at `10aae8c`
 evaluation. Historical validation does not replace independent review or production-topology
 evidence.
 
+## Repository readiness audit remediation
+
+The 2026-07-29 Phase 0–16 audit added a clean Node UI stage, a pinned Linux host-network evaluation
+stack, and a real-system Playwright smoke. Docker Desktop's Linux engine built the image and passed
+real Keycloak login, one-use setup with session/CSRF rotation, GUI validate/preview/create/schema-2
+activation, and Host-header traffic. Runtime testing also fixed strict CA-secret permissions,
+Keycloak import/profile configuration, standard OIDC callback parameters, quoted UI ETags, and the
+GUI's schema-2 activation route.
+
+Controlled-test GO remains withheld. Normal `run --config` startup now reconciles durable typed
+objects over the mounted restart-time TOML base, resumes or creates an immutable bound revision,
+and fails closed when the overlay is invalid. Focused reconciliation, real-daemon typed-route, and
+rebuilt Compose restart regressions pass for the manual Proxy Host path. Audit found that typed
+startup also disables the only file/DNS provider reconciliation task; provider-backed groups stay
+on static fallback and runtime provider status cannot advance. That P0, missing Proxy Host
+edit/disable/delete controls, and the incomplete failure campaign keep controlled-test GO closed.
+`npm audit --audit-level=high` still reports two high React Router RSC/server-mode findings;
+applicability is not independently dispositioned.
+
 ## Implemented
 
 - HTTP/1.1, HTTP/2, WebSocket, gRPC, streaming, trailers, cancellation, graceful shutdown.
@@ -65,6 +86,9 @@ evidence.
   circuits, connection/request limits, endpoint drain.
 - Immutable revisions, atomic activation, probation, rollback, file/SIGHUP reload, explicit
   last-known-good recovery.
+- Typed startup reconciliation compiles durable Proxy Host, Stream Host, and Discovery Source
+  desired state over the mounted restart-time base, resumes or creates an exact bound revision,
+  and fails startup when reconciliation is invalid. Typed mode does not hot-reload that base.
 - ACME HTTP-01, Cloudflare DNS-01, TLS-ALPN-01, wildcard DNS certificates, encrypted account/key
   state, bounded renewal, and prior working-certificate retention.
 - Fixed-stage middleware, Basic auth, ForwardAuth, IP policy, rate limiting, CORS, headers,
@@ -81,7 +105,12 @@ evidence.
 
 - ACME requires explicit low-level issuer/challenge policy; common automatic HTTPS is Phase 17.
 - SSE uses generic streaming and skips compression but lacks a focused protocol test.
-- Administration remains primarily TOML/revision oriented; high-level domain APIs are Phase 15.
+- Typed startup currently omits the provider reconciliation task. File and DNS providers therefore
+  remain on their static endpoints whenever typed desired state selects this startup mode. This is
+  a release-critical regression, not an approved operating mode.
+- Browser administration exposes the common Proxy Host create/deploy path, but Proxy Host
+  edit/disable/delete controls and task-specific forms for secondary typed resources remain
+  incomplete.
 - Phase 15 has a strict library-only `v1` envelope, deterministic Proxy Host compiler, safe
   side-effect-free typed preview, and bounded field-level diff. Existing primitives validate
   ownership, references, domains, conflicts, listener/certificate policy, generated configuration,
@@ -150,14 +179,10 @@ evidence.
 
 ## Immediate phase
 
-[Phase 16 NPMPlus-style GUI MVP](PLAN.md#phase-16--npmplus-style-gui-mvp). Phase 15 is complete for
-roadmap progression under the project-owner exception recorded in
-[the completion report](docs/reviews/phase-15-completion.md). Independent application-security
-review remains a production-release blocker. The implementation candidate now includes the
-default-disabled loopback browser listener, bounded OIDC exchange, rotating server-side sessions,
-durable fingerprint/User binding and recovery, one-use setup, generated typed React client,
-embedded assets, role-aware task routes, and browser coverage. Independent application-security
-and usability reviews remain Phase 16 exit gates; production status is still NO-GO.
+Finish [Phase 16](PLAN.md#phase-16--npmplus-style-gui-mvp). First restore provider reconciliation
+under typed startup without restoring TOML hot reload or bypassing typed revision binding. Then run
+the controlled failure campaign and obtain independent application-security and usability review.
+Phase 17 and production status remain blocked.
 
 ## Release blockers
 
@@ -176,44 +201,50 @@ and usability reviews remain Phase 16 exit gates; production status is still NO-
 | `cargo check --workspace --all-targets` | passed; transitive warning below |
 | `cargo check --workspace --all-targets --all-features` | passed with generated UI assets embedded |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | passed |
-| `cargo test --workspace --all-features` | passed: 359 passed, 2 intentionally ignored |
+| `cargo test --workspace --all-features` | passed: 362 passed, 2 intentionally ignored |
 | `cargo test --workspace --doc` | passed; no doctests defined |
 | valid configuration corpus | seven accepted |
 | invalid configuration corpus | three rejected as expected |
-| changed documentation link targets | passed: every relative target in current changed Markdown files exists |
+| repository Markdown links | passed: all relative targets across 135 Markdown files exist |
 | `cargo tree -e features` | passed; 3,005 output lines |
 | `cargo check --manifest-path fuzz/Cargo.toml --all-targets` | passed |
 | Phase 15 OpenAPI/config-schema/manifest/lock comparison against `dev@eb107ec` | passed; no differences |
 | Admin OpenAPI | checked in Rust and parsed with Python/PyYAML; includes OIDC setup binding and 53 token scopes |
-| Phase 15 production-module size gate | passed; largest measured module is 1,129 lines |
+| Phase 15 production-module size guidance | current largest measured production module is 1,230 lines; below the 1,500-line rationale threshold |
 | `npm ci`; typecheck; generated-client drift; production build | passed; npm 9.2 emitted the recorded Redocly engine warning |
-| Playwright Chromium/axe suite | passed: 5 scenarios using user-local extracted runtime libraries |
+| Playwright Chromium/axe suite | passed: 5 scenarios in the pinned Playwright container |
+| Docker Desktop Linux evaluation stack | image built; Keycloak, upstream, and proxy healthy |
+| Real Keycloak/GUI smoke | passed login, setup rotation, validate, preview, create, schema-2 activation, and Host-header traffic |
+| Proxy restart durability | passed reconciliation/resume/fail-closed tests and rebuilt Compose traffic before/after proxy restart |
 | `npm audit` | completed: 2 high findings in React Router's unused RSC/server-mode paths; no critical findings |
-| authorization/ownership/migration/secret/tamper/recovery coverage | passed in the 103-test Admin suite and CLI integration, including OIDC binding permissions, collision, recovery, disabled-user, setup-token, audit, and canary checks |
+| authorization/ownership/migration/secret/tamper/recovery coverage | passed in the 106-test Admin suite and CLI integration, including typed startup, OIDC binding permissions, collision, recovery, disabled-user, setup-token, audit, and canary checks |
 
 ## Unavailable or incomplete checks
 
 - `cargo nextest`, `cargo audit`, `cargo deny`, `cargo machete`, and `cargo llvm-cov`: Cargo reports
   `no such command`. Dated Elysium audit/deny results are not current scans.
-- Docker and Compose both report: `The command 'docker' could not be found in this WSL 2 distro.`
+- Docker Desktop's Linux engine is available to the Linux client and was used for the image,
+  Compose, and restart checks. Desktop host networking still did not expose loopback listeners to
+  Windows/WSL.
 - `systemd-analyze verify deploy/systemd/aegisproxy.service deploy/ha/aegisproxy@.service` exits 1
   because `/usr/local/bin/rust-proxy` is not installed in this validation environment.
 - `cargo fuzz`: Cargo reports `no such command`; dated smoke evidence is not current execution.
-- `markdownlint` and `lychee`: shell reports `command not found`; changed targets were checked
-  directly, but a repository-wide automated Markdown scan was not rerun.
-- `npx playwright install-deps chromium` reports `sudo: A terminal is required to authenticate`;
-  the suite passed with `libnspr4`, `libnss3`, and `libasound2t64` extracted into a temporary
-  user-owned directory instead.
-- Pebble, long fuzz/soak, AppArmor enforcement, independent review, SBOM, signing, container build,
-  and container scan were not run during this verification.
+- `markdownlint` and `lychee`: unavailable; a direct repository-wide relative-link check passed.
+- `trivy`, `grype`, `syft`, and `cosign`: unavailable, so container scanning, SBOM generation, and
+  signature verification were not run.
+- Direct local Playwright launch currently fails because `libnspr4.so` is unavailable; the same
+  five scenarios pass in the pinned Playwright container.
+- Pebble, long fuzz/soak, AppArmor enforcement, independent review, SBOM, signing, and container
+  scan were not run during this verification.
 
 Cargo warns that transitive `proc-macro-error2 2.0.1` contains code rejected by a future Rust
 release. Dated exception: [dependency review](docs/security/dependency-unsafe-review.md).
 
 ## Evidence
 
+- [Phase 0–16 repository readiness audit](docs/reviews/repository-readiness-phase-0-16.md)
 - [Phase 16 implementation candidate](docs/reviews/phase-16-completion.md)
-- [Repository documentation audit](docs/reviews/repository-documentation-audit.md)
+- [Historical repository documentation audit](docs/history/validation/repository-documentation-audit-2026-07-22.md)
 - [Phase 15 completion](docs/reviews/phase-15-completion.md)
 - [Architecture](docs/architecture/overview.md)
 - [Testing](docs/development/testing.md)

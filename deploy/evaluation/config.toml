@@ -1,0 +1,47 @@
+schema_version = 1
+
+[runtime]
+state_dir = "/var/lib/aegisproxy"
+
+[[listeners]]
+id = "public"
+bind = "127.0.0.1:8080"
+protocol = "http"
+
+[[upstream_groups]]
+id = "evaluation-template"
+algorithm = "round_robin"
+allowed_cidrs = ["127.0.0.1/32"]
+
+[[upstream_groups.endpoints]]
+id = "evaluation-upstream"
+url = "http://127.0.0.1:9000"
+weight = 1
+
+[[routes]]
+id = "evaluation-bootstrap"
+listeners = ["public"]
+hosts = ["bootstrap.localhost"]
+path_prefixes = ["/"]
+upstream_group = "evaluation-template"
+
+[admin]
+audit_key = "file:///run/evaluation/audit-key"
+
+[admin.web]
+enabled = true
+bind = "127.0.0.1:9090"
+origin = "http://localhost:9090"
+
+[admin.web.oidc]
+issuer = "https://localhost:9443/realms/aegis-evaluation"
+client_id = "aegis-proxy"
+client_secret = "file:///run/evaluation/oidc-client"
+ca_bundle = "file:///run/evaluation/ca.pem"
+groups_claim = "groups"
+
+[admin.web.oidc.groups]
+viewer = ["aegis-viewers"]
+auditor = ["aegis-auditors"]
+operator = ["aegis-operators"]
+admin = ["aegis-admins"]

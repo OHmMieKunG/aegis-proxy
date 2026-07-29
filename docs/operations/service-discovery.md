@@ -2,6 +2,11 @@
 
 Current implementation supports only bounded file and DNS A/AAAA providers. Providers replace endpoint lists in one predeclared upstream group; trusted base configuration still owns routes, listeners, transport, TLS, egress, balancing, health, retry, and circuit policy. Providers default disabled. Static endpoints are mandatory and serve as startup and post-stale fallback.
 
+> **Current limitation:** if durable typed state selects typed startup, the provider reconciliation
+> task is not started. File and DNS sources stay on static fallback and runtime provider status
+> does not advance. Do not rely on dynamic discovery in that mode until the P0 in
+> [`STATUS.md`](../../STATUS.md) is closed.
+
 ## File provider
 
 Configure one absolute regular-file path:

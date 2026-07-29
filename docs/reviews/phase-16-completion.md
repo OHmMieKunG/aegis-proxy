@@ -4,6 +4,10 @@ Date: 2026-07-29
 Branch: `feat/phase-16-gui-mvp`  
 Release decision: **production NO-GO**
 
+> This is immutable-candidate evidence for the commits below. Subsequent working-tree packaging,
+> restart, and provider findings are recorded in the
+> [Phase 0–16 repository readiness audit](repository-readiness-phase-0-16.md).
+
 ## Candidate
 
 - `1b395ba` — browser OIDC sessions and listener boundary

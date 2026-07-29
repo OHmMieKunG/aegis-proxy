@@ -162,6 +162,10 @@ pub(super) struct LoginQuery {
 pub(super) struct CallbackQuery {
     code: String,
     state: String,
+    #[serde(default)]
+    iss: Option<String>,
+    #[serde(default)]
+    session_state: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -455,14 +459,22 @@ pub(super) async fn callback(
     Extension(request_id): Extension<RequestId>,
     Query(query): Query<CallbackQuery>,
 ) -> Result<Response, ApiError> {
+    let browser = state.browser.clone().ok_or(ApiError::Unavailable)?;
     if query.code.is_empty()
         || query.code.len() > MAX_CALLBACK_CODE_BYTES
         || query.state.is_empty()
         || query.state.len() > 512
+        || query
+            .session_state
+            .as_ref()
+            .is_some_and(|value| value.is_empty() || value.len() > 512)
+        || query
+            .iss
+            .as_deref()
+            .is_some_and(|issuer| !browser.oidc.matches_issuer(issuer))
     {
         return Err(ApiError::InvalidRequest);
     }
-    let browser = state.browser.clone().ok_or(ApiError::Unavailable)?;
     if !browser.binding_available.load(Ordering::Acquire) {
         return Err(ApiError::Unavailable);
     }
@@ -992,6 +1004,26 @@ mod tests {
         assert!(!csrf_matches(&headers, "Token"));
         headers.append(CSRF_HEADER, HeaderValue::from_static("token"));
         assert!(!csrf_matches(&headers, "token"));
+    }
+
+    #[test]
+    fn callback_accepts_standard_provider_parameters_only() {
+        let query: CallbackQuery = serde_json::from_value(serde_json::json!({
+            "code": "code",
+            "state": "state",
+            "iss": "https://issuer.example",
+            "session_state": "session"
+        }))
+        .expect("standard callback");
+        assert_eq!(query.iss.as_deref(), Some("https://issuer.example"));
+        assert!(
+            serde_json::from_value::<CallbackQuery>(serde_json::json!({
+                "code": "code",
+                "state": "state",
+                "unexpected": "value"
+            }))
+            .is_err()
+        );
     }
 
     #[test]

@@ -49,7 +49,12 @@ Configure `tls.state_encryption_recipients` with the separately escrowed recipie
    ```
 
 6. Observe the canary for the approved interval. Check data-plane errors, latency, TLS, upstream health, certificate expiry, audit durability, and telemetry drops.
-7. Roll one node at a time using the same drain, stop, atomic file/environment install, restart, status export, and verification sequence. Abort on the first mismatch. Do not overwrite every configured file at once: the file watcher would correctly activate it immediately and bypass the canary boundary.
+7. Roll one node at a time using the same drain, stop, atomic file/environment install, restart,
+   status export, and verification sequence. Abort on the first mismatch. On file-managed nodes,
+   do not overwrite every configured file at once: the file watcher would activate it immediately
+   and bypass the canary boundary. On nodes with durable typed state, the mounted TOML base is
+   restart-only; use the typed control plane for live changes and restart deliberately for base
+   changes.
 8. Finish with a complete inventory gate. Every expected node and status file must be supplied:
 
    ```text

@@ -106,7 +106,74 @@ where
         .map_err(|error| ProxyError::Preparation(error.to_string()))??;
     }
     serve_managed(
-        config_path,
+        FileWatch::Enabled(config_path),
+        revisions,
+        snapshot,
+        listeners,
+        identity,
+        shutdown,
+        start_control,
+    )
+    .await
+}
+
+/// Run one pre-created typed revision with restart-only base configuration.
+pub async fn run_managed_revision_with_control_on_node<F, Fut>(
+    config: Config,
+    revision_id: String,
+    identity: NodeIdentity,
+    shutdown: CancellationToken,
+    start_control: F,
+) -> Result<(), ProxyError>
+where
+    F: FnOnce(ManagedControl, CancellationToken) -> Fut + Send + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
+    validate_node_policy(&config, &identity)?;
+    let state_dir = PathBuf::from(&config.runtime.state_dir);
+    let revisions = Arc::new(
+        tokio::task::spawn_blocking(move || RevisionStore::open(state_dir))
+            .await
+            .map_err(|error| ProxyError::Preparation(error.to_string()))??,
+    );
+    let recovered = {
+        let revisions = Arc::clone(&revisions);
+        tokio::task::spawn_blocking(move || revisions.recover_incomplete())
+            .await
+            .map_err(|error| ProxyError::Preparation(error.to_string()))??
+    };
+    let candidate = {
+        let revisions = Arc::clone(&revisions);
+        let revision_id = revision_id.clone();
+        let expected_hash = aegisproxy_config::revision::content_hash(&config)?;
+        tokio::task::spawn_blocking(move || {
+            let metadata = revisions.metadata(&revision_id)?;
+            if metadata.binding_hash.is_none() || metadata.hash != expected_hash {
+                return Err(RevisionError::InvalidStored(
+                    "typed startup revision does not match configuration".into(),
+                ));
+            }
+            revisions.load(&revision_id)?;
+            Ok::<_, RevisionError>(metadata)
+        })
+        .await
+        .map_err(|error| ProxyError::Preparation(error.to_string()))??
+    };
+    let (snapshot, listeners) = prepare_bound(config, candidate.id.clone(), &shutdown).await?;
+    if recovered.as_ref().map(|pointer| pointer.active.id.as_str()) != Some(&candidate.id) {
+        let revisions = Arc::clone(&revisions);
+        let candidate_id = candidate.id.clone();
+        let expected = recovered.map(|pointer| pointer.active.id);
+        tokio::task::spawn_blocking(move || {
+            revisions.begin_activation(&candidate_id, expected.as_deref())?;
+            revisions.mark_probation(&candidate_id)?;
+            revisions.commit_activation(&candidate_id)
+        })
+        .await
+        .map_err(|error| ProxyError::Preparation(error.to_string()))??;
+    }
+    serve_managed(
+        FileWatch::Disabled,
         revisions,
         snapshot,
         listeners,
@@ -204,7 +271,7 @@ where
     tracing::warn!(revision = %active.active.id, "explicit last-known-good recovery selected");
     let (snapshot, listeners) = prepare_bound(config, active.active.id, &shutdown).await?;
     serve_managed(
-        config_path,
+        FileWatch::Enabled(config_path),
         revisions,
         snapshot,
         listeners,
@@ -225,8 +292,13 @@ async fn prepare_bound(
     Ok((snapshot, listeners))
 }
 
+enum FileWatch {
+    Enabled(PathBuf),
+    Disabled,
+}
+
 async fn serve_managed<F, Fut>(
-    config_path: PathBuf,
+    file_watch: FileWatch,
     revisions: Arc<RevisionStore>,
     snapshot: Arc<RuntimeSnapshot>,
     listeners: Vec<(ListenerConfig, TcpListener)>,
@@ -245,14 +317,17 @@ where
         shutdown.clone(),
     ));
     let providers = Arc::new(provider::ProviderCoordinator::default());
-    let watcher = tokio::spawn(watch_config_file(
-        config_path,
-        Arc::clone(&revisions),
-        Arc::clone(&coordinator),
-        Arc::clone(&providers),
-        runtime.clone(),
-        shutdown.clone(),
-    ));
+    let watcher = match file_watch {
+        FileWatch::Enabled(config_path) => Some(tokio::spawn(watch_config_file(
+            config_path,
+            Arc::clone(&revisions),
+            Arc::clone(&coordinator),
+            Arc::clone(&providers),
+            runtime.clone(),
+            shutdown.clone(),
+        ))),
+        FileWatch::Disabled => None,
+    };
     let control = tokio::spawn(start_control(
         ManagedControl {
             revisions,
@@ -263,7 +338,9 @@ where
         shutdown.clone(),
     ));
     let result = serve_bound(runtime, snapshot, listeners, shutdown).await;
-    if let Err(error) = watcher.await {
+    if let Some(watcher) = watcher
+        && let Err(error) = watcher.await
+    {
         tracing::error!(%error, "configuration watcher task failed");
     }
     if let Err(error) = control.await {

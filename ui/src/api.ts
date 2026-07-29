@@ -121,6 +121,8 @@ function unsafeHeaders() {
   };
 }
 
+const ifMatch = (revision: string) => `"${revision}"`;
+
 export async function loadSession(force = false): Promise<Session> {
   if (cachedSession && !force) return cachedSession;
   const result = await api.GET("/v1/session");
@@ -208,15 +210,15 @@ export async function validateProxyHost(object: ProxyHost) {
 export async function createProxyHost(object: ProxyHost, revision: string) {
   return unwrap(
     await api.POST("/v1/proxy-hosts", {
-      params: { header: { "If-Match": revision } },
+      params: { header: { "If-Match": ifMatch(revision) } },
       body: object,
     }),
   );
 }
 
 export async function activateProxyHost(candidate: string, revision: string): Promise<void> {
-  const result = await api.POST("/v1/proxy-hosts/candidates/{id}/activate", {
-    params: { path: { id: candidate }, header: { "If-Match": revision } },
+  const result = await api.POST("/v1/config/typed-candidates/{id}/activate", {
+    params: { path: { id: candidate }, header: { "If-Match": ifMatch(revision) } },
   });
   if (!result.response.ok) throw new ApiError(result.response.status, "Activation failed");
 }
@@ -249,25 +251,25 @@ export async function createResource(
   switch (resource) {
     case "stream-hosts":
       result = await api.POST("/v1/stream-hosts", {
-        params: { header: { "If-Match": revision } },
+        params: { header: { "If-Match": ifMatch(revision) } },
         body: object as StreamHost,
       });
       break;
     case "certificates":
       result = await api.POST("/v1/certificates", {
-        params: { header: { "If-Match": revision } },
+        params: { header: { "If-Match": ifMatch(revision) } },
         body: object as Certificate,
       });
       break;
     case "access-policies":
       result = await api.POST("/v1/access-policies", {
-        params: { header: { "If-Match": revision } },
+        params: { header: { "If-Match": ifMatch(revision) } },
         body: object as AccessPolicy,
       });
       break;
     case "users":
       result = await api.POST("/v1/users", {
-        params: { header: { "If-Match": revision } },
+        params: { header: { "If-Match": ifMatch(revision) } },
         body: object as User,
       });
   }
@@ -284,7 +286,7 @@ export async function updateResource(
   const parameters = {
     path: { id },
     header: {
-      "If-Match": revision,
+      "If-Match": ifMatch(revision),
       "X-Aegis-Object-Generation": generation,
     },
   };
@@ -326,7 +328,7 @@ export async function deleteResource(
   const parameters = {
     path: { id },
     header: {
-      "If-Match": revision,
+      "If-Match": ifMatch(revision),
       "X-Aegis-Object-Generation": generation,
     },
   };
@@ -349,21 +351,21 @@ export async function previewRevision(id: string): Promise<unknown> {
 
 export async function activateRevision(id: string, revision: string): Promise<void> {
   const result = await api.POST("/v1/config/typed-candidates/{id}/activate", {
-    params: { path: { id }, header: { "If-Match": revision } },
+    params: { path: { id }, header: { "If-Match": ifMatch(revision) } },
   });
   if (!result.response.ok) throw new ApiError(result.response.status, "Activation failed");
 }
 
 export async function rollbackRevision(id: string, revision: string): Promise<void> {
   const result = await api.POST("/v1/config/typed-revisions/{id}/rollback", {
-    params: { path: { id }, header: { "If-Match": revision } },
+    params: { path: { id }, header: { "If-Match": ifMatch(revision) } },
   });
   if (!result.response.ok) throw new ApiError(result.response.status, "Rollback failed");
 }
 
 export async function createBackup(output: string, revision: string): Promise<void> {
   const result = await api.POST("/v1/backups", {
-    params: { header: { "If-Match": revision } },
+    params: { header: { "If-Match": ifMatch(revision) } },
     body: { output },
   });
   if (!result.response.ok) throw new ApiError(result.response.status, "Backup creation failed");
@@ -375,7 +377,7 @@ export async function validateRestore(
   revision: string,
 ): Promise<void> {
   const result = await api.POST("/v1/restore/validate", {
-    params: { header: { "If-Match": revision } },
+    params: { header: { "If-Match": ifMatch(revision) } },
     body: { input, identity },
   });
   if (!result.response.ok) throw new ApiError(result.response.status, "Restore validation failed");

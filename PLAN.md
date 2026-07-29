@@ -1,7 +1,7 @@
 # AegisProxy roadmap
 
 Status: active roadmap
-Updated: 2026-07-22
+Updated: 2026-07-29
 
 AegisProxy targets NPMPlus-like usability, Caddy-inspired automation and safe defaults,
 Traefik-inspired providers and routing concepts, and a secure Rust data plane. Inspiration does
@@ -427,5 +427,8 @@ immutable scope and residual risk. Until then, production assessment remains NO-
 
 ## Immediate phase
 
-Phase 15. Later work must not enter early unless strictly required to implement or test its typed
-control-plane contracts.
+Restore file/DNS provider reconciliation under typed startup without re-enabling TOML hot reload or
+creating an unbound revision path. Add restart coverage for both a manual configured provider and
+a typed Discovery Source alongside typed Proxy Host state. Then complete Phase 16's controlled
+failure campaign and independent application-security/usability gates. Phase 17 must not begin
+until those findings and the Phase 16 disposition are recorded.

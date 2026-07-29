@@ -14,9 +14,9 @@ Revision retention keeps every revision for at least 30 days and always keeps th
 rust-proxy run --config /etc/rust-proxy/proxy.toml
 ```
 
-Normal startup reads and validates the configured file before opening durable state. An invalid file exits nonzero. After runtime preparation and listener binding succeed, the candidate revision and activation journal are committed before traffic is accepted.
+Normal startup reads and validates the configured file before opening durable state. An invalid file exits nonzero. If durable typed Proxy Hosts, Stream Hosts, or Discovery Sources exist, startup recompiles their complete desired state over that file, creates or resumes a bound revision, and exits nonzero on any reconciliation error. It never silently starts from the file-only routes. After runtime preparation and listener binding succeed, the candidate revision and activation journal are committed before traffic is accepted.
 
-The daemon polls the file by SHA-256 content hash at `runtime.config_poll_secs`. Unix `SIGHUP` triggers the same path immediately. Unchanged bytes are not reparsed. Invalid candidates, preparation failures, restart-only changes, and stale compare-and-swap attempts leave the active pointer and runtime unchanged.
+Without durable typed state, the daemon polls the file by SHA-256 content hash at `runtime.config_poll_secs`. Unix `SIGHUP` triggers the same path immediately. Unchanged bytes are not reparsed. Invalid candidates, preparation failures, restart-only changes, and stale compare-and-swap attempts leave the active pointer and runtime unchanged. With durable typed state, the mounted file is the restart-time base and is not hot-reloaded; use the typed API for live changes and restart to apply a base-file edit.
 
 Hot reload currently requires the same listener IDs, bind addresses, protocols, resource limits, state directory, and TLS handshake concurrency. Route, certificate assignment, TLS policy except handshake concurrency, and upstream changes are prepared in a new immutable snapshot. Unsupported listener/resource changes report `restart required`.
 

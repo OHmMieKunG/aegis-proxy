@@ -5,12 +5,11 @@ AegisProxy has not published a supported release.
 ## Unreleased
 
 - Implemented Rust reverse-proxy foundation through historical phases 0–13.
-- Rebased documentation around verified current state and phases 14–21.
+- Rebased documentation around verified current state and the active roadmap.
 - Adopted user-first GUI and typed-control-plane direction with secret isolation.
 - Completed behavior-preserving modularization: focused tests and domain-owned core, configuration,
   and administration modules now replace oversized mixed-responsibility files.
-- Began Phase 15 with a strict fail-closed `v1` object envelope and library-only Proxy Host contract;
-  it is not yet exposed as an administrative endpoint.
+- Added a strict fail-closed `v1` object envelope and typed Proxy Host contract.
 - Added side-effect-free deterministic Proxy Host compilation into canonical validated configuration
   candidates, with fail-closed ownership, policy, domain, identifier, and certificate checks.
 - Added deterministic typed Proxy Host candidate previews with mandatory semantic validation,
@@ -49,12 +48,11 @@ AegisProxy has not published a supported release.
   pruning; startup and pre-bind reconciliation remove only validated orphan snapshots and reject
   malformed or tampered state before deletion.
 - Added a strict secret-free Access Policy ownership contract and validated metadata compiler for
-  existing canonical IP, limit, and authentication middleware stages. Public endpoints remain
-  disabled until owned persistence and RBAC wiring land.
+  existing canonical IP, limit, and authentication middleware stages.
 - Added bounded private Access Policy persistence with global IDs, canonical records, owner-scoped
   reads, generation CAS, exclusive ownership, strict restart checks, and atomic replacement.
-- Added dedicated Access Policy read/create/update/delete token scopes and fail-closed private
-  startup ownership; no Access Policy route is exposed yet.
+- Added dedicated Access Policy read/create/update/delete token scopes, fail-closed private startup
+  ownership, and owner-scoped routes.
 - Added owner-scoped Access Policy list/get API and CLI operations with exact read scope, stable
   ordering, generation ETags, and cross-owner not-found behavior.
 - Blocked Access Policy writes after indeterminate post-rename durability failures until restart
@@ -95,9 +93,10 @@ AegisProxy has not published a supported release.
 - Fixed token revocation CLI parsing for valid generated token IDs that begin with a hyphen.
 - Split Phase 15 transport, candidate-store, compiler/test, Access Policy/test, and CLI dispatch
   ownership without changing API, schema, defaults, fingerprints, or dependencies.
-- Froze the exact 52-action role matrix, authorization-before-deserialization ordering,
+- Froze the exact 53-action role matrix, authorization-before-deserialization ordering,
   cross-owner hiding, legacy-token behavior, and schema-1/schema-2 route separation in regression
-  coverage. Phase 15 completion remains pending independent API/security review.
+  coverage. Phase 15 is complete for roadmap progression under the recorded owner exception;
+  independent API/security review remains a production gate.
 - Fixed the Phase 15 maintainer-review findings: accepted requests retain bounded execution and
   mutation/audit ownership after response timeout, operational JSON is authorized before strict
   parsing, and User mutations preserve not-found, invalid-request, and conflict responses.
@@ -108,5 +107,9 @@ AegisProxy has not published a supported release.
 - Added the generated OpenAPI React/Vite administration client and optional `web-ui` embedding:
   role-aware task routes, the seven-field Proxy Host candidate workflow, typed CRUD, revisions,
   durable audit records, backup validation, read-only settings, responsive layouts, and axe checks.
+- Added a clean Node UI image stage and a pinned Linux host-network evaluation stack with real
+  Keycloak, Playwright, typed activation, and Host-header traffic coverage.
+- Added fail-closed daemon startup reconciliation that compiles durable typed desired state over
+  the mounted restart-time TOML base and restores an exact bound Proxy Host revision.
 
 See [`STATUS.md`](STATUS.md) and [`docs/history/`](docs/history/README.md).

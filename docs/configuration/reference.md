@@ -160,6 +160,9 @@ the existing provider schemas without reading files, resolving DNS, or using the
 Docker/Kubernetes/Consul/SRV/custom providers and provider credentials are unsupported. Stream
 Hosts and Discovery Sources have owner-scoped CRUD, validation, preview, typed-bound non-active
 candidates, and matching `rust-proxy stream-host` / `rust-proxy discovery-source` commands.
+At daemon startup, all durable typed objects compile over the mounted TOML restart-time base and
+must bind to an exact revision before serving. The current typed-startup path does not run provider
+reconciliation, so file/DNS sources remain on static fallback; this is a tracked release blocker.
 
 Access Policy desired state uses a separate strict schema-v1 JSON store bounded to 1,024 objects
 and 1 MiB. It has globally unique IDs, owner-scoped stable reads, exact generations, canonical

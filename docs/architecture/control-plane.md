@@ -28,6 +28,12 @@ binding redeems the Admin Unix peer's ten-minute hash-only setup token through a
 journal. Embedded React assets use only the versioned API; asset or browser failure does not stop
 the Unix listener or data plane.
 
+At process startup, durable typed objects are compiled over the validated mounted TOML base and
+bound to an exact resumed or new revision before listeners start. The base is restart-only once
+typed state exists. Current working-tree limitation: that startup path does not start the file/DNS
+provider reconciliation task, so provider-backed groups remain on static fallback until the
+release-blocking runtime defect is fixed.
+
 Phase 15 now includes a library-only strict Proxy Host object and side-effect-free compiler. Caller
 RBAC supplies immutable owner, object, domain, policy, listener, certificate, and upstream-template
 metadata. Compiler emits a full canonical `Config` candidate, then invokes existing semantic

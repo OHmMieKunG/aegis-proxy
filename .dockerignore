@@ -1,8 +1,12 @@
 .git
 .agents
 target
+**/target
 state
+ui/dist
+ui/node_modules
+ui/playwright-report
+ui/test-results
 *.pem
 *.key
 .env*
-

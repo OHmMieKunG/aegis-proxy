@@ -142,18 +142,21 @@ test("proxy host wizard previews, creates, and activates the exact candidate", a
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith("/preview"))
       return json(route, { preview: { summary: { domain: "app.example.com" } }, diff: { changes: [] } });
-    if (path.includes("/candidates/")) {
-      activated = true;
-      return route.fulfill({ status: 200 });
-    }
     return route.fallback();
   });
+  await page.route("**/v1/config/typed-candidates/**", async (route) => {
+    expect(route.request().headers()["if-match"]).toMatch(/^".*"$/);
+    activated = true;
+    return route.fulfill({ status: 200 });
+  });
   await page.route("**/v1/proxy-hosts", async (route) => {
-    if (route.request().method() === "POST")
+    if (route.request().method() === "POST") {
+      expect(route.request().headers()["if-match"]).toMatch(/^".*"$/);
       return json(route, {
         object: { generation: 1, object: {} },
         candidate: { id: `00000000000000000002-${"b".repeat(64)}`, hash: "b".repeat(64), sequence: 2 },
       }, 201);
+    }
     return json(route, []);
   });
   await page.goto("/proxy-hosts");

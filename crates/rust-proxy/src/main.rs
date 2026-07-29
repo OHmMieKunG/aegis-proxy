@@ -790,7 +790,7 @@ async fn run(cli: Cli) -> Result<(), BoxError> {
             fleet_generation,
         } => {
             let identity = aegisproxy_core::NodeIdentity::new(node_id, fleet_generation)?;
-            let startup_config = if resume_last_known_good {
+            let base_config = if resume_last_known_good {
                 let state_dir = state_dir.as_ref().ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidInput, "--state-dir is required")
                 })?;
@@ -798,6 +798,16 @@ async fn run(cli: Cli) -> Result<(), BoxError> {
             } else {
                 load_config(config.clone()).await?
             };
+            let reconciled = if resume_last_known_good {
+                None
+            } else {
+                let base = base_config.clone();
+                tokio::task::spawn_blocking(move || aegisproxy_admin::reconcile_startup(&base))
+                    .await??
+            };
+            let startup_config = reconciled
+                .as_ref()
+                .map_or(base_config, |startup| startup.config().clone());
             let telemetry = telemetry::init(&startup_config.observability)?;
             let cancel = CancellationToken::new();
             let signal = cancel.clone();
@@ -807,7 +817,16 @@ async fn run(cli: Cli) -> Result<(), BoxError> {
                 }
                 signal.cancel();
             });
-            let result = if resume_last_known_good {
+            let result = if let Some(startup) = reconciled {
+                aegisproxy_core::run_managed_revision_with_control_on_node(
+                    startup_config,
+                    startup.revision_id().to_owned(),
+                    identity,
+                    cancel,
+                    run_admin,
+                )
+                .await
+            } else if resume_last_known_good {
                 let state_dir = state_dir.ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidInput, "--state-dir is required")
                 })?;

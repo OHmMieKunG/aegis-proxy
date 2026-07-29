@@ -3,6 +3,7 @@
 
 use std::{
     fs,
+    io::{Read, Write},
     net::{TcpListener, TcpStream},
     process::{Command, Stdio},
     thread,
@@ -10,7 +11,7 @@ use std::{
 };
 
 #[test]
-fn sigterm_drains_and_exits_successfully() {
+fn startup_restores_typed_route_and_sigterm_drains() {
     let root = std::env::temp_dir().join(format!(
         "aegisproxy-sigterm-{}-{}",
         std::process::id(),
@@ -23,11 +24,33 @@ fn sigterm_drains_and_exits_successfully() {
     let reservation = TcpListener::bind("127.0.0.1:0").expect("port reservation");
     let address = reservation.local_addr().expect("reserved address");
     drop(reservation);
+    let state = root.join("state");
+    let object = serde_json::from_value(serde_json::json!({
+        "api_version": "v1",
+        "metadata": {"id": "restart-host", "owner_id": "alice"},
+        "spec": {
+            "domain": "restart.example.test",
+            "forward_host": "127.0.0.1",
+            "forward_port": 9,
+            "forward_protocol": "http",
+            "automatic_https": "disabled",
+            "access_policy_ref": null,
+            "enabled": true
+        }
+    }))
+    .expect("Proxy Host");
+    aegisproxy_admin::ProxyHostStore::open(state.join("admin/proxy-hosts.json"))
+        .expect("Proxy Host store")
+        .create(object)
+        .expect("durable Proxy Host");
     let config = root.join("proxy.toml");
     fs::write(
         &config,
         format!(
             r#"schema_version = 1
+
+[runtime]
+state_dir = "{}"
 
 [[listeners]]
 id = "public"
@@ -50,7 +73,8 @@ listeners = ["public"]
 hosts = ["example.test"]
 path_prefixes = ["/"]
 upstream_group = "app"
-"#
+"#,
+            state.display()
         ),
     )
     .expect("test configuration");
@@ -78,6 +102,22 @@ upstream_group = "app"
         );
         thread::sleep(Duration::from_millis(20));
     }
+
+    let mut request = TcpStream::connect(address).expect("connect to proxy");
+    request
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("read timeout");
+    request
+        .write_all(b"GET / HTTP/1.1\r\nHost: restart.example.test\r\nConnection: close\r\n\r\n")
+        .expect("send request");
+    let mut response = String::new();
+    request
+        .read_to_string(&mut response)
+        .expect("read response");
+    assert!(
+        response.starts_with("HTTP/1.1 502"),
+        "typed route was not restored: {response}"
+    );
 
     let signal = Command::new("kill")
         .args(["-TERM", &child.id().to_string()])

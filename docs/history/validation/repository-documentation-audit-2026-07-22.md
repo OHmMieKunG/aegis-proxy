@@ -1,5 +1,9 @@
 # Repository documentation audit
 
+> Historical evidence from 2026-07-22. For current behavior and readiness, use
+> [`STATUS.md`](../../../STATUS.md) and the
+> [Phase 0–16 readiness audit](../../reviews/repository-readiness-phase-0-16.md).
+
 Audit date: 2026-07-22
 Verified commit: `aadac76a1618bdf9926ec37705b657fe64cdd430`
 Evidence priority: source, tests, manifests, schemas, persistence, deployment, tooling, then docs.

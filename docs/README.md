@@ -3,11 +3,11 @@
 ## Canonical documents
 
 - [`STATUS.md`](../STATUS.md): verified current implementation and release blockers.
-- [`PLAN.md`](../PLAN.md): future phases 14–21.
+- [`PLAN.md`](../PLAN.md): active roadmap and next work.
 - [`README.md`](../README.md): product overview and quick start.
 - [`SECURITY.md`](../SECURITY.md): private vulnerability reporting.
-- [Repository documentation audit](reviews/repository-documentation-audit.md): detailed capability
-  evidence.
+- [Phase 0–16 repository readiness audit](reviews/repository-readiness-phase-0-16.md): current
+  implementation, runtime acceptance, and open gates.
 - [Phase 16 implementation candidate](reviews/phase-16-completion.md): browser/OIDC/UI scope,
   verification, and open production gates.
 - [Phase 15 Proxy Host compiler](reviews/phase-15-proxy-host-compiler.md): current high-level object
@@ -112,6 +112,8 @@
 
 [Historical phase, validation, and security evidence](history/README.md) is retained for
 traceability. Dated results are not current test results.
+[The 2026-07-22 repository documentation audit](history/validation/repository-documentation-audit-2026-07-22.md)
+is retained there as superseded evidence.
 
 The web-administration guide documents the implemented Phase 16 task workflows. Unsupported future
 automation remains documented only in the roadmap.

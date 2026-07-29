@@ -50,19 +50,26 @@ Independent application-security review remains required for production release.
 - The optional `web-ui` feature embeds the generated OpenAPI React/Vite client. All Phase 16 task
   routes, seven-field Proxy Host workflow, typed object writes, revisions, audit records, backup
   validation, read-only settings, responsive layouts, and axe/browser checks are present.
+- Current working-tree startup reconciliation compiles durable typed desired state over the
+  restart-time TOML base, resumes or creates an exact bound revision, and passes focused,
+  real-daemon, and rebuilt Compose Proxy Host restart checks.
 
 ## Exact next task
 
-Obtain independent application-security and usability review of commits `1b395ba`, `7b0aa7a`,
-`eaf5025`, `ea499b8`, `4ddef29`, and `9205971`; resolve every critical/high finding and disposition
-the locked React Router RSC-mode advisory. Do not mark Phase 16 production-ready or begin Phase 17
-release claims before those gates close.
+Restore the file/DNS provider reconciliation task under typed startup without re-enabling TOML hot
+reload or allowing an unbound revision to publish. Add restart tests with a manual configured
+provider and a typed Discovery Source alongside typed Proxy Host state. Then run the Phase 16
+failure campaign, obtain independent application-security/usability review, resolve every
+critical/high finding, and disposition the locked React Router RSC-mode advisory. Do not begin
+Phase 17 release claims before those gates close.
 
 ## Known risks
 
 - Activation is global and Admin-only until candidate ownership/approval metadata supports safe
   narrower authority.
 - Browser sessions remain process-local and disappear on restart.
+- Typed startup currently disables the only provider reconciliation loop, leaving file/DNS
+  provider groups on static fallback and provider status unable to advance.
 - One OIDC issuer, loopback localhost origin, English UI, and four built-in roles are Phase 16
   limits.
 - `npm audit` reports two high entries for React Router RSC/server functionality not used by this

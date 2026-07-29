@@ -17,6 +17,7 @@ mod preview;
 mod proxy_host;
 mod rbac;
 mod server;
+mod startup;
 mod stream_host;
 mod typed_store;
 mod user;
@@ -63,6 +64,7 @@ pub use preview::{
 pub use proxy_host::{PreparedProxyHost, ProxyHostPreparationError, prepare_proxy_host};
 pub use rbac::{Action, Role, TokenScopeError, TokenScopes};
 pub use server::{AdminServerError, WebAsset, WebAssetLoader, serve, serve_with_web_assets};
+pub use startup::{ReconciledStartup, StartupReconcileError, reconcile_startup};
 pub use stream_host::{
     StoredStreamHost, StreamHostCompileError, StreamHostStore, StreamHostStoreError,
     compile_stream_hosts,

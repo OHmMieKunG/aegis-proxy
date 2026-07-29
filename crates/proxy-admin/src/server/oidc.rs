@@ -147,12 +147,18 @@ impl OidcProvider {
         self.available.load(Ordering::Acquire)
     }
 
+    pub(super) fn matches_issuer(&self, issuer: &str) -> bool {
+        issuer == self.config.issuer
+    }
+
     pub(super) fn mark_unavailable(&self) {
         self.available.store(false, Ordering::Release);
     }
 
     pub(super) async fn warm(&self) {
-        let _ = self.discovered(false).await;
+        if let Err(error) = self.discovered(false).await {
+            tracing::warn!(%error, "browser OIDC discovery unavailable");
+        }
     }
 
     pub(super) async fn login(
@@ -286,8 +292,9 @@ impl OidcProvider {
         .await
         {
             Ok(metadata) => metadata,
-            Err(_) => {
+            Err(error) => {
                 self.available.store(false, Ordering::Release);
+                tracing::warn!(%error, "browser OIDC discovery request failed");
                 return Err(OidcError::Unavailable);
             }
         };

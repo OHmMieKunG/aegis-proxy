@@ -1,0 +1,145 @@
+services:
+  evaluation-secrets:
+    image: alpine/openssl:3.5.1@sha256:6bbe4017ac088ed0eb07264ef9d6ff1364bad0bffdc142a195cb0e84fb0cbab1
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        umask 077
+        if [ ! -s /run/evaluation/keycloak.pem ]; then
+          openssl req -x509 -newkey rsa:2048 -nodes -days 30 \
+            -subj /CN=AegisProxy-Evaluation-CA \
+            -addext basicConstraints=critical,CA:TRUE \
+            -addext keyUsage=critical,keyCertSign,cRLSign \
+            -keyout /run/evaluation/ca.key \
+            -out /run/evaluation/ca.pem
+          openssl req -newkey rsa:2048 -nodes \
+            -subj /CN=localhost \
+            -addext subjectAltName=DNS:localhost,IP:127.0.0.1 \
+            -keyout /run/evaluation/keycloak.key \
+            -out /run/evaluation/keycloak.csr
+          openssl x509 -req -days 30 \
+            -in /run/evaluation/keycloak.csr \
+            -CA /run/evaluation/ca.pem \
+            -CAkey /run/evaluation/ca.key \
+            -CAcreateserial \
+            -copy_extensions copy \
+            -out /run/evaluation/keycloak.pem
+        fi
+        test -s /run/evaluation/oidc-client ||
+          printf %s aegis-evaluation-client-secret > /run/evaluation/oidc-client
+        test -s /run/evaluation/audit-key ||
+          openssl rand 32 > /run/evaluation/audit-key
+        chmod 0755 /run/evaluation
+        chmod 0444 /run/evaluation/keycloak.pem
+        chown 1000:0 /run/evaluation/keycloak.key
+        chown 65532:65532 /run/evaluation/ca.pem /run/evaluation/oidc-client /run/evaluation/audit-key
+        chmod 0400 /run/evaluation/keycloak.key /run/evaluation/ca.pem /run/evaluation/oidc-client /run/evaluation/audit-key
+    volumes:
+      - evaluation-secrets:/run/evaluation
+    network_mode: none
+    restart: "no"
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.3.5@sha256:357829ec7c4693397533035092ad13b0644bcc95ded311f33a3738c4d9e9bdba
+    command:
+      - start
+      - --import-realm
+      - --hostname=https://localhost:9443
+      - --https-port=9443
+      - --https-certificate-file=/run/evaluation/keycloak.pem
+      - --https-certificate-key-file=/run/evaluation/keycloak.key
+    depends_on:
+      evaluation-secrets:
+        condition: service_completed_successfully
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: evaluation-bootstrap-admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: aegis-evaluation-bootstrap-only
+      KC_DB: dev-file
+      KC_HEALTH_ENABLED: "true"
+      KC_HTTP_ENABLED: "false"
+      KC_HTTP_HOST: "::1"
+      KC_HTTP_MANAGEMENT_HOST: 127.0.0.1
+      KC_HTTP_MANAGEMENT_PORT: "9444"
+    volumes:
+      - ./deploy/evaluation/aegis-realm.json:/opt/keycloak/data/import/aegis-evaluation-realm.json:ro
+      - evaluation-secrets:/run/evaluation:ro
+      - keycloak-data:/opt/keycloak/data
+    network_mode: host
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 1g
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -ec
+        - 'exec 3<>/dev/tcp/127.0.0.1/9444'
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+
+  upstream:
+    image: nginx:1.27.5-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+    entrypoint: ["nginx", "-g", "daemon off;"]
+    user: "101:101"
+    volumes:
+      - ./deploy/evaluation/nginx.conf:/etc/nginx/nginx.conf:ro
+    network_mode: host
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 32m
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:9000/"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+
+  proxy:
+    build: .
+    command: ["run", "--config", "/etc/aegisproxy/config.toml"]
+    depends_on:
+      keycloak:
+        condition: service_healthy
+      upstream:
+        condition: service_healthy
+    volumes:
+      - ./deploy/evaluation/config.toml:/etc/aegisproxy/config.toml:ro
+      - evaluation-secrets:/run/evaluation:ro
+      - proxy-state:/var/lib/aegisproxy
+    network_mode: host
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 256m
+    cpus: 2
+    healthcheck:
+      test:
+        - CMD
+        - rust-proxy
+        - health
+        - --socket
+        - /var/lib/aegisproxy/admin/admin.sock
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+volumes:
+  evaluation-secrets:
+  keycloak-data:
+  proxy-state:
