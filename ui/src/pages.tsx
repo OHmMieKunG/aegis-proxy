@@ -236,6 +236,11 @@ const updateAction: Record<Resource, Action> = {
   "access-policies": "update_access_policy",
   users: "update_user",
 };
+const deleteAction = {
+  "stream-hosts": "delete_stream_host",
+  certificates: "delete_certificate",
+  "access-policies": "delete_access_policy",
+} as const;
 
 export async function resourceLoader(resource: Resource) {
   const session = await authorized(readAction[resource]);
@@ -255,8 +260,11 @@ export function actionFor(resource: Resource) {
     } else if (intent === "update") {
       await authorized(updateAction[resource]);
       await updateResource(resource, String(form.get("id")), object, Number(form.get("generation")), revision);
-    } else if (resource !== "users") {
+    } else if (intent === "delete" && resource !== "users") {
+      await authorized(deleteAction[resource]);
       await deleteResource(resource, String(form.get("id")), Number(form.get("generation")), revision);
+    } else {
+      throw new Response("Invalid action", { status: 400 });
     }
     return redirect(`/${resource}`);
   };
@@ -302,7 +310,7 @@ export function ResourcePage({ resource }: { resource: Resource }) {
                     <input type="hidden" name="generation" value={item.generation} />
                     <label>Typed API object<textarea name="object" rows={12} defaultValue={JSON.stringify(item.object, null, 2)} required /></label>
                     <button name="_intent" value="update">Update</button>
-                    {resource !== "users" && <button name="_intent" value="delete" className="danger" onClick={(event) => { if (!confirm(`Delete ${object.metadata.id}?`)) event.preventDefault(); }}>Delete</button>}
+                    {resource !== "users" && permits(session, deleteAction[resource]) && <button name="_intent" value="delete" className="danger" onClick={(event) => { if (!confirm(`Delete ${object.metadata.id}?`)) event.preventDefault(); }}>Delete</button>}
                   </Form>
                 </details>
               )}

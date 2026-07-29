@@ -739,18 +739,22 @@ fn is_ui_path(path: &str) -> bool {
 }
 
 fn hashed_asset(path: &str) -> bool {
-    path.rsplit_once('/').is_some_and(|(_, file_name)| {
-        file_name
-            .rsplit_once('.')
-            .and_then(|(stem, extension)| stem.split_once('-').map(|(_, hash)| (hash, extension)))
-            .is_some_and(|(hash, extension)| {
-                hash.len() >= 8
-                    && hash
-                        .bytes()
-                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-                    && matches!(extension, "js" | "css" | "svg" | "png" | "webp")
-            })
-    })
+    path.strip_prefix("/assets/")
+        .filter(|name| !name.contains('/'))
+        .is_some_and(|file_name| {
+            file_name
+                .rsplit_once('.')
+                .and_then(|(stem, extension)| {
+                    stem.split_once('-').map(|(_, hash)| (hash, extension))
+                })
+                .is_some_and(|(hash, extension)| {
+                    hash.len() >= 8
+                        && hash
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+                        && matches!(extension, "js" | "css" | "svg" | "png" | "webp")
+                })
+        })
 }
 
 fn session_response(session: &BrowserSession) -> Result<Response, ApiError> {

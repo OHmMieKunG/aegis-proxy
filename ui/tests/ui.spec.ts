@@ -189,3 +189,25 @@ test("phone layout keeps primary navigation and content usable", async ({ page }
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
   expect(overflow).toBeFalsy();
 });
+
+test("typed delete controls require their exact permission", async ({ page }) => {
+  await mockApi(page, {
+    ...adminSession,
+    role: "operator",
+    permitted_actions: ["read_stream_hosts", "update_stream_host"],
+  });
+  await page.route("**/v1/stream-hosts", (route) =>
+    json(route, [{
+      generation: 3,
+      object: {
+        api_version: "v1",
+        metadata: { id: "stream-example", owner_id: "uid-1000" },
+        spec: { listen_port: 8443, protocol: "tcp", forward_host: "127.0.0.1", forward_port: 443, sni_hosts: [], enabled: true },
+      },
+    }]),
+  );
+  await page.goto("/stream-hosts");
+  await page.getByText("Edit exact object").click();
+  await expect(page.getByRole("button", { name: "Update" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Delete" })).toHaveCount(0);
+});
