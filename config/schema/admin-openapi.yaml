@@ -121,6 +121,35 @@ paths:
             application/json:
               schema: {$ref: "#/components/schemas/BrowserSession"}
         default: {$ref: "#/components/responses/Error"}
+  /v1/session/setup:
+    post:
+      operationId: redeemBrowserSetup
+      description: Binds the provisional Admin OIDC identity to one unexpired setup-token owner.
+      security:
+        - browserSession: []
+      parameters:
+        - {$ref: "#/components/parameters/Origin"}
+        - {$ref: "#/components/parameters/SecFetchSite"}
+        - {$ref: "#/components/parameters/CsrfToken"}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/BrowserSetupRequest"}
+      responses:
+        "200":
+          description: Established browser session with immediately rotated session and CSRF tokens
+          headers:
+            Cache-Control: {$ref: "#/components/headers/NoStore"}
+            Set-Cookie: {$ref: "#/components/headers/SessionCookie"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/BrowserSession"}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+        default: {$ref: "#/components/responses/Error"}
   /v1/session/logout:
     post:
       operationId: browserLogout
@@ -1279,6 +1308,12 @@ components:
         csrf_token: {type: string, pattern: '^[A-Za-z0-9_-]{43}$'}
         idle_expires_unix_secs: {type: integer, minimum: 1}
         absolute_expires_unix_secs: {type: integer, minimum: 1}
+    BrowserSetupRequest:
+      type: object
+      additionalProperties: false
+      required: [setup_token]
+      properties:
+        setup_token: {type: string, pattern: '^[A-Za-z0-9_-]{43}$'}
     IssuedWebSetupToken:
       type: object
       additionalProperties: false

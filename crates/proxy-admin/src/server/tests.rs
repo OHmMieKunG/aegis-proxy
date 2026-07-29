@@ -90,6 +90,7 @@ fn checked_openapi_contains_every_private_route() {
         "/v1/auth/login:",
         "/v1/auth/callback:",
         "/v1/session:",
+        "/v1/session/setup:",
         "/v1/session/logout:",
         "/v1/web/setup-token:",
         "/v1/node/drain:",

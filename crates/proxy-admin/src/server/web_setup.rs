@@ -2,6 +2,7 @@ use std::{fmt, sync::Mutex};
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
 use crate::ObjectId;
@@ -77,6 +78,18 @@ impl WebSetupTokens {
         }
         token.is_some()
     }
+
+    pub(super) fn consume(&self, presented: &str, now_unix_secs: u64) -> Option<ObjectId> {
+        let digest: [u8; 32] = Sha256::digest(presented.as_bytes()).into();
+        let mut token = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let matches = token.as_ref().is_some_and(|token| {
+            now_unix_secs < token.expires_unix_secs && bool::from(token.digest.ct_eq(&digest))
+        });
+        matches.then(|| token.take().expect("matched setup token").owner_id)
+    }
 }
 
 impl PreparedWebSetupToken {
@@ -114,21 +127,6 @@ impl fmt::Debug for WebSetupTokens {
                     .unwrap_or_else(std::sync::PoisonError::into_inner),
             )
             .finish()
-    }
-}
-
-#[cfg(test)]
-impl WebSetupTokens {
-    fn consume(&self, presented: &str, now_unix_secs: u64) -> Option<ObjectId> {
-        let digest: [u8; 32] = Sha256::digest(presented.as_bytes()).into();
-        let mut token = self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let matches = token
-            .as_ref()
-            .is_some_and(|token| now_unix_secs < token.expires_unix_secs && token.digest == digest);
-        matches.then(|| token.take().expect("matched setup token").owner_id)
     }
 }
 

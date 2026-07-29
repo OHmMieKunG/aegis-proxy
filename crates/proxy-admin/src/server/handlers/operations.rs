@@ -46,7 +46,7 @@ pub(in crate::server) async fn web_status(
         oidc_available: state
             .browser
             .as_ref()
-            .is_some_and(|browser| browser.oidc.available()),
+            .is_some_and(|browser| browser.available()),
         setup_required: state
             .browser
             .as_ref()
@@ -85,6 +85,14 @@ pub(in crate::server) async fn create_web_setup_token(
     let config = state.control.runtime().config();
     if !config.admin.web.enabled || config.admin.web.oidc.is_none() {
         return Err(audited_failure(&audit, "web_oidc_unavailable", ApiError::Unavailable).await);
+    }
+    let Some(browser) = state.browser.as_ref() else {
+        return Err(
+            audited_failure(&audit, "oidc_binding_unavailable", ApiError::Unavailable).await,
+        );
+    };
+    if !browser.setup_required() {
+        return Err(audited_failure(&audit, "setup_complete", ApiError::Conflict).await);
     }
     let Some(now) = unix_time() else {
         return Err(audited_failure(&audit, "clock_unavailable", ApiError::Unavailable).await);

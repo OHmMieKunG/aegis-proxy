@@ -6,6 +6,7 @@ mod credentials;
 mod domains;
 mod handlers;
 mod oidc;
+mod oidc_binding;
 mod support;
 mod unified;
 mod users;
@@ -68,6 +69,7 @@ use credentials::*;
 use domains::*;
 use handlers::*;
 use oidc::*;
+use oidc_binding::*;
 use support::*;
 use unified::*;
 use users::*;
@@ -738,6 +740,7 @@ pub async fn serve(
     let user_store = tokio::task::spawn_blocking(move || UserStore::open(user_path))
         .await
         .map_err(|error| AdminServerError::Initialization(error.to_string()))?
+        .map(Arc::new)
         .map_err(|_| AdminServerError::Users)?;
     let audit = match config.admin.audit_key.clone() {
         Some(reference) => {
@@ -767,12 +770,27 @@ pub async fn serve(
     })?;
     let request_permits = Arc::new(Semaphore::new(config.admin.max_in_flight));
     let oidc_available = Arc::new(AtomicBool::new(false));
-    let browser = config
-        .admin
-        .web
-        .enabled
-        .then(|| BrowserAuth::new(&config.admin.web, Arc::clone(&oidc_available)))
-        .flatten()
+    let binding_store = if config.admin.web.enabled {
+        let path = state_dir.join("admin/oidc-bindings.json");
+        let users = Arc::clone(&user_store);
+        match tokio::task::spawn_blocking(move || OidcBindingStore::open(path, &users)).await {
+            Ok(Ok(store)) => Some(store),
+            Ok(Err(error)) => {
+                tracing::error!(%error, "browser OIDC binding state unavailable");
+                None
+            }
+            Err(error) => {
+                tracing::error!(%error, "browser OIDC binding initialization failed");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let browser = binding_store
+        .and_then(|bindings| {
+            BrowserAuth::new(&config.admin.web, Arc::clone(&oidc_available), bindings)
+        })
         .map(Arc::new);
     let state = AppState {
         control,
@@ -783,7 +801,7 @@ pub async fn serve(
         stream_hosts: Arc::new(stream_host_store),
         discovery_sources: Arc::new(discovery_source_store),
         credentials: Arc::new(credential_store),
-        users: Arc::new(user_store),
+        users: user_store,
         browser,
         web_setup_tokens: Arc::new(WebSetupTokens::new()),
         audit,
@@ -948,6 +966,7 @@ pub async fn serve(
             .route("/v1/auth/login", get(login))
             .route("/v1/auth/callback", get(callback))
             .route("/v1/session", get(session))
+            .route("/v1/session/setup", post(setup))
             .route("/v1/session/logout", post(logout))
             .layer(axum::extract::DefaultBodyLimit::max(max_body_bytes))
             .layer(middleware::from_fn_with_state(

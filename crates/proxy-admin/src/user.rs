@@ -5,7 +5,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ApiObject, ObjectId, Role,
+    ApiObject, ApiVersion, ObjectId, ObjectMetadata, Role,
     typed_store::{StoredObject, TypedStore, TypedStoreError},
 };
 
@@ -77,6 +77,52 @@ impl UserStore {
     pub fn all(&self) -> Result<Vec<StoredUser>, UserStoreError> {
         self.0.all()
     }
+
+    pub(crate) fn oidc_target(
+        &self,
+        user_id: &ObjectId,
+        owner_id: &ObjectId,
+        role: Role,
+        allow_create: bool,
+    ) -> Result<ApiObject<UserSpec>, UserStoreError> {
+        if user_id != owner_id {
+            return Err(TypedStoreError::Invalid);
+        }
+        match self.get(user_id) {
+            Some(stored) => {
+                let mut object = stored.object;
+                object.spec.role = role;
+                Ok(object)
+            }
+            None if allow_create => Ok(ApiObject {
+                api_version: ApiVersion,
+                metadata: ObjectMetadata {
+                    id: user_id.clone(),
+                    owner_id: owner_id.clone(),
+                },
+                spec: UserSpec {
+                    display_name: user_id.to_string(),
+                    role,
+                    enabled: true,
+                },
+            }),
+            None => Err(TypedStoreError::Conflict),
+        }
+    }
+
+    pub(crate) fn apply_oidc_target(
+        &self,
+        target: ApiObject<UserSpec>,
+    ) -> Result<StoredUser, UserStoreError> {
+        if target.metadata.id != target.metadata.owner_id || !canonicalize(&mut target.clone()) {
+            return Err(TypedStoreError::Invalid);
+        }
+        match self.get(&target.metadata.id) {
+            Some(stored) if stored.object == target => Ok(stored),
+            Some(stored) => self.0.update(target, stored.generation),
+            None => self.0.create(target),
+        }
+    }
 }
 
 fn canonicalize(object: &mut ApiObject<UserSpec>) -> bool {
@@ -114,6 +160,32 @@ mod tests {
                 .spec
                 .enabled
         );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn oidc_sync_creates_stable_users_and_preserves_disabled_state() {
+        let root =
+            std::env::temp_dir().join(format!("aegisproxy-oidc-users-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let store = UserStore::open(root.join("admin/users.json")).expect("store");
+        let id: ObjectId = "oidc-alice".parse().expect("ID");
+        let target = store
+            .oidc_target(&id, &id, Role::Viewer, true)
+            .expect("target");
+        assert_eq!(target.spec.display_name, "oidc-alice");
+        store.apply_oidc_target(target).expect("create");
+        let mut disabled = store.get(&id).expect("user").object;
+        disabled.spec.enabled = false;
+        store.0.update(disabled, 1).expect("disable");
+        let target = store
+            .oidc_target(&id, &id, Role::Admin, false)
+            .expect("role target");
+        assert!(!target.spec.enabled);
+        store.apply_oidc_target(target).expect("role sync");
+        let synced = store.get(&id).expect("synced");
+        assert_eq!(synced.object.spec.role, Role::Admin);
+        assert!(!synced.object.spec.enabled);
         fs::remove_dir_all(root).expect("cleanup");
     }
 }

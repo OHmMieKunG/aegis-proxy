@@ -1,7 +1,10 @@
 use std::{
     collections::HashMap,
     fmt,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use aegisproxy_config::AdminWebConfig;
@@ -19,9 +22,11 @@ use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 
 use super::{
-    ApiError, AppState, OidcError, OidcIdentity, OidcProvider, Principal, no_store_json, unix_time,
+    ApiError, AppState, MutationAudit, MutationSpec, OidcBinding, OidcBindingStore, OidcError,
+    OidcIdentity, OidcProvider, Principal, RequestId, audited_failure, begin_mutation,
+    no_store_json, require_json, unix_time,
 };
-use crate::{Action, ObjectId, Role};
+use crate::{Action, AuditOutcome, ObjectId, Role};
 
 pub(super) const SESSION_COOKIE: &str = "__Host-aegis-session";
 const CSRF_HEADER: &str = "x-aegis-csrf-token";
@@ -40,12 +45,15 @@ pub(super) struct BrowserAuth {
     origin: String,
     pub(super) oidc: OidcProvider,
     sessions: Arc<SessionStore>,
+    bindings: Arc<OidcBindingStore>,
+    binding_available: Arc<AtomicBool>,
 }
 
 impl BrowserAuth {
     pub(super) fn new(
         config: &AdminWebConfig,
         oidc_available: Arc<std::sync::atomic::AtomicBool>,
+        bindings: OidcBindingStore,
     ) -> Option<Self> {
         let oidc = config.oidc.clone()?;
         Some(Self {
@@ -53,11 +61,21 @@ impl BrowserAuth {
             origin: config.origin.clone(),
             oidc: OidcProvider::new(oidc, &config.origin, oidc_available),
             sessions: Arc::new(SessionStore::new()),
+            bindings: Arc::new(bindings),
+            binding_available: Arc::new(AtomicBool::new(true)),
         })
     }
 
     pub(super) fn setup_required(&self) -> bool {
-        true
+        self.bindings.is_empty()
+    }
+
+    pub(super) fn available(&self) -> bool {
+        self.binding_available.load(Ordering::Acquire) && self.oidc.available()
+    }
+
+    fn mark_binding_unavailable(&self) {
+        self.binding_available.store(false, Ordering::Release);
     }
 }
 
@@ -67,6 +85,7 @@ struct SessionRecord {
     previous_id: Option<(String, u64)>,
     identity_id: ObjectId,
     owner_id: Option<ObjectId>,
+    fingerprint: String,
     role: Role,
     csrf_token: String,
     created_unix_secs: u64,
@@ -118,6 +137,7 @@ pub(super) struct BrowserSession {
     pub(super) identity_id: ObjectId,
     pub(super) owner_id: Option<ObjectId>,
     pub(super) role: Role,
+    fingerprint: String,
     csrf_token: String,
     idle_expires_unix_secs: u64,
     absolute_expires_unix_secs: u64,
@@ -140,6 +160,12 @@ pub(super) struct LoginQuery {
 pub(super) struct CallbackQuery {
     code: String,
     state: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetupRequest {
+    setup_token: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -176,7 +202,7 @@ impl SessionStore {
         }
         let OidcIdentity {
             identity_id,
-            fingerprint: _,
+            fingerprint,
             role,
         } = identity;
         let record = SessionRecord {
@@ -184,6 +210,7 @@ impl SessionStore {
             previous_id: None,
             identity_id,
             owner_id,
+            fingerprint,
             role,
             csrf_token,
             created_unix_secs: now_unix_secs,
@@ -244,6 +271,52 @@ impl SessionStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(session_id);
     }
+
+    fn replace(
+        &self,
+        prior_session_id: &str,
+        identity: OidcIdentity,
+        owner_id: ObjectId,
+        now_unix_secs: u64,
+    ) -> Result<BrowserSession, ApiError> {
+        let current_id = random_secret()?;
+        let csrf_token = random_secret()?;
+        let mut sessions = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        retain_live(&mut sessions, now_unix_secs);
+        let key = sessions
+            .iter()
+            .find(|(_, record)| {
+                record.current_id == prior_session_id
+                    || record
+                        .previous_id
+                        .as_ref()
+                        .is_some_and(|(id, _)| id == prior_session_id)
+            })
+            .map(|(key, _)| key.clone())
+            .ok_or(ApiError::Unauthorized)?;
+        if sessions.contains_key(&current_id) {
+            return Err(ApiError::Busy);
+        }
+        sessions.remove(&key);
+        let record = SessionRecord {
+            current_id: current_id.clone(),
+            previous_id: None,
+            identity_id: identity.identity_id,
+            owner_id: Some(owner_id),
+            fingerprint: identity.fingerprint,
+            role: identity.role,
+            csrf_token,
+            created_unix_secs: now_unix_secs,
+            last_seen_unix_secs: now_unix_secs,
+            rotated_unix_secs: now_unix_secs,
+        };
+        let session = session_snapshot(&record);
+        sessions.insert(current_id, record);
+        Ok(session)
+    }
 }
 
 fn retain_live(sessions: &mut HashMap<String, SessionRecord>, now_unix_secs: u64) {
@@ -260,6 +333,7 @@ fn session_snapshot(record: &SessionRecord) -> BrowserSession {
         identity_id: record.identity_id.clone(),
         owner_id: record.owner_id.clone(),
         role: record.role,
+        fingerprint: record.fingerprint.clone(),
         csrf_token: record.csrf_token.clone(),
         idle_expires_unix_secs: record
             .last_seen_unix_secs
@@ -303,7 +377,13 @@ pub(super) async fn browser_boundary(
             return browser_response(ApiError::Unauthorized.into_response(), &path);
         };
         if let Some(owner_id) = found.session.owner_id.as_ref() {
-            let valid = state
+            let valid_binding = browser
+                .bindings
+                .get(&found.session.fingerprint)
+                .is_some_and(|binding| {
+                    binding.user_id == found.session.identity_id && &binding.owner_id == owner_id
+                });
+            let valid_user = state
                 .users
                 .get(&found.session.identity_id)
                 .is_some_and(|user| {
@@ -311,12 +391,24 @@ pub(super) async fn browser_boundary(
                         && user.object.spec.role == found.session.role
                         && &user.object.metadata.owner_id == owner_id
                 });
+            let valid =
+                browser.binding_available.load(Ordering::Acquire) && valid_binding && valid_user;
             if !valid {
                 browser.sessions.remove(&found.session.session_id);
                 return browser_response(ApiError::Unauthorized.into_response(), &path);
             }
-        } else if !session_route {
-            return browser_response(ApiError::Forbidden.into_response(), &path);
+        } else {
+            let valid_provisional = found.session.role == Role::Admin
+                && browser.bindings.get(&found.session.fingerprint).is_none();
+            if !valid_provisional
+                || (!browser.setup_required() && path.as_str() != "/v1/session/setup")
+            {
+                browser.sessions.remove(&found.session.session_id);
+                return browser_response(ApiError::Unauthorized.into_response(), &path);
+            }
+            if !session_route {
+                return browser_response(ApiError::Forbidden.into_response(), &path);
+            }
         }
         if is_unsafe(request.method())
             && (!exact_header(request.headers(), ORIGIN, &browser.origin)
@@ -343,6 +435,9 @@ pub(super) async fn login(
     Query(query): Query<LoginQuery>,
 ) -> Result<Response, ApiError> {
     let browser = state.browser.ok_or(ApiError::Unavailable)?;
+    if !browser.binding_available.load(Ordering::Acquire) {
+        return Err(ApiError::Unavailable);
+    }
     let return_path = validate_return_path(query.return_to)?;
     let login = browser
         .oidc
@@ -354,6 +449,7 @@ pub(super) async fn login(
 
 pub(super) async fn callback(
     State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
     Query(query): Query<CallbackQuery>,
 ) -> Result<Response, ApiError> {
     if query.code.is_empty()
@@ -363,8 +459,11 @@ pub(super) async fn callback(
     {
         return Err(ApiError::InvalidRequest);
     }
-    let browser = state.browser.ok_or(ApiError::Unavailable)?;
-    let (identity, _) = browser
+    let browser = state.browser.clone().ok_or(ApiError::Unavailable)?;
+    if !browser.binding_available.load(Ordering::Acquire) {
+        return Err(ApiError::Unavailable);
+    }
+    let (identity, return_path) = browser
         .oidc
         .callback(
             query.code,
@@ -373,13 +472,202 @@ pub(super) async fn callback(
         )
         .await
         .map_err(map_oidc_error)?;
-    let session =
-        browser
-            .sessions
-            .create(identity, None, unix_time().ok_or(ApiError::Unavailable)?)?;
-    let mut response = redirect("/setup")?;
+    let now = unix_time().ok_or(ApiError::Unavailable)?;
+    let (identity, owner_id, destination) =
+        resolve_callback_identity(&state, &browser, &request_id, identity, return_path).await?;
+    let session = browser.sessions.create(identity, owner_id, now)?;
+    let mut response = redirect(&destination)?;
     set_session_cookie(&mut response, &session.session_id);
     Ok(response)
+}
+
+pub(super) async fn setup(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    Extension(session): Extension<BrowserSession>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<Response, ApiError> {
+    let browser = state.browser.clone().ok_or(ApiError::Unavailable)?;
+    if !browser.setup_required() {
+        return Err(ApiError::Conflict);
+    }
+    if session.owner_id.is_some() || session.role != Role::Admin {
+        return Err(ApiError::Forbidden);
+    }
+    require_json(&headers)?;
+    let request =
+        serde_json::from_slice::<SetupRequest>(&body).map_err(|_| ApiError::InvalidRequest)?;
+    let now = unix_time().ok_or(ApiError::Unavailable)?;
+    let owner_id = state
+        .web_setup_tokens
+        .consume(&request.setup_token, now)
+        .ok_or(ApiError::Conflict)?;
+    let binding = OidcBinding {
+        fingerprint: session.fingerprint.clone(),
+        user_id: owner_id.clone(),
+        owner_id: owner_id.clone(),
+    };
+    let audit = begin_oidc_mutation(
+        &state,
+        &session.principal(),
+        &request_id,
+        "oidc_setup_bind",
+        owner_id.as_str(),
+    )
+    .await?;
+    persist_binding(&state, &browser, &audit, binding.clone(), Role::Admin, true).await?;
+    let identity = OidcIdentity {
+        identity_id: binding.user_id,
+        fingerprint: binding.fingerprint,
+        role: Role::Admin,
+    };
+    let established = browser
+        .sessions
+        .replace(&session.session_id, identity, owner_id, now)?;
+    let mut response = session_response(&established)?;
+    set_session_cookie(&mut response, &established.session_id);
+    Ok(response)
+}
+
+async fn resolve_callback_identity(
+    state: &AppState,
+    browser: &Arc<BrowserAuth>,
+    request_id: &RequestId,
+    mut identity: OidcIdentity,
+    return_path: String,
+) -> Result<(OidcIdentity, Option<ObjectId>, String), ApiError> {
+    if browser.setup_required() {
+        return (identity.role == Role::Admin)
+            .then_some((identity, None, "/setup".into()))
+            .ok_or(ApiError::Unauthorized);
+    }
+    if let Some(binding) = browser.bindings.get(&identity.fingerprint) {
+        let Some(stored) = state.users.get(&binding.user_id) else {
+            browser.mark_binding_unavailable();
+            return Err(ApiError::Unavailable);
+        };
+        if stored.object.metadata.owner_id != binding.owner_id {
+            browser.mark_binding_unavailable();
+            return Err(ApiError::Unavailable);
+        }
+        if stored.object.spec.role != identity.role {
+            let principal = oidc_system_principal(&identity);
+            let audit = begin_oidc_mutation(
+                state,
+                &principal,
+                request_id,
+                "oidc_role_sync",
+                binding.user_id.as_str(),
+            )
+            .await?;
+            persist_binding(
+                state,
+                browser,
+                &audit,
+                binding.clone(),
+                identity.role,
+                false,
+            )
+            .await?;
+        }
+        let user = state
+            .users
+            .get(&binding.user_id)
+            .ok_or(ApiError::Unavailable)?;
+        if !user.object.spec.enabled
+            || user.object.spec.role != identity.role
+            || user.object.metadata.owner_id != binding.owner_id
+        {
+            return Err(ApiError::Unauthorized);
+        }
+        identity.identity_id = binding.user_id;
+        return Ok((identity, Some(binding.owner_id), return_path));
+    }
+
+    if browser.bindings.user_is_bound(&identity.identity_id)
+        || state.users.get(&identity.identity_id).is_some()
+    {
+        browser.mark_binding_unavailable();
+        return Err(ApiError::Unavailable);
+    }
+    let binding = OidcBinding {
+        fingerprint: identity.fingerprint.clone(),
+        user_id: identity.identity_id.clone(),
+        owner_id: identity.identity_id.clone(),
+    };
+    let principal = oidc_system_principal(&identity);
+    let audit = begin_oidc_mutation(
+        state,
+        &principal,
+        request_id,
+        "oidc_identity_bind",
+        binding.user_id.as_str(),
+    )
+    .await?;
+    persist_binding(state, browser, &audit, binding.clone(), identity.role, true).await?;
+    let user = state
+        .users
+        .get(&binding.user_id)
+        .ok_or(ApiError::Unavailable)?;
+    if !user.object.spec.enabled {
+        return Err(ApiError::Unauthorized);
+    }
+    Ok((identity, Some(binding.owner_id), return_path))
+}
+
+fn oidc_system_principal(identity: &OidcIdentity) -> Principal {
+    Principal {
+        actor_type: "oidc_identity",
+        actor_id: identity.identity_id.to_string(),
+        role: Role::Admin,
+        owner_id: Some(identity.identity_id.clone()),
+        token_scopes: None,
+    }
+}
+
+async fn begin_oidc_mutation(
+    state: &AppState,
+    principal: &Principal,
+    request_id: &RequestId,
+    action: &'static str,
+    resource_id: &str,
+) -> Result<MutationAudit, ApiError> {
+    begin_mutation(
+        state,
+        principal,
+        request_id,
+        Some(state.control.runtime().revision().to_string()),
+        MutationSpec {
+            permission: Action::ManageIdentities,
+            action,
+            resource_id,
+            new_revision: None,
+        },
+    )
+    .await
+}
+
+async fn persist_binding(
+    state: &AppState,
+    browser: &Arc<BrowserAuth>,
+    audit: &MutationAudit,
+    binding: OidcBinding,
+    role: Role,
+    allow_user_create: bool,
+) -> Result<(), ApiError> {
+    let bindings = Arc::clone(&browser.bindings);
+    let users = Arc::clone(&state.users);
+    let result = tokio::task::spawn_blocking(move || {
+        bindings.bind(binding, role, &users, allow_user_create)
+    })
+    .await
+    .map_err(|_| ApiError::Internal)?;
+    if result.is_err() {
+        browser.mark_binding_unavailable();
+        return Err(audited_failure(audit, "oidc_binding_failed", ApiError::Unavailable).await);
+    }
+    audit.record(AuditOutcome::Success, None, None).await
 }
 
 pub(super) async fn session(
