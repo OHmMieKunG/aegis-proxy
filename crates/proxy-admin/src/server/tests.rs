@@ -87,6 +87,10 @@ fn checked_openapi_contains_every_private_route() {
         "/v1/ready:",
         "/v1/status:",
         "/v1/web/status:",
+        "/v1/auth/login:",
+        "/v1/auth/callback:",
+        "/v1/session:",
+        "/v1/session/logout:",
         "/v1/web/setup-token:",
         "/v1/node/drain:",
         "/v1/config/active:",
@@ -211,7 +215,7 @@ fn checked_openapi_contains_every_private_route() {
             .collect::<Vec<_>>(),
         scopes
     );
-    assert_eq!(openapi.matches("maxItems: 53").count(), 2);
+    assert_eq!(openapi.matches("maxItems: 53").count(), 3);
     assert!(openapi.contains("x-aegis-authentication: unix-peer-only"));
     assert!(openapi.contains("scheme: aegis-unix-peer"));
     assert!(openapi.contains("operationId: createAccessPolicy"));

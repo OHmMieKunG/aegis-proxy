@@ -1,9 +1,11 @@
 //! Private Unix-socket administrative HTTP service.
 
+mod browser;
 mod certificates;
 mod credentials;
 mod domains;
 mod handlers;
+mod oidc;
 mod support;
 mod unified;
 mod users;
@@ -14,6 +16,7 @@ use std::{
     fs, io,
     os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
+    sync::atomic::AtomicBool,
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -44,7 +47,7 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{
-    net::UnixListener,
+    net::{TcpListener, UnixListener},
     sync::{OwnedSemaphorePermit, Semaphore},
 };
 use tokio_util::sync::CancellationToken;
@@ -59,10 +62,12 @@ use crate::{
     StoredDiscoverySource, StoredProxyHost, StoredStreamHost, StoredUser, StreamHostSpec,
     StreamHostStore, TokenScopes, TokenStore, UserSpec, UserStore, UserStoreError,
 };
+use browser::*;
 use certificates::*;
 use credentials::*;
 use domains::*;
 use handlers::*;
+use oidc::*;
 use support::*;
 use unified::*;
 use users::*;
@@ -129,6 +134,7 @@ struct AppState {
     discovery_sources: Arc<DiscoverySourceStore>,
     credentials: Arc<CredentialStore>,
     users: Arc<UserStore>,
+    browser: Option<Arc<BrowserAuth>>,
     web_setup_tokens: Arc<WebSetupTokens>,
     audit: Option<Arc<AuditLog>>,
     allowed_uids: Arc<[u32]>,
@@ -176,10 +182,16 @@ impl FromRequestParts<AppState> for Principal {
         parts: &mut Parts,
         state: &AppState,
     ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
+        let browser = parts.extensions.get::<BrowserSession>().cloned();
         let peer = parts.extensions.get::<ConnectInfo<UnixPeer>>().cloned();
         let authorization = authorization_header(&parts.headers);
         let state = state.clone();
         async move {
+            if let Some(browser) = browser {
+                let principal = browser.principal();
+                state.rate_limiter.check(&principal)?;
+                return Ok(principal);
+            }
             let authorization = authorization?;
             let uid = peer
                 .and_then(|ConnectInfo(peer)| peer.uid)
@@ -443,6 +455,8 @@ struct StatusResponse {
 struct WebStatusResponse {
     web_enabled: bool,
     oidc_configured: bool,
+    oidc_available: bool,
+    setup_required: bool,
     setup_token_active: bool,
 }
 
@@ -752,6 +766,14 @@ pub async fn serve(
         AdminServerError::Initialization("administrative request capacity is too large".into())
     })?;
     let request_permits = Arc::new(Semaphore::new(config.admin.max_in_flight));
+    let oidc_available = Arc::new(AtomicBool::new(false));
+    let browser = config
+        .admin
+        .web
+        .enabled
+        .then(|| BrowserAuth::new(&config.admin.web, Arc::clone(&oidc_available)))
+        .flatten()
+        .map(Arc::new);
     let state = AppState {
         control,
         tokens: Arc::new(tokens),
@@ -762,6 +784,7 @@ pub async fn serve(
         discovery_sources: Arc::new(discovery_source_store),
         credentials: Arc::new(credential_store),
         users: Arc::new(user_store),
+        browser,
         web_setup_tokens: Arc::new(WebSetupTokens::new()),
         audit,
         allowed_uids: Arc::from(config.admin.allowed_uids.clone()),
@@ -779,7 +802,7 @@ pub async fn serve(
         .control
         .runtime()
         .set_audit_ready(state.audit.is_some());
-    let app = Router::new()
+    let routes = Router::new()
         .route("/live", get(live))
         .route("/ready", get(ready))
         .route("/health/details", get(health_details))
@@ -788,7 +811,6 @@ pub async fn serve(
         .route("/metrics", get(metrics))
         .route("/v1/status", get(status))
         .route("/v1/web/status", get(web_status))
-        .route("/v1/web/setup-token", post(create_web_setup_token))
         .route("/v1/node/drain", post(drain_node))
         .route("/v1/config/active", get(active_config))
         .route("/v1/config/validate", post(validate_config))
@@ -909,19 +931,66 @@ pub async fn serve(
         .route("/v1/users/{id}", get(user).put(update_user))
         .route("/v1/roles", get(roles))
         .route("/v1/backups", post(create_backup_archive))
-        .route("/v1/restore/validate", post(validate_restore_archive))
+        .route("/v1/restore/validate", post(validate_restore_archive));
+    let unix_app = routes
+        .clone()
+        .route("/v1/web/setup-token", post(create_web_setup_token))
         .layer(axum::extract::DefaultBodyLimit::max(
             config.admin.max_body_bytes,
         ))
         .layer(middleware::from_fn_with_state(state.clone(), bound_request))
-        .with_state(state);
+        .with_state(state.clone());
+    let browser_shutdown = shutdown.child_token();
+    let browser_task = state.browser.clone().map(|browser| {
+        let bind = config.admin.web.bind;
+        let max_body_bytes = config.admin.max_body_bytes;
+        let app = routes
+            .route("/v1/auth/login", get(login))
+            .route("/v1/auth/callback", get(callback))
+            .route("/v1/session", get(session))
+            .route("/v1/session/logout", post(logout))
+            .layer(axum::extract::DefaultBodyLimit::max(max_body_bytes))
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                browser_boundary,
+            ))
+            .layer(middleware::from_fn_with_state(state.clone(), bound_request))
+            .with_state(state.clone());
+        let task_shutdown = browser_shutdown.clone();
+        tokio::spawn(async move {
+            let listener = match TcpListener::bind(bind).await {
+                Ok(listener) => listener,
+                Err(error) => {
+                    browser.oidc.mark_unavailable();
+                    tracing::error!(%error, %bind, "browser administration listener unavailable");
+                    return;
+                }
+            };
+            tracing::info!(%bind, "loopback browser administration listener started");
+            let warm = browser.oidc.clone();
+            tokio::spawn(async move { warm.warm().await });
+            if let Err(error) = axum::serve(listener, app)
+                .with_graceful_shutdown(task_shutdown.cancelled_owned())
+                .await
+            {
+                browser.oidc.mark_unavailable();
+                tracing::error!(%error, %bind, "browser administration listener stopped");
+            }
+        })
+    });
     tracing::info!(path = %socket_path.display(), "private administration listener started");
     let result = axum::serve(
         listener,
-        app.into_make_service_with_connect_info::<UnixPeer>(),
+        unix_app.into_make_service_with_connect_info::<UnixPeer>(),
     )
     .with_graceful_shutdown(shutdown.cancelled_owned())
     .await;
+    browser_shutdown.cancel();
+    if let Some(task) = browser_task
+        && let Err(error) = task.await
+    {
+        tracing::error!(%error, "browser administration task failed");
+    }
     drain_requests(request_permits, request_capacity).await?;
     drop(guard);
     result.map_err(AdminServerError::Io)

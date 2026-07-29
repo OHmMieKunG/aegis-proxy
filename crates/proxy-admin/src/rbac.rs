@@ -129,6 +129,62 @@ pub enum Action {
     CreateWebSetupToken,
 }
 
+const ACTIONS: [Action; 53] = [
+    Action::ReadStatus,
+    Action::ReadConfig,
+    Action::ValidateConfig,
+    Action::PreviewConfig,
+    Action::CreateCandidate,
+    Action::ActivateConfig,
+    Action::RollbackConfig,
+    Action::ReadRevisions,
+    Action::ReadProxyHosts,
+    Action::CreateProxyHost,
+    Action::UpdateProxyHost,
+    Action::DeleteProxyHost,
+    Action::ActivateProxyHost,
+    Action::RollbackProxyHost,
+    Action::ActivateTypedCandidate,
+    Action::RollbackTypedRevision,
+    Action::ReadAccessPolicies,
+    Action::CreateAccessPolicy,
+    Action::UpdateAccessPolicy,
+    Action::DeleteAccessPolicy,
+    Action::ReadRoutes,
+    Action::ReadUpstreams,
+    Action::Drain,
+    Action::ReadCertificates,
+    Action::ReadCertificateObjects,
+    Action::CreateCertificate,
+    Action::UpdateCertificate,
+    Action::DeleteCertificate,
+    Action::ReadStreamHosts,
+    Action::CreateStreamHost,
+    Action::UpdateStreamHost,
+    Action::DeleteStreamHost,
+    Action::ReadDiscoverySources,
+    Action::CreateDiscoverySource,
+    Action::UpdateDiscoverySource,
+    Action::DeleteDiscoverySource,
+    Action::ReadCredentials,
+    Action::CreateCredential,
+    Action::UpdateCredential,
+    Action::RevokeCredential,
+    Action::RenewCertificate,
+    Action::ReadAudit,
+    Action::CreateBackup,
+    Action::ValidateRestore,
+    Action::ManageIdentities,
+    Action::ReadTokens,
+    Action::CreateToken,
+    Action::RevokeToken,
+    Action::ReadUsers,
+    Action::CreateUser,
+    Action::UpdateUser,
+    Action::ReadRoles,
+    Action::CreateWebSetupToken,
+];
+
 /// Invalid API-token scope set.
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
 pub enum TokenScopeError {
@@ -272,67 +328,19 @@ impl Role {
             ),
         }
     }
+
+    pub(crate) fn actions(self) -> Vec<Action> {
+        ACTIONS
+            .iter()
+            .copied()
+            .filter(|action| self.allows(*action))
+            .collect()
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Action, Role, TokenScopeError, TokenScopes};
-
-    const ACTIONS: [Action; 53] = [
-        Action::ReadStatus,
-        Action::ReadConfig,
-        Action::ValidateConfig,
-        Action::PreviewConfig,
-        Action::CreateCandidate,
-        Action::ActivateConfig,
-        Action::RollbackConfig,
-        Action::ReadRevisions,
-        Action::ReadProxyHosts,
-        Action::CreateProxyHost,
-        Action::UpdateProxyHost,
-        Action::DeleteProxyHost,
-        Action::ActivateProxyHost,
-        Action::RollbackProxyHost,
-        Action::ActivateTypedCandidate,
-        Action::RollbackTypedRevision,
-        Action::ReadAccessPolicies,
-        Action::CreateAccessPolicy,
-        Action::UpdateAccessPolicy,
-        Action::DeleteAccessPolicy,
-        Action::ReadRoutes,
-        Action::ReadUpstreams,
-        Action::Drain,
-        Action::ReadCertificates,
-        Action::ReadCertificateObjects,
-        Action::CreateCertificate,
-        Action::UpdateCertificate,
-        Action::DeleteCertificate,
-        Action::ReadStreamHosts,
-        Action::CreateStreamHost,
-        Action::UpdateStreamHost,
-        Action::DeleteStreamHost,
-        Action::ReadDiscoverySources,
-        Action::CreateDiscoverySource,
-        Action::UpdateDiscoverySource,
-        Action::DeleteDiscoverySource,
-        Action::ReadCredentials,
-        Action::CreateCredential,
-        Action::UpdateCredential,
-        Action::RevokeCredential,
-        Action::RenewCertificate,
-        Action::ReadAudit,
-        Action::CreateBackup,
-        Action::ValidateRestore,
-        Action::ManageIdentities,
-        Action::ReadTokens,
-        Action::CreateToken,
-        Action::RevokeToken,
-        Action::ReadUsers,
-        Action::CreateUser,
-        Action::UpdateUser,
-        Action::ReadRoles,
-        Action::CreateWebSetupToken,
-    ];
+    use super::{ACTIONS, Action, Role, TokenScopeError, TokenScopes};
 
     #[test]
     fn role_matrix_is_deny_by_default() {

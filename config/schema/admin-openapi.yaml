@@ -71,6 +71,72 @@ paths:
             application/json:
               schema: {$ref: "#/components/schemas/WebStatus"}
         default: {$ref: "#/components/responses/Error"}
+  /v1/auth/login:
+    get:
+      operationId: browserLogin
+      description: Starts one OIDC Authorization Code flow with PKCE-S256, state, and nonce.
+      security: []
+      parameters:
+        - name: return_to
+          in: query
+          schema: {type: string, pattern: '^/(?!/)[^\r\n]*$', maxLength: 2048, default: /}
+      responses:
+        "303":
+          description: Redirect to the validated same-origin OIDC authorization endpoint
+          headers:
+            Cache-Control: {$ref: "#/components/headers/NoStore"}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/auth/callback:
+    get:
+      operationId: browserCallback
+      description: Consumes one OIDC state and authorization code and creates a provisional session.
+      security: []
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 2048}
+        - name: state
+          in: query
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 512}
+      responses:
+        "303":
+          description: Provisional session created and redirected to /setup
+          headers:
+            Cache-Control: {$ref: "#/components/headers/NoStore"}
+            Set-Cookie: {$ref: "#/components/headers/SessionCookie"}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/session:
+    get:
+      operationId: browserSession
+      security:
+        - browserSession: []
+      responses:
+        "200":
+          description: Current bound or provisional browser session
+          headers:
+            Cache-Control: {$ref: "#/components/headers/NoStore"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/BrowserSession"}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/session/logout:
+    post:
+      operationId: browserLogout
+      security:
+        - browserSession: []
+      parameters:
+        - {$ref: "#/components/parameters/Origin"}
+        - {$ref: "#/components/parameters/SecFetchSite"}
+        - {$ref: "#/components/parameters/CsrfToken"}
+      responses:
+        "204":
+          description: Server-side session removed and cookie expired
+          headers:
+            Cache-Control: {$ref: "#/components/headers/NoStore"}
+            Set-Cookie: {$ref: "#/components/headers/SessionCookie"}
+        default: {$ref: "#/components/responses/Error"}
   /v1/web/setup-token:
     post:
       operationId: createWebSetupToken
@@ -735,6 +801,11 @@ components:
       type: http
       scheme: aegis-unix-peer
       description: Operating-system peer credentials from the private Unix socket; no HTTP header is accepted.
+    browserSession:
+      type: apiKey
+      in: cookie
+      name: __Host-aegis-session
+      description: Loopback-browser-only server-side session; bearer authentication is rejected.
   parameters:
     IfMatch:
       name: If-Match
@@ -769,10 +840,28 @@ components:
       name: limit
       in: query
       schema: {type: integer, minimum: 1, maximum: 100, default: 100}
+    Origin:
+      name: Origin
+      in: header
+      required: true
+      schema: {type: string, pattern: '^http://localhost:[1-9][0-9]{0,4}$'}
+    SecFetchSite:
+      name: Sec-Fetch-Site
+      in: header
+      required: true
+      schema: {type: string, const: same-origin}
+    CsrfToken:
+      name: X-Aegis-Csrf-Token
+      in: header
+      required: true
+      schema: {type: string, pattern: '^[A-Za-z0-9_-]{43}$'}
   headers:
     NoStore:
       description: Response must not be stored by any cache.
       schema: {type: string, const: no-store}
+    SessionCookie:
+      description: __Host-aegis-session with Secure, HttpOnly, SameSite=Strict, Path=/, and no Domain.
+      schema: {type: string}
   requestBodies:
     TomlConfig:
       required: true
@@ -1164,11 +1253,32 @@ components:
     WebStatus:
       type: object
       additionalProperties: false
-      required: [web_enabled, oidc_configured, setup_token_active]
+      required: [web_enabled, oidc_configured, oidc_available, setup_required, setup_token_active]
       properties:
         web_enabled: {type: boolean}
         oidc_configured: {type: boolean}
+        oidc_available: {type: boolean}
+        setup_required: {type: boolean}
         setup_token_active: {type: boolean}
+    BrowserSession:
+      type: object
+      additionalProperties: false
+      required: [identity_id, owner_id, role, permitted_actions, csrf_token, idle_expires_unix_secs, absolute_expires_unix_secs]
+      properties:
+        identity_id: {$ref: "#/components/schemas/ObjectId"}
+        owner_id:
+          oneOf:
+            - {$ref: "#/components/schemas/ObjectId"}
+            - {type: "null"}
+        role: {type: string, enum: [viewer, auditor, operator, admin]}
+        permitted_actions:
+          type: array
+          maxItems: 53
+          uniqueItems: true
+          items: {$ref: "#/components/schemas/TokenScope"}
+        csrf_token: {type: string, pattern: '^[A-Za-z0-9_-]{43}$'}
+        idle_expires_unix_secs: {type: integer, minimum: 1}
+        absolute_expires_unix_secs: {type: integer, minimum: 1}
     IssuedWebSetupToken:
       type: object
       additionalProperties: false

@@ -43,6 +43,14 @@ pub(in crate::server) async fn web_status(
     let body = serde_json::to_vec(&WebStatusResponse {
         web_enabled: config.admin.web.enabled,
         oidc_configured: config.admin.web.oidc.is_some(),
+        oidc_available: state
+            .browser
+            .as_ref()
+            .is_some_and(|browser| browser.oidc.available()),
+        setup_required: state
+            .browser
+            .as_ref()
+            .is_some_and(|browser| browser.setup_required()),
         setup_token_active: state.web_setup_tokens.is_active(now),
     })
     .map_err(|_| ApiError::Internal)?;
@@ -104,7 +112,10 @@ pub(in crate::server) async fn create_web_setup_token(
     no_store_json(StatusCode::CREATED, body)
 }
 
-fn no_store_json(status: StatusCode, body: Vec<u8>) -> Result<Response, ApiError> {
+pub(in crate::server) fn no_store_json(
+    status: StatusCode,
+    body: Vec<u8>,
+) -> Result<Response, ApiError> {
     let mut response = Response::new(axum::body::Body::from(body));
     *response.status_mut() = status;
     response
