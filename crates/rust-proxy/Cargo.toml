@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = []
+web-ui = ["dep:rust-embed"]
+
 [dependencies]
 aegisproxy-admin = { version = "=0.1.0", path = "../proxy-admin" }
 aegisproxy-config = { version = "=0.1.0", path = "../proxy-config" }
@@ -28,6 +32,7 @@ tracing = "0.1"
 tracing-opentelemetry = { version = "0.33.0", default-features = false }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 zeroize = { version = "1", features = ["std"] }
+rust-embed = { version = "8.12.0", optional = true }
 
 [dev-dependencies]
 age = { version = "0.11.2", default-features = false }

@@ -4,7 +4,12 @@ pub(super) async fn run_admin(
     control: aegisproxy_core::ManagedControl,
     shutdown: CancellationToken,
 ) {
-    if let Err(error) = aegisproxy_admin::serve(control, shutdown).await {
+    #[cfg(feature = "web-ui")]
+    let result =
+        aegisproxy_admin::serve_with_web_assets(control, shutdown, Some(web_assets::get)).await;
+    #[cfg(not(feature = "web-ui"))]
+    let result = aegisproxy_admin::serve(control, shutdown).await;
+    if let Err(error) = result {
         tracing::error!(%error, "administrative service stopped");
     }
 }

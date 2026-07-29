@@ -3109,6 +3109,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "rcgen",
+ "rust-embed",
  "serde",
  "serde_json",
  "tokio",

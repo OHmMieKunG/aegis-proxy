@@ -5,6 +5,8 @@
 mod admin_client;
 mod fleet;
 mod telemetry;
+#[cfg(feature = "web-ui")]
+mod web_assets;
 
 use std::{
     error::Error,

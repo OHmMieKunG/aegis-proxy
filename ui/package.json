@@ -1,0 +1,35 @@
+{
+  "name": "aegisproxy-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "generate": "openapi-typescript ../config/schema/admin-openapi.yaml -o src/generated/api.ts",
+    "generate:check": "npm run generate && git diff --exit-code -- src/generated/api.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run generate:check && tsc --noEmit && vite build",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "openapi-fetch": "^0.17.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "react-router-dom": "7.18.2"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.12.1",
+    "@playwright/test": "^1.62.0",
+    "@types/react": "18.3.24",
+    "@types/react-dom": "18.3.7",
+    "@vitejs/plugin-react": "^6.0.4",
+    "openapi-typescript": "^7.13.0",
+    "typescript": "5.9.2",
+    "vite": "8.1.5"
+  },
+  "overrides": {
+    "brace-expansion": "5.0.8",
+    "js-yaml": "4.3.0",
+    "minimatch": "10.2.6"
+  }
+}

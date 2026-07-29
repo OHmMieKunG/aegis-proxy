@@ -12,7 +12,9 @@ use axum::{
     extract::{Extension, Query, Request, State},
     http::{
         HeaderMap, HeaderValue, Method, StatusCode,
-        header::{AUTHORIZATION, CACHE_CONTROL, COOKIE, HOST, LOCATION, ORIGIN, SET_COOKIE},
+        header::{
+            AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, COOKIE, HOST, LOCATION, ORIGIN, SET_COOKIE,
+        },
     },
     middleware::Next,
     response::{IntoResponse, Response},
@@ -360,7 +362,8 @@ pub(super) async fn browser_boundary(
     let public = matches!(
         path.as_str(),
         "/v1/auth/login" | "/v1/auth/callback" | "/v1/web/status"
-    );
+    ) || is_ui_path(&path)
+        || path.starts_with("/assets/");
     let session_route = matches!(
         path.as_str(),
         "/v1/session" | "/v1/session/setup" | "/v1/session/logout"
@@ -696,6 +699,60 @@ pub(super) async fn logout(
     response
 }
 
+pub(super) async fn ui_asset(State(state): State<AppState>, uri: axum::http::Uri) -> Response {
+    let path = uri.path();
+    let (asset_path, cache) = if is_ui_path(path) {
+        ("index.html", "no-store")
+    } else if path.starts_with("/assets/") && hashed_asset(path) {
+        (&path[1..], "public, max-age=31536000, immutable")
+    } else {
+        return ApiError::NotFound.into_response();
+    };
+    let Some(asset) = state.web_assets.and_then(|load| load(asset_path)) else {
+        return ApiError::NotFound.into_response();
+    };
+    let mut response = Response::new(axum::body::Body::from(asset.bytes));
+    response
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static(asset.content_type));
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static(cache));
+    response
+}
+
+fn is_ui_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/" | "/setup"
+            | "/proxy-hosts"
+            | "/stream-hosts"
+            | "/certificates"
+            | "/access-policies"
+            | "/users"
+            | "/health"
+            | "/logs"
+            | "/revisions"
+            | "/backups"
+            | "/settings"
+    )
+}
+
+fn hashed_asset(path: &str) -> bool {
+    path.rsplit_once('/').is_some_and(|(_, file_name)| {
+        file_name
+            .rsplit_once('.')
+            .and_then(|(stem, extension)| stem.split_once('-').map(|(_, hash)| (hash, extension)))
+            .is_some_and(|(hash, extension)| {
+                hash.len() >= 8
+                    && hash
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+                    && matches!(extension, "js" | "css" | "svg" | "png" | "webp")
+            })
+    })
+}
+
 fn session_response(session: &BrowserSession) -> Result<Response, ApiError> {
     let permitted_actions = session
         .owner_id
@@ -953,5 +1010,15 @@ mod tests {
             assert!(cookie.contains(attribute));
         }
         assert!(!cookie.contains("Domain"));
+    }
+
+    #[test]
+    fn spa_fallback_and_immutable_assets_are_closed_allowlists() {
+        assert!(is_ui_path("/proxy-hosts"));
+        assert!(!is_ui_path("/v1/status"));
+        assert!(!is_ui_path("/auth/callback"));
+        assert!(hashed_asset("/assets/index-D3ad_b33f.js"));
+        assert!(!hashed_asset("/assets/index.js"));
+        assert!(!hashed_asset("/v1/index-D3adbeef.js"));
     }
 }

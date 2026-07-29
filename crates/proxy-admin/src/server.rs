@@ -137,6 +137,7 @@ struct AppState {
     credentials: Arc<CredentialStore>,
     users: Arc<UserStore>,
     browser: Option<Arc<BrowserAuth>>,
+    web_assets: Option<WebAssetLoader>,
     web_setup_tokens: Arc<WebSetupTokens>,
     audit: Option<Arc<AuditLog>>,
     allowed_uids: Arc<[u32]>,
@@ -147,6 +148,18 @@ struct AppState {
     started: Instant,
     timeout: Duration,
 }
+
+/// One static browser asset supplied by the embedding binary.
+#[derive(Clone, Debug)]
+pub struct WebAsset {
+    /// Asset bytes.
+    pub bytes: Vec<u8>,
+    /// Exact response media type.
+    pub content_type: &'static str,
+}
+
+/// Read one embedded browser asset by its root-relative path.
+pub type WebAssetLoader = fn(&str) -> Option<WebAsset>;
 
 #[derive(Clone, Debug)]
 struct UnixPeer {
@@ -693,6 +706,15 @@ pub async fn serve(
     control: ManagedControl,
     shutdown: CancellationToken,
 ) -> Result<(), AdminServerError> {
+    serve_with_web_assets(control, shutdown, None).await
+}
+
+/// Serve administration with optional browser assets supplied by the embedding binary.
+pub async fn serve_with_web_assets(
+    control: ManagedControl,
+    shutdown: CancellationToken,
+    web_assets: Option<WebAssetLoader>,
+) -> Result<(), AdminServerError> {
     let config = control.runtime().config();
     let state_dir = PathBuf::from(&config.runtime.state_dir);
     let socket_path = config
@@ -803,6 +825,7 @@ pub async fn serve(
         credentials: Arc::new(credential_store),
         users: user_store,
         browser,
+        web_assets,
         web_setup_tokens: Arc::new(WebSetupTokens::new()),
         audit,
         allowed_uids: Arc::from(config.admin.allowed_uids.clone()),
@@ -968,6 +991,7 @@ pub async fn serve(
             .route("/v1/session", get(session))
             .route("/v1/session/setup", post(setup))
             .route("/v1/session/logout", post(logout))
+            .fallback(ui_asset)
             .layer(axum::extract::DefaultBodyLimit::max(max_body_bytes))
             .layer(middleware::from_fn_with_state(
                 state.clone(),
