@@ -3,17 +3,16 @@
 The v1 administration service listens only on a Unix socket. With no explicit
 `admin.unix_socket`, the daemon uses `<runtime.state_dir>/admin/admin.sock`.
 The socket parent is mode `0700`; the socket is mode `0660`. A configured
-`admin.allowed_uids` list further restricts peer credentials. Phase 16 web configuration and
-first-run bootstrap routes exist, but no TCP browser listener, browser session, or web UI is
-implemented yet.
+`admin.allowed_uids` list further restricts peer credentials. Optional browser administration uses
+a separate loopback-only TCP listener and never changes this Unix boundary.
 
 Private typed endpoints cover Proxy Hosts, Stream Hosts, Discovery Sources, Certificates, Access
 Policies, write-only Stored Credentials, Users, immutable Roles, revisions, backups, and runtime
 status. Typed create/update/delete operations persist desired state and, where runtime state is
 affected, an immutable candidate; they never activate implicitly. Canonical Admin-only typed
 activation and rollback verify complete schema-2 state and dependencies through the existing
-atomic coordinator. Deprecated Proxy Host activation/rollback aliases accept schema 1 only. GUI
-and browser-session work remain Phase 16 and cannot bypass this API boundary.
+atomic coordinator. Deprecated Proxy Host activation/rollback aliases accept schema 1 only. The
+embedded GUI is a removable client of these same endpoints and receives no implicit authority.
 
 Local socket peers are authenticated by kernel credentials and receive the
 fixed `admin` role. Automation may additionally send a bearer API token. Token
@@ -28,8 +27,11 @@ After enabling and validating `[admin.web]` plus `[admin.web.oidc]`, a local Adm
 run `rust-proxy web setup-token --socket SOCKET`. The response displays one random setup token once,
 binds it to that peer's `uid-<uid>` owner, expires it after ten minutes, replaces any prior setup
 token, and retains only its SHA-256 digest in process memory. Restart removes it. Bearer tokens are
-rejected even if they carry `create-web-setup-token`. The browser claim and OIDC session routes are
-not implemented yet, so do not generate a token until that next Phase 16 unit lands.
+rejected even if they carry `create-web-setup-token`. Visit `/setup` on the configured exact
+origin after OIDC login and redeem the token there. The winning claim creates or synchronizes the
+bound User, rotates the session and CSRF token immediately, and invalidates competing claims.
+Disabled Users remain disabled. Detailed setup and task flows are in
+[web administration](../guides/web-administration.md).
 
 ## Mutation safety
 

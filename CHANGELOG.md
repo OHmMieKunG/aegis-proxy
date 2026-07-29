@@ -101,5 +101,12 @@ AegisProxy has not published a supported release.
 - Fixed the Phase 15 maintainer-review findings: accepted requests retain bounded execution and
   mutation/audit ownership after response timeout, operational JSON is authorized before strict
   parsing, and User mutations preserve not-found, invalid-request, and conflict responses.
+- Added the default-disabled loopback OIDC browser boundary with bounded discovery/exchange,
+  rotating server-side sessions, strict origin/CSRF/cookie controls, and Unix/bearer separation.
+- Added crash-recoverable SHA-256 issuer/subject fingerprint binding to durable Users, audited JIT
+  provisioning and role synchronization, disabled-user enforcement, and one-use first-run setup.
+- Added the generated OpenAPI React/Vite administration client and optional `web-ui` embedding:
+  role-aware task routes, the seven-field Proxy Host candidate workflow, typed CRUD, revisions,
+  durable audit records, backup validation, read-only settings, responsive layouts, and axe checks.
 
 See [`STATUS.md`](STATUS.md) and [`docs/history/`](docs/history/README.md).

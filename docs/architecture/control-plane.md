@@ -18,12 +18,15 @@ rollback, routes/upstreams/providers/certificates/status, token management, cert
 backup creation, and restore validation. Owner-scoped typed APIs cover Proxy Hosts, Stream Hosts,
 Discovery Sources, Certificates, Access Policies, write-only Stored Credentials, Users, and
 immutable Roles. Runtime-changing typed mutations create non-active schema-2 candidates; verified
-Admin-only activation and forward rollback remain explicit. Restore does not extract state. No
-TCP/public admin listener, browser session, or web GUI exists. Phase 16 adds two private bootstrap
-routes: unauthenticated `GET /v1/web/status` returns only configuration/token availability, while
-audited `POST /v1/web/setup-token` accepts only an Admin Unix peer. It creates one 256-bit,
-ten-minute, process-memory token bound to `uid-<uid>`, stores only its SHA-256 digest, and returns
-plaintext once with `Cache-Control: no-store`.
+Admin-only activation and forward rollback remain explicit. Restore does not extract state.
+Default-disabled browser administration uses a separate loopback TCP listener with one exact
+`http://localhost:PORT` origin. OIDC Authorization Code with PKCE, bounded discovery/token
+responses, server-side sessions, exact Host/Origin/fetch metadata, CSRF, and secure cookies form a
+separate authentication boundary; Unix peers and bearer tokens are rejected there. Issuer/subject
+identities persist only as SHA-256 fingerprints bound to durable Users and owners. First-run
+binding redeems the Admin Unix peer's ten-minute hash-only setup token through a crash-recovery
+journal. Embedded React assets use only the versioned API; asset or browser failure does not stop
+the Unix listener or data plane.
 
 Phase 15 now includes a library-only strict Proxy Host object and side-effect-free compiler. Caller
 RBAC supplies immutable owner, object, domain, policy, listener, certificate, and upstream-template

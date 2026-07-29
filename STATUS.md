@@ -1,6 +1,6 @@
 # AegisProxy verified status
 
-Verification date: 2026-07-28
+Verification date: 2026-07-29
 Branch: `feat/phase-16-gui-mvp`
 Verification basis: Phase 14 plus Phase 15 compiler `fa7913f`, preview service `d3de105`, typed diff
 `2617f0e`, API-token scopes `81bd500`, owned Proxy Host endpoints `00cfa32`, typed object store
@@ -16,6 +16,9 @@ available through the API and CLI (`926eb68`), with dual-concurrency update/dele
 `334916d`. Proxy Host validation/preview can now resolve one owned or explicitly shared policy
 without persistence (`c12f1c3`). Typed candidates bind exact referenced policy generations and
 content; activation and rollback revalidate current policy state (`20449a3`).
+Phase 16 adds browser OIDC sessions (`1b395ba`), durable setup identity binding (`7b0aa7a`), the
+embedded typed client shell (`eaf5025`), administration workflows (`ea499b8`), and browser
+regression coverage (`4ddef29`). Closed asset-cache and exact action allowlists are in `9205971`.
 Typed certificate ownership and managed-HTTPS selection metadata (`edcb53b`) now have bounded
 private persistence, exact owner-scoped CRUD permissions, API/CLI operations, and separated runtime
 status and direct-renewal routes.
@@ -137,8 +140,8 @@ evidence.
 
 ## Absent or deferred
 
-- Web GUI, first-run wizard, GUI CRUD, browser sessions, progressive disclosure, UI tests.
-- Native OIDC/OAuth2, renewal history, unified secret rotation.
+- Multiple OIDC issuers, public/LAN browser bind, durable browser sessions, custom roles, renewal
+  history, and unified secret rotation.
 - Docker, Kubernetes, Consul, SRV discovery, provider approval/conflict workflow.
 - PROXY v1/v2, client mTLS, sticky sessions, least-connections, backup upstreams, gRPC-Web,
   HTTP/3, UDP proxying.
@@ -150,11 +153,11 @@ evidence.
 [Phase 16 NPMPlus-style GUI MVP](PLAN.md#phase-16--npmplus-style-gui-mvp). Phase 15 is complete for
 roadmap progression under the project-owner exception recorded in
 [the completion report](docs/reviews/phase-15-completion.md). Independent application-security
-review remains a production-release blocker. Phase 16 now has ADR-0030 plus default-disabled
-restart-only web/OIDC configuration validation and redaction. The Unix API now provides minimal
-unauthenticated web status and an audited Admin/Unix-peer-only, hash-only, ten-minute setup-token
-operation with one-time CLI display and a frozen OpenAPI contract. No browser listener, OIDC
-exchange, session, asset, or frontend dependency exists yet.
+review remains a production-release blocker. The implementation candidate now includes the
+default-disabled loopback browser listener, bounded OIDC exchange, rotating server-side sessions,
+durable fingerprint/User binding and recovery, one-use setup, generated typed React client,
+embedded assets, role-aware task routes, and browser coverage. Independent application-security
+and usability reviews remain Phase 16 exit gates; production status is still NO-GO.
 
 ## Release blockers
 
@@ -170,19 +173,23 @@ exchange, session, asset, or frontend dependency exists yet.
 | Command | Result |
 |---|---|
 | `cargo fmt --all -- --check` | passed |
-| `cargo check --workspace --all-targets --all-features` | passed; transitive warning below |
+| `cargo check --workspace --all-targets` | passed; transitive warning below |
+| `cargo check --workspace --all-targets --all-features` | passed with generated UI assets embedded |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | passed |
-| `cargo test --workspace --all-features` | passed: 342 passed, 2 intentionally ignored |
+| `cargo test --workspace --all-features` | passed: 359 passed, 2 intentionally ignored |
 | `cargo test --workspace --doc` | passed; no doctests defined |
 | valid configuration corpus | seven accepted |
 | invalid configuration corpus | three rejected as expected |
 | changed documentation link targets | passed: every relative target in current changed Markdown files exists |
-| `cargo tree -e features` | passed; 2,440 output lines |
+| `cargo tree -e features` | passed; 3,005 output lines |
 | `cargo check --manifest-path fuzz/Cargo.toml --all-targets` | passed |
 | Phase 15 OpenAPI/config-schema/manifest/lock comparison against `dev@eb107ec` | passed; no differences |
-| Admin OpenAPI | checked in Rust and parsed with Python/PyYAML; includes typed rollback, web bootstrap, and 53 token scopes |
+| Admin OpenAPI | checked in Rust and parsed with Python/PyYAML; includes OIDC setup binding and 53 token scopes |
 | Phase 15 production-module size gate | passed; largest measured module is 1,129 lines |
-| authorization/ownership/migration/secret/tamper/recovery coverage | passed in the 87-test Admin suite and CLI integration; includes setup-token expiry/replacement/replay, Unix-peer enforcement, audit, and canaries |
+| `npm ci`; typecheck; generated-client drift; production build | passed; npm 9.2 emitted the recorded Redocly engine warning |
+| Playwright Chromium/axe suite | passed: 5 scenarios using user-local extracted runtime libraries |
+| `npm audit` | completed: 2 high findings in React Router's unused RSC/server-mode paths; no critical findings |
+| authorization/ownership/migration/secret/tamper/recovery coverage | passed in the 103-test Admin suite and CLI integration, including OIDC binding permissions, collision, recovery, disabled-user, setup-token, audit, and canary checks |
 
 ## Unavailable or incomplete checks
 
@@ -194,6 +201,9 @@ exchange, session, asset, or frontend dependency exists yet.
 - `cargo fuzz`: Cargo reports `no such command`; dated smoke evidence is not current execution.
 - `markdownlint` and `lychee`: shell reports `command not found`; changed targets were checked
   directly, but a repository-wide automated Markdown scan was not rerun.
+- `npx playwright install-deps chromium` reports `sudo: A terminal is required to authenticate`;
+  the suite passed with `libnspr4`, `libnss3`, and `libasound2t64` extracted into a temporary
+  user-owned directory instead.
 - Pebble, long fuzz/soak, AppArmor enforcement, independent review, SBOM, signing, container build,
   and container scan were not run during this verification.
 
@@ -202,6 +212,7 @@ release. Dated exception: [dependency review](docs/security/dependency-unsafe-re
 
 ## Evidence
 
+- [Phase 16 implementation candidate](docs/reviews/phase-16-completion.md)
 - [Repository documentation audit](docs/reviews/repository-documentation-audit.md)
 - [Phase 15 completion](docs/reviews/phase-15-completion.md)
 - [Architecture](docs/architecture/overview.md)
@@ -221,5 +232,5 @@ release. Dated exception: [dependency review](docs/security/dependency-unsafe-re
 - [Typed certificate ownership review](docs/reviews/phase-15-certificate-ownership.md)
 - [Historical evidence](docs/history/README.md)
 
-High-level user guides remain absent until Phase 15 defines stable objects and Phase 16 implements
-GUI behavior. Current operator docs describe low-level CLI/TOML workflows.
+Task-focused browser guidance is available in
+[web administration](docs/guides/web-administration.md).

@@ -207,7 +207,8 @@ compatibility policy.
 
 ## Phase 16 — NPMPlus-style GUI MVP
 
-**Status:** active on `feat/phase-16-gui-mvp`.
+**Status:** implementation candidate complete on `feat/phase-16-gui-mvp`; independent application-
+security and usability exit gates remain open.
 
 **Completed units:** ADR-0030 selects embedded React/Vite without a Node production runtime.
 Default-disabled `[admin.web]` configuration now validates a nonzero loopback bind, one exact
@@ -217,7 +218,13 @@ restart-only and secret references are redacted from preview. The private Unix A
 minimal unauthenticated web availability plus an audited Admin/Unix-peer-only setup-token
 operation. It retains one ten-minute token only as an in-memory SHA-256 digest, binds it to the
 caller's `uid-<uid>` owner, returns plaintext once with `no-store`, and has matching CLI/OpenAPI
-contracts.
+contracts. The loopback listener now implements bounded OIDC exchange, rotating server-side
+sessions, exact browser request checks, durable fingerprint-to-User binding, crash recovery,
+audited JIT role synchronization, and one-use setup redemption. The generated OpenAPI React client
+and embedded Vite assets provide every Phase 16 route, the seven-field Proxy Host workflow, typed
+administration, revisions, audit records, backup validation, read-only settings, and responsive
+accessible browser coverage. Production remains NO-GO pending exit reviews and dependency-advisory
+disposition.
 
 **Objective:** make common reverse-proxy administration safe without low-level proxy knowledge.
 

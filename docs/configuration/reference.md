@@ -39,8 +39,9 @@ admin = ["aegis-admins"]
 The issuer must be canonical HTTPS without credentials, query, or fragment. Client secrets and
 optional CA bundles are secret references and are redacted from preview. Group lists are bounded,
 exact, and disjoint across the four built-in roles; enabling browser administration requires at
-least one Admin group. The browser listener and OIDC/session implementation are delivered in
-Phase 16 and do not change Unix peer or bearer authentication.
+least one Admin group. The Phase 16 browser listener, OIDC sessions, and embedded client do not
+change Unix peer or bearer authentication. See
+[web administration](../guides/web-administration.md) for first-run binding.
 
 ## Typed Proxy Host compilation
 

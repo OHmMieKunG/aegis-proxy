@@ -1,11 +1,11 @@
 # Autonomous roadmap handoff
 
-Updated: 2026-07-28
+Updated: 2026-07-29
 
 - Current branch: `feat/phase-16-gui-mvp`
 - Baseline: merged Phase 15 closeout at `dev@714d6c4`
 - Current phase: Phase 16 GUI MVP
-- Phase 16 status: active
+- Phase 16 status: implementation candidate complete; external exit gates open
 
 ## Completed closeout work
 
@@ -15,7 +15,7 @@ Proxy Host persistence. Compiler, Access Policy, and object-store tests are exte
 CLI administration dispatch is separate from process wiring. No production Rust module exceeds
 1,200 measured lines.
 
-Regression coverage froze the exact Phase 15 52-action role matrix, OpenAPI scope order, authorization
+Regression coverage froze the exact Phase 15 role matrix, OpenAPI scope order, authorization
 before typed deserialization, shared-store cross-owner hiding, schema-1 deprecated aliases versus
 schema-2 canonical routes, legacy subjectless/unscoped token behavior, candidate tamper detection,
 retention, and rollback recovery. The checked OpenAPI, configuration schema, manifests, defaults,
@@ -43,18 +43,30 @@ Independent application-security review remains required for production release.
 - Private `GET /v1/web/status` and Admin/Unix-peer-only `POST /v1/web/setup-token` are frozen in
   OpenAPI. Setup tokens are 256-bit, ten-minute, hash-only, restart-ephemeral, owner-bound, audited,
   and displayed once through `rust-proxy web setup-token`.
+- Bounded OIDC discovery/JWKS/token exchange, PKCE/state/nonce, rotating server-side sessions, exact
+  Host/Origin/fetch/CSRF checks, and listener-authentication separation are implemented.
+- Canonical SHA-256 identity bindings, recovery journal, setup redemption, JIT User provisioning,
+  role synchronization, disabled-user checks, and per-request session revalidation are durable.
+- The optional `web-ui` feature embeds the generated OpenAPI React/Vite client. All Phase 16 task
+  routes, seven-field Proxy Host workflow, typed object writes, revisions, audit records, backup
+  validation, read-only settings, responsive layouts, and axe/browser checks are present.
 
 ## Exact next task
 
-Implement bounded OIDC discovery/JWKS/token exchange and provisional browser sessions, then connect
-setup-token redemption to the durable issuer/subject ownership binding. Do not add the React
-dependency tree until the browser authentication boundary is runnable and tested.
+Obtain independent application-security and usability review of commits `1b395ba`, `7b0aa7a`,
+`eaf5025`, `ea499b8`, `4ddef29`, and `9205971`; resolve every critical/high finding and disposition
+the locked React Router RSC-mode advisory. Do not mark Phase 16 production-ready or begin Phase 17
+release claims before those gates close.
 
 ## Known risks
 
 - Activation is global and Admin-only until candidate ownership/approval metadata supports safe
   narrower authority.
-- Local Unix peer identity remains `uid-<uid>`; browser identity and ownership binding are Phase 16.
+- Browser sessions remain process-local and disappear on restart.
+- One OIDC issuer, loopback localhost origin, English UI, and four built-in roles are Phase 16
+  limits.
+- `npm audit` reports two high entries for React Router RSC/server functionality not used by this
+  static SPA; independent review must disposition them.
 - Transitive `proc-macro-error2 2.0.1` has a pre-existing future-incompatibility warning.
 - Product remains production NO-GO pending later phases and independent review.
 

@@ -8,6 +8,8 @@
 - [`SECURITY.md`](../SECURITY.md): private vulnerability reporting.
 - [Repository documentation audit](reviews/repository-documentation-audit.md): detailed capability
   evidence.
+- [Phase 16 implementation candidate](reviews/phase-16-completion.md): browser/OIDC/UI scope,
+  verification, and open production gates.
 - [Phase 15 Proxy Host compiler](reviews/phase-15-proxy-host-compiler.md): current high-level object
   compilation boundary and validation evidence.
 - [Phase 15 candidate preview](reviews/phase-15-candidate-preview.md): safe typed preview boundary
@@ -72,6 +74,7 @@
 - [Migrations](configuration/migrations.md)
 - [Configuration lifecycle](operations/configuration-lifecycle.md)
 - [Private administration](operations/admin.md)
+- [Web administration](guides/web-administration.md)
 - [ACME](operations/acme.md)
 - [Certificate recovery](operations/certificate-recovery.md)
 - [Service discovery](operations/service-discovery.md)
@@ -110,5 +113,5 @@
 [Historical phase, validation, and security evidence](history/README.md) is retained for
 traceability. Dated results are not current test results.
 
-User-facing GUI guides do not exist yet because Phase 16 GUI behavior is not implemented. Creating
-them now would document fictional behavior.
+The web-administration guide documents the implemented Phase 16 task workflows. Unsupported future
+automation remains documented only in the roadmap.
