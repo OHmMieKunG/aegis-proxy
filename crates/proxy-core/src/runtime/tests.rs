@@ -401,6 +401,13 @@ async fn coordinator_commits_and_rolls_back_failed_probation() {
     assert_eq!(activated.previous.as_deref(), Some(first.id.as_str()));
     assert_eq!(&*runtime.revision(), second.id);
     assert!(matches!(
+        coordinator.activate(&third.id, Some(&first.id)).await,
+        Err(ActivationError::Revision(
+            aegisproxy_config::revision::RevisionError::Conflict
+        ))
+    ));
+    assert_eq!(&*runtime.revision(), second.id);
+    assert!(matches!(
         coordinator
             .activate(&preparation_failure.id, Some(&second.id))
             .await,
@@ -430,6 +437,58 @@ async fn coordinator_commits_and_rolls_back_failed_probation() {
         second.id
     );
     assert!(coordinator.administration_ready());
+    drop(coordinator);
+    drop(revisions);
+    fs::remove_dir_all(state).expect("cleanup");
+}
+
+#[tokio::test]
+async fn failed_durable_rollback_retains_runtime_and_gates_administration() {
+    let state = temporary_state();
+    let revisions = Arc::new(RevisionStore::open(&state).expect("revisions"));
+    let first_config = config(8080);
+    let mut second_config = (*first_config).clone();
+    second_config.runtime.config_poll_secs = 2;
+    let first = revisions
+        .create_candidate(&first_config, "first")
+        .expect("first");
+    let second = revisions
+        .create_candidate(&second_config, "second")
+        .expect("second");
+    revisions
+        .begin_activation(&first.id, None)
+        .expect("first intent");
+    revisions
+        .mark_probation(&first.id)
+        .expect("first probation");
+    revisions
+        .commit_activation(&first.id)
+        .expect("first commit");
+
+    let shutdown = CancellationToken::new();
+    let initial = RuntimeSnapshot::prepare(first_config, first.id.clone(), &shutdown)
+        .await
+        .expect("initial");
+    let runtime = RuntimeHandle::new(initial);
+    let coordinator = ActivationCoordinator::new(Arc::clone(&revisions), runtime.clone(), shutdown);
+    let active_path = state.join("config/active.json");
+    assert!(matches!(
+        coordinator
+            .activate_with_probe(&second.id, Some(&first.id), async {
+                fs::remove_file(&active_path).expect("remove active pointer");
+                fs::create_dir(&active_path).expect("block rollback pointer publication");
+                false
+            })
+            .await,
+        Err(ActivationError::RollbackFailed)
+    ));
+    assert_eq!(&*runtime.revision(), first.id);
+    assert!(!coordinator.administration_ready());
+    assert!(matches!(
+        coordinator.activate(&second.id, Some(&first.id)).await,
+        Err(ActivationError::RollbackFailed)
+    ));
+
     drop(coordinator);
     drop(revisions);
     fs::remove_dir_all(state).expect("cleanup");

@@ -65,10 +65,23 @@ pub(super) fn expected_revision(headers: &HeaderMap) -> Result<String, ApiError>
 }
 
 pub(super) fn expected_object_generation(headers: &HeaderMap) -> Result<u64, ApiError> {
-    let values: Vec<_> = headers
-        .get_all("x-aegis-object-generation")
-        .iter()
-        .collect();
+    expected_generation_header(headers, "x-aegis-object-generation")
+}
+
+pub(super) fn expected_draft_generation(headers: &HeaderMap) -> Result<u64, ApiError> {
+    expected_generation_header(headers, "x-aegis-draft-generation")
+}
+
+pub(super) fn optional_object_generation(headers: &HeaderMap) -> Result<Option<u64>, ApiError> {
+    if headers.get("x-aegis-object-generation").is_none() {
+        Ok(None)
+    } else {
+        expected_object_generation(headers).map(Some)
+    }
+}
+
+fn expected_generation_header(headers: &HeaderMap, name: &'static str) -> Result<u64, ApiError> {
+    let values: Vec<_> = headers.get_all(name).iter().collect();
     let [value] = values.as_slice() else {
         return Err(ApiError::InvalidRequest);
     };
@@ -163,7 +176,7 @@ impl MutationAudit {
             .await
             .map_err(|_| ApiError::Internal)?
             .map(|_| ())
-            .map_err(|_| ApiError::Unavailable);
+            .map_err(|_| ApiError::AuditFailed);
         self.runtime.record_audit_operation(if result.is_ok() {
             match outcome {
                 AuditOutcome::Intent => "intent",
@@ -191,10 +204,30 @@ pub(super) async fn audited_failure(
         .await
         .is_err()
     {
-        ApiError::Unavailable
+        ApiError::AuditFailed
     } else {
         error
     }
+}
+
+pub(super) async fn record_save_success(
+    audit: &MutationAudit,
+    revision: String,
+) -> Result<(), ApiError> {
+    audit
+        .record(AuditOutcome::Success, Some(revision), None)
+        .await
+        .map_err(|_| ApiError::AuditFailedAfterSave)
+}
+
+pub(super) async fn record_activation_success(
+    audit: &MutationAudit,
+    revision: String,
+) -> Result<(), ApiError> {
+    audit
+        .record(AuditOutcome::Success, Some(revision), None)
+        .await
+        .map_err(|_| ApiError::AuditFailedAfterActivation)
 }
 
 pub(super) fn activation_error(error: ActivationError) -> (&'static str, ApiError) {
@@ -203,13 +236,14 @@ pub(super) fn activation_error(error: ActivationError) -> (&'static str, ApiErro
             ("revision_conflict", ApiError::Conflict)
         }
         ActivationError::RestartRequired => ("restart_required", ApiError::Conflict),
-        ActivationError::RecoveryRequired => ("recovery_required", ApiError::Unavailable),
+        ActivationError::RecoveryRequired => ("recovery_required", ApiError::RecoveryRequired),
+        ActivationError::RollbackFailed => ("rollback_failed", ApiError::RollbackFailed),
         ActivationError::Revision(RevisionError::InvalidStored(_)) => {
             ("revision_not_found", ApiError::NotFound)
         }
         ActivationError::Revision(_)
         | ActivationError::Preparation(_)
-        | ActivationError::Probation => ("activation_failed", ApiError::Unavailable),
+        | ActivationError::Probation => ("activation_failed", ApiError::ActivationFailed),
     }
 }
 

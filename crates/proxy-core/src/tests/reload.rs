@@ -227,6 +227,100 @@ async fn managed_file_reload_is_atomic_and_rejects_invalid_change() {
 }
 
 #[tokio::test]
+async fn file_managed_startup_still_reconciles_provider_output() {
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use aegisproxy_config::provider::{
+        FileProviderConfig, ProviderConfig, ProviderScheme,
+    };
+
+    let (upstream, upstream_task) = identified_upstream(b"provider").await;
+    let reserved = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("reserve proxy port");
+    let proxy_addr = reserved.local_addr().expect("proxy address");
+    drop(reserved);
+    let root = std::env::temp_dir().join(format!(
+        "aegisproxy-file-provider-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("test clock")
+            .as_nanos()
+    ));
+    fs::create_dir_all(&root).expect("test directory");
+    let provider_path = root.join("endpoints.toml");
+    fs::write(
+        &provider_path,
+        format!(
+            "schema_version=1\nprovider_id=\"nodes\"\n[[endpoints]]\nid=\"node\"\naddress=\"{upstream}\"\n"
+        ),
+    )
+    .expect("provider document");
+    let config_path = root.join("proxy.toml");
+    let mut managed = config(RouteConfig {
+        id: "managed".into(),
+        listeners: vec!["public".into()],
+        hosts: vec!["example.test".into()],
+        paths: vec![],
+        path_prefixes: vec!["/".into()],
+        methods: vec![],
+        headers: vec![],
+        default: false,
+        priority: 0,
+        middlewares: vec![],
+        upstream_group: Some("app".into()),
+    });
+    managed.listeners[0].bind = proxy_addr;
+    managed.runtime.state_dir = root.join("state").to_string_lossy().into_owned();
+    managed.runtime.config_poll_secs = 1;
+    managed.providers = vec![ProviderConfig::File(FileProviderConfig {
+        id: "nodes".into(),
+        enabled: true,
+        upstream_group: "app".into(),
+        path: provider_path.to_string_lossy().into_owned(),
+        scheme: ProviderScheme::Http,
+        server_name: None,
+        ca_bundle: None,
+        refresh_secs: 1,
+        debounce_millis: 50,
+        stale_after_secs: 5,
+        max_endpoints: 4,
+    })];
+    fs::write(
+        &config_path,
+        toml::to_string_pretty(&managed).expect("serialize config"),
+    )
+    .expect("write config");
+
+    let shutdown = CancellationToken::new();
+    let proxy_task = tokio::spawn(run_managed_with_control(
+        config_path,
+        shutdown.clone(),
+        |control, shutdown| async move {
+            control.install_provider_audit_sink(|_| true);
+            shutdown.cancelled().await;
+        },
+    ));
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(4);
+    loop {
+        if proxy_get(proxy_addr).await.ends_with(b"provider") {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "file provider reconciliation timed out"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    shutdown.cancel();
+    proxy_task.await.expect("proxy task").expect("proxy run");
+    upstream_task.abort();
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[tokio::test]
 async fn managed_reload_cancels_tcp_at_drain_deadline() {
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};

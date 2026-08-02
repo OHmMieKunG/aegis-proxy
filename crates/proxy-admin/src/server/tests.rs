@@ -73,6 +73,87 @@ async fn errors_use_stable_nested_contract_and_hide_internal_tag() {
     assert_eq!(value["error"]["code"], "forbidden");
     assert_eq!(value["error"]["request_id"], "request-123");
     assert_eq!(value["error"]["details"], serde_json::json!([]));
+
+    let response = error_contract(
+        ApiError::RecoveryRequired.into_response(),
+        "request-recovery",
+    );
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = axum::body::to_bytes(response.into_body(), 4_096)
+        .await
+        .expect("recovery body");
+    let value: serde_json::Value = serde_json::from_slice(&body).expect("recovery JSON");
+    assert_eq!(value["error"]["code"], "recovery_required");
+    assert_eq!(value["error"]["message"], "stored state requires recovery");
+    assert_eq!(value["error"]["request_id"], "request-recovery");
+
+    for (error, status, code) in [
+        (
+            ApiError::PersistenceFailed,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "persistence_failed",
+        ),
+        (
+            ApiError::CandidatePersistenceFailed,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "candidate_persistence_failed",
+        ),
+        (
+            ApiError::CompilationFailed,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "compilation_failed",
+        ),
+        (
+            ApiError::ActivationFailed,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "activation_failed",
+        ),
+        (
+            ApiError::RollbackFailed,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "rollback_failed",
+        ),
+        (
+            ApiError::AuditFailed,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "audit_failed",
+        ),
+        (
+            ApiError::AuditFailedAfterSave,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "audit_failed_after_save",
+        ),
+        (
+            ApiError::AuditFailedAfterActivation,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "audit_failed_after_activation",
+        ),
+    ] {
+        let response = error_contract(error.into_response(), "request-failure");
+        assert_eq!(response.status(), status);
+        let body = axum::body::to_bytes(response.into_body(), 4_096)
+            .await
+            .expect("failure body");
+        let value: serde_json::Value = serde_json::from_slice(&body).expect("failure JSON");
+        assert_eq!(value["error"]["code"], code);
+        assert_eq!(value["error"]["request_id"], "request-failure");
+    }
+}
+
+#[test]
+fn activation_recovery_and_rollback_failures_remain_distinct() {
+    assert!(matches!(
+        activation_error(ActivationError::RecoveryRequired),
+        ("recovery_required", ApiError::RecoveryRequired)
+    ));
+    assert!(matches!(
+        activation_error(ActivationError::RollbackFailed),
+        ("rollback_failed", ApiError::RollbackFailed)
+    ));
+    assert!(matches!(
+        activation_error(ActivationError::Revision(RevisionError::Conflict)),
+        ("revision_conflict", ApiError::Conflict)
+    ));
 }
 
 #[test]
@@ -101,6 +182,10 @@ fn checked_openapi_contains_every_private_route() {
         "/v1/access-policies/{id}:",
         "/v1/proxy-hosts:",
         "/v1/proxy-hosts/{id}:",
+        "/v1/proxy-host-drafts:",
+        "/v1/proxy-host-drafts/{id}:",
+        "/v1/proxy-host-drafts/{id}/promote:",
+        "/v1/proxy-hosts/application-state:",
         "/v1/proxy-hosts/validate:",
         "/v1/proxy-hosts/preview:",
         "/v1/proxy-hosts/candidates/{id}/activate:",
@@ -279,6 +364,18 @@ fn body_deserialization_remains_behind_authorization() {
         "begin_mutation(",
         "serde_json::from_slice",
     );
+    ordered(
+        proxy,
+        "async fn create_proxy_host_draft",
+        "begin_mutation(",
+        "serde_json::from_slice",
+    );
+    ordered(
+        proxy,
+        "async fn update_proxy_host_draft",
+        "begin_mutation(",
+        "serde_json::from_slice",
+    );
     let domains = include_str!("domains.rs");
     ordered(
         domains,
@@ -344,6 +441,29 @@ fn body_deserialization_remains_behind_authorization() {
         "require_json(",
         "serde_json::from_slice",
     );
+}
+
+#[test]
+fn proxy_host_draft_mutations_have_distinct_durable_audit_contracts() {
+    let proxy = include_str!("handlers/proxy_hosts.rs");
+    for action in [
+        "proxy_host_draft_create",
+        "proxy_host_draft_update",
+        "proxy_host_draft_discard",
+        "proxy_host_draft_promote",
+    ] {
+        assert!(
+            proxy.contains(action),
+            "missing draft audit action {action}"
+        );
+    }
+    assert!(
+        proxy.matches("ApiError::AuditFailedAfterSave").count() >= 3,
+        "known draft writes must distinguish terminal audit failure"
+    );
+    assert!(proxy.contains("record_save_success(&audit, metadata.id.clone())"));
+    assert!(!proxy.contains("private_key"));
+    assert!(!proxy.contains("authorization_header"));
 }
 
 #[tokio::test]

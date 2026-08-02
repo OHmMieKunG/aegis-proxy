@@ -23,18 +23,19 @@ use std::{
     collections::HashMap,
     convert::Infallible,
     error::Error,
+    fmt,
     future::Future,
     net::SocketAddr,
     path::{Path, PathBuf},
     pin::Pin,
-    sync::Arc,
+    sync::{Arc, RwLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use aegisproxy_config::{
     Config, ConfigError, EndpointConfig, HealthCheckConfig, HealthCheckKind, LimitsConfig,
     ListenerConfig,
-    revision::{RevisionError, RevisionStore},
+    revision::{RevisionError, RevisionStore, TYPED_PROVIDER_SOURCE_PREFIX},
 };
 use aegisproxy_tls::{
     CertificateResolver, Identity, TlsAcceptor,
@@ -84,7 +85,8 @@ use middleware::rate::{Outcome as RateOutcome, RateLimiters};
 
 pub use lifecycle::{
     load_last_known_good, run, run_last_known_good, run_last_known_good_with_control,
-    run_last_known_good_with_control_on_node, run_managed, run_managed_config_with_control,
+    run_last_known_good_with_control_on_node, run_managed,
+    run_managed_bound_revision_with_control_on_node, run_managed_config_with_control,
     run_managed_config_with_control_on_node, run_managed_revision_with_control_on_node,
     run_managed_with_control,
 };
@@ -184,6 +186,78 @@ pub struct ManagedControl {
     coordinator: Arc<ActivationCoordinator>,
     runtime: RuntimeHandle,
     providers: ProviderRegistry,
+    provider_audit: ProviderAuditRegistry,
+}
+
+/// Redacted durable-audit event emitted by provider reconciliation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProviderAuditEvent {
+    /// Stable provider operation name.
+    pub action: &'static str,
+    /// Bounded non-secret resource identifier.
+    pub resource_id: String,
+    /// Correlation identifier shared by one reconciliation attempt.
+    pub request_id: String,
+    /// Active revision observed before the operation.
+    pub old_revision: Option<String>,
+    /// Candidate or active revision produced by the operation.
+    pub new_revision: Option<String>,
+    /// Stable provider outcome.
+    pub outcome: ProviderAuditOutcome,
+    /// Stable redacted failure code.
+    pub error_code: Option<&'static str>,
+}
+
+/// Provider reconciliation outcome mapped to the durable administrative audit contract.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProviderAuditOutcome {
+    /// Reconciliation intent was recorded before provider work began.
+    Intent,
+    /// Provider work completed or was safely skipped.
+    Success,
+    /// Provider work failed without exposing provider input.
+    Failed,
+}
+
+type ProviderAuditSink = Arc<dyn Fn(ProviderAuditEvent) -> bool + Send + Sync>;
+
+#[derive(Clone, Default)]
+struct ProviderAuditRegistry {
+    sink: Arc<RwLock<Option<ProviderAuditSink>>>,
+}
+
+impl fmt::Debug for ProviderAuditRegistry {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderAuditRegistry")
+            .finish_non_exhaustive()
+    }
+}
+
+impl ProviderAuditRegistry {
+    fn install<F>(&self, sink: F)
+    where
+        F: Fn(ProviderAuditEvent) -> bool + Send + Sync + 'static,
+    {
+        *self
+            .sink
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::new(sink));
+    }
+
+    async fn record(&self, event: ProviderAuditEvent) -> bool {
+        let sink = self
+            .sink
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let Some(sink) = sink else {
+            return false;
+        };
+        tokio::task::spawn_blocking(move || sink(event))
+            .await
+            .unwrap_or(false)
+    }
 }
 
 /// Redacted public certificate-generation status.
@@ -206,6 +280,14 @@ pub struct CertificateStatus {
 }
 
 impl ManagedControl {
+    /// Install the single durable provider-audit sink owned by the administration service.
+    pub fn install_provider_audit_sink<F>(&self, sink: F)
+    where
+        F: Fn(ProviderAuditEvent) -> bool + Send + Sync + 'static,
+    {
+        self.provider_audit.install(sink);
+    }
+
     /// Return the durable revision store.
     #[must_use]
     pub fn revisions(&self) -> Arc<RevisionStore> {

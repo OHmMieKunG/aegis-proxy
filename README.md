@@ -1,8 +1,16 @@
 # AegisProxy
 
-AegisProxy is a pre-release Rust reverse proxy and application gateway. Current code provides a
-secure typed foundation; planned work adds NPMPlus-like usability, Caddy-style automation, and
-Traefik-style infrastructure integration without bypassing validation or secret controls.
+AegisProxy is a pre-release, self-hosted reverse-proxy manager written in Rust. Its product
+workflow targets NPMPlus-compatible host, certificate, access-control, and administration
+capabilities, while its independent Rust core uses typed configuration, transactional activation,
+and safe automatic defaults. Optional infrastructure discovery is additive and does not replace
+the primary GUI-managed workflow.
+
+Compatibility concerns important user-visible workflows and outcomes. It does not mean Nginx
+configuration, NPMPlus database or private API compatibility, copied implementation, arbitrary
+Nginx directives, or a pixel-identical UI. The current
+[compatibility matrix](docs/product/npmplus-compatibility-matrix.md) documents evidence and gaps;
+complete parity is not claimed.
 
 ## Current maturity
 
@@ -14,15 +22,16 @@ Verified capabilities include HTTP/1.1 and HTTP/2, WebSocket, gRPC, HTTPS termin
 TLS, raw TCP, TLS passthrough, strict TOML, deterministic routing, bounded balancing and health,
 transactional reload/rollback, ACME, fixed-stage middleware, private administration,
 metrics/tracing/audit, file/A/AAAA discovery, and external-load-balancer fleet checks.
-Phase 15 provides the owner-scoped typed control plane. The current Phase 16 working tree adds
-optional loopback browser administration, OIDC sessions, first-run identity binding, an embedded
-React client, and fail-closed typed desired-state reconciliation at process startup.
+Phase 15 provides the owner-scoped typed control plane. Current Phase 16 work adds optional
+loopback browser administration, OIDC sessions, first-run identity binding, an embedded React
+client, and fail-closed typed desired-state reconciliation at process startup.
 
-Major gaps include automatic HTTPS, Docker/Kubernetes providers, PROXY protocol, client mTLS,
-HTTP/3, gRPC-Web, automated restore, live provider reconciliation after typed startup, complete
-Proxy Host lifecycle controls in the GUI, complete real-system failure coverage, release workflow,
-and production evidence. See [`STATUS.md`](STATUS.md) for exact status and [`PLAN.md`](PLAN.md) for
-the active roadmap.
+Highest-priority gaps are live provider reconciliation after typed startup; Proxy Host
+edit/enable/disable/delete/duplicate and simplified Save/apply workflows; Proxy Locations;
+Redirection and Dead Hosts; complete certificate/access/restore/migration workflows; controlled
+failure coverage; release engineering; and production evidence. Docker/Kubernetes providers and
+broader gateway work are intentionally later. See [`STATUS.md`](STATUS.md) for exact status and
+[`PLAN.md`](PLAN.md) for the active roadmap.
 
 ## Architecture
 
@@ -57,6 +66,8 @@ For the disposable Linux browser/Keycloak workflow, use the
 
 - [Verified status](STATUS.md)
 - [Roadmap](PLAN.md)
+- [Product direction](docs/product/npmplus-direction-reset.md)
+- [NPMPlus compatibility matrix](docs/product/npmplus-compatibility-matrix.md)
 - [Documentation index](docs/README.md)
 - [Installation](docs/operations/installation.md)
 - [Configuration reference](docs/configuration/reference.md)
@@ -64,4 +75,4 @@ For the disposable Linux browser/Keycloak workflow, use the
 - [Security policy](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)
 
-No parity, vulnerability-free, production, HA, or performance claim is made.
+No complete-parity, vulnerability-free, production, HA, or performance claim is made.

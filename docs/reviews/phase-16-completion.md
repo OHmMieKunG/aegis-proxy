@@ -8,6 +8,22 @@ Release decision: **production NO-GO**
 > restart, and provider findings are recorded in the
 > [Phase 0–16 repository readiness audit](repository-readiness-phase-0-16.md).
 
+The later working-tree [Save-and-apply failure campaign](phase-16-save-apply-failure-campaign.md)
+adds systematic persistence, candidate, activation-pointer, rollback, audit, restart, and browser
+evidence without changing this dated candidate record.
+
+The later working-tree [Proxy Host draft/application-state evidence](phase-16-proxy-host-drafts.md)
+adds durable inactive drafts, additive schema migration, exact promotion, restart exclusion, and
+browser transitions without changing this dated candidate record.
+
+The later [React Router advisory disposition](../security/react-router-advisory-disposition.md)
+adds a repeatable client-only import/module-graph check and upgrade analysis. It does not alter this
+candidate, remove the scanner finding, or constitute independent acceptance.
+
+The final working-tree remediation and independent-style disposition are recorded separately in
+[Phase 16 final acceptance](phase-16-final-acceptance.md). That later evidence does not rewrite this
+dated implementation candidate or constitute external certification.
+
 ## Candidate
 
 - `1b395ba` — browser OIDC sessions and listener boundary

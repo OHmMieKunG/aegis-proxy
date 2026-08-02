@@ -26,7 +26,9 @@ use aegisproxy_config::{
     BalancingAlgorithm, Config,
     revision::{RevisionError, RevisionMetadata, content_hash},
 };
-use aegisproxy_core::{ActivationError, ManagedControl, RouteIndex, RuntimeHandle};
+use aegisproxy_core::{
+    ActivationError, ManagedControl, ProviderAuditOutcome, RouteIndex, RuntimeHandle,
+};
 use aegisproxy_secrets::SecretRef;
 use axum::{
     Router,
@@ -58,10 +60,11 @@ use crate::{
     ApiObject, AuditEvent, AuditLog, AuditOutcome, CertificateSpec, CertificateStore,
     CertificateStoreError, CredentialReplacement, CredentialStore, CredentialStoreError,
     DiscoverySourceSpec, DiscoverySourceStore, ObjectId, PreparedProxyHost,
-    ProxyHostPreparationError, ProxyHostPreviewSummary, ProxyHostSpec, ProxyHostStore,
-    ProxyHostStoreError, Role, StoredAccessPolicy, StoredCertificate, StoredCredential,
-    StoredDiscoverySource, StoredProxyHost, StoredStreamHost, StoredUser, StreamHostSpec,
-    StreamHostStore, TokenScopes, TokenStore, UserSpec, UserStore, UserStoreError,
+    ProxyHostPreparationError, ProxyHostPreviewSummary, ProxyHostSnapshot, ProxyHostSpec,
+    ProxyHostStore, ProxyHostStoreError, Role, StoredAccessPolicy, StoredCertificate,
+    StoredCredential, StoredDiscoverySource, StoredProxyHost, StoredProxyHostDraft,
+    StoredStreamHost, StoredUser, StreamHostSpec, StreamHostStore, TokenScopes, TokenStore,
+    UserSpec, UserStore, UserStoreError,
 };
 use browser::*;
 use certificates::*;
@@ -375,6 +378,15 @@ enum ApiError {
     Conflict,
     ObjectConflict,
     CandidateConflict,
+    PersistenceFailed,
+    CompilationFailed,
+    CandidatePersistenceFailed,
+    ActivationFailed,
+    RollbackFailed,
+    AuditFailed,
+    AuditFailedAfterSave,
+    AuditFailedAfterActivation,
+    RecoveryRequired,
     Unavailable,
     Internal,
 }
@@ -403,6 +415,23 @@ impl ApiError {
             Self::Conflict => (StatusCode::CONFLICT, "revision_conflict"),
             Self::ObjectConflict => (StatusCode::CONFLICT, "object_conflict"),
             Self::CandidateConflict => (StatusCode::CONFLICT, "candidate_conflict"),
+            Self::PersistenceFailed => (StatusCode::SERVICE_UNAVAILABLE, "persistence_failed"),
+            Self::CompilationFailed => (StatusCode::INTERNAL_SERVER_ERROR, "compilation_failed"),
+            Self::CandidatePersistenceFailed => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "candidate_persistence_failed",
+            ),
+            Self::ActivationFailed => (StatusCode::SERVICE_UNAVAILABLE, "activation_failed"),
+            Self::RollbackFailed => (StatusCode::SERVICE_UNAVAILABLE, "rollback_failed"),
+            Self::AuditFailed => (StatusCode::SERVICE_UNAVAILABLE, "audit_failed"),
+            Self::AuditFailedAfterSave => {
+                (StatusCode::SERVICE_UNAVAILABLE, "audit_failed_after_save")
+            }
+            Self::AuditFailedAfterActivation => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "audit_failed_after_activation",
+            ),
+            Self::RecoveryRequired => (StatusCode::SERVICE_UNAVAILABLE, "recovery_required"),
             Self::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
             Self::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
         };
@@ -417,6 +446,17 @@ impl ApiError {
             Self::Conflict => "active revision changed",
             Self::ObjectConflict => "object state changed",
             Self::CandidateConflict => "candidate does not match current desired state",
+            Self::PersistenceFailed => "desired state was not persisted",
+            Self::CompilationFailed => "desired state compilation failed",
+            Self::CandidatePersistenceFailed => "candidate was not persisted",
+            Self::ActivationFailed => "candidate activation failed",
+            Self::RollbackFailed => "candidate rollback failed",
+            Self::AuditFailed => "audit storage is unavailable",
+            Self::AuditFailedAfterSave => "save completed but audit durability is unavailable",
+            Self::AuditFailedAfterActivation => {
+                "activation completed but audit durability is unavailable"
+            }
+            Self::RecoveryRequired => "stored state requires recovery",
             Self::Unavailable => "administrative dependency is unavailable",
             Self::Internal => "administrative request failed",
         };
@@ -616,6 +656,28 @@ struct CandidateResponse {
 struct ProxyHostCreateResponse {
     object: StoredProxyHost,
     candidate: CandidateResponse,
+}
+
+#[derive(Debug, Serialize)]
+struct ProxyHostDraftResponse {
+    draft: StoredProxyHostDraft,
+}
+
+#[derive(Debug, Serialize)]
+struct ProxyHostApplicationState {
+    active_revision: String,
+    recovery_required: bool,
+    active_state_known: bool,
+    objects: Vec<ProxyHostApplicationEntry>,
+}
+
+#[derive(Debug, Serialize)]
+struct ProxyHostApplicationEntry {
+    object_id: ObjectId,
+    desired: bool,
+    draft: bool,
+    active: bool,
+    desired_matches_active: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -843,6 +905,44 @@ pub async fn serve_with_web_assets(
         .control
         .runtime()
         .set_audit_ready(state.audit.is_some());
+    if let Some(log) = state.audit.clone() {
+        let runtime = state.control.runtime();
+        let node_id = runtime.node_id().to_owned();
+        state.control.install_provider_audit_sink(move |event| {
+            let outcome = match event.outcome {
+                ProviderAuditOutcome::Intent => AuditOutcome::Intent,
+                ProviderAuditOutcome::Success => AuditOutcome::Success,
+                ProviderAuditOutcome::Failed => AuditOutcome::Failed,
+            };
+            let result = log.append(AuditEvent {
+                node_id: node_id.to_string(),
+                actor_type: "system_provider".into(),
+                actor_id: "provider-coordinator".into(),
+                action: event.action.into(),
+                resource_id: event.resource_id,
+                request_id: event.request_id,
+                old_revision: event.old_revision,
+                new_revision: event.new_revision,
+                authorized: true,
+                outcome,
+                error_code: event.error_code.map(str::to_owned),
+            });
+            runtime.record_audit_operation(if result.is_ok() {
+                match outcome {
+                    AuditOutcome::Intent => "intent",
+                    AuditOutcome::Success => "success",
+                    AuditOutcome::Denied => "denied",
+                    AuditOutcome::Failed => "failed",
+                }
+            } else {
+                "unavailable"
+            });
+            if result.is_err() {
+                runtime.set_audit_ready(false);
+            }
+            result.is_ok()
+        });
+    }
     let routes = Router::new()
         .route("/live", get(live))
         .route("/ready", get(ready))
@@ -857,6 +957,24 @@ pub async fn serve_with_web_assets(
         .route("/v1/config/validate", post(validate_config))
         .route("/v1/config/preview", post(preview_config))
         .route("/v1/proxy-hosts", get(proxy_hosts).post(create_proxy_host))
+        .route(
+            "/v1/proxy-hosts/application-state",
+            get(proxy_host_application_state),
+        )
+        .route(
+            "/v1/proxy-host-drafts",
+            get(proxy_host_drafts).post(create_proxy_host_draft),
+        )
+        .route(
+            "/v1/proxy-host-drafts/{id}",
+            get(proxy_host_draft)
+                .put(update_proxy_host_draft)
+                .delete(discard_proxy_host_draft),
+        )
+        .route(
+            "/v1/proxy-host-drafts/{id}/promote",
+            post(promote_proxy_host_draft),
+        )
         .route(
             "/v1/access-policies",
             get(access_policies).post(create_access_policy),
@@ -1152,6 +1270,17 @@ fn error_contract(mut response: Response, request_id: &str) -> Response {
                 "invalid_request" => "request is invalid",
                 "not_found" => "resource was not found",
                 "revision_conflict" => "active revision changed",
+                "persistence_failed" => "desired state was not persisted",
+                "compilation_failed" => "desired state compilation failed",
+                "candidate_persistence_failed" => "candidate was not persisted",
+                "activation_failed" => "candidate activation failed",
+                "rollback_failed" => "candidate rollback failed",
+                "audit_failed" => "audit storage is unavailable",
+                "audit_failed_after_save" => "save completed but audit durability is unavailable",
+                "audit_failed_after_activation" => {
+                    "activation completed but audit durability is unavailable"
+                }
+                "recovery_required" => "stored state requires recovery",
                 "unavailable" => "administrative dependency is unavailable",
                 _ => "administrative request failed",
             };

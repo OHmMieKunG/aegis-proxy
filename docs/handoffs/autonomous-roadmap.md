@@ -1,19 +1,20 @@
 # Autonomous roadmap handoff
 
-Updated: 2026-07-29
+Updated: 2026-08-02
 
 - Current branch: `feat/phase-16-gui-mvp`
-- Baseline: merged Phase 15 closeout at `dev@714d6c4`
-- Current phase: Phase 16 GUI MVP
-- Phase 16 status: implementation candidate complete; external exit gates open
+- Baseline: `22c6e07`, also `origin/dev`
+- Current phase: Phase 16 direction reset and controlled GUI baseline
+- Phase 16 status: accepted with documented release conditions; this is local independent-style
+  review evidence, not external certification
 
 ## Completed closeout work
 
 Expanded administration handlers are split by health/configuration, Access Policy, Proxy Host,
 runtime, and operational ownership. Candidate snapshot/rollback storage is separate from ordinary
 Proxy Host persistence. Compiler, Access Policy, and object-store tests are external modules, and
-CLI administration dispatch is separate from process wiring. No production Rust module exceeds
-1,200 measured lines.
+CLI administration dispatch is separate from process wiring. The largest measured production
+module is approximately 1,230 lines, below the recorded 1,500-line rationale threshold.
 
 Regression coverage froze the exact Phase 15 role matrix, OpenAPI scope order, authorization
 before typed deserialization, shared-store cross-owner hiding, schema-1 deprecated aliases versus
@@ -50,32 +51,38 @@ Independent application-security review remains required for production release.
 - The optional `web-ui` feature embeds the generated OpenAPI React/Vite client. All Phase 16 task
   routes, seven-field Proxy Host workflow, typed object writes, revisions, audit records, backup
   validation, read-only settings, responsive layouts, and axe/browser checks are present.
-- Current working-tree startup reconciliation compiles durable typed desired state over the
+- `22c6e07` startup reconciliation compiles durable typed desired state over the
   restart-time TOML base, resumes or creates an exact bound revision, and passes focused,
   real-daemon, and rebuilt Compose Proxy Host restart checks.
 
+## Product reset
+
+AegisProxy now prioritizes NPMPlus-compatible daily host, certificate, access, and administration
+workflows. Caddy-style HTTPS automation and Traefik-style providers are selective later additions,
+not equal product objectives. See the
+[direction reset](../product/npmplus-direction-reset.md), the
+[compatibility matrix](../product/npmplus-compatibility-matrix.md), and the rewritten
+[roadmap](../../PLAN.md).
+
 ## Exact next task
 
-Restore the file/DNS provider reconciliation task under typed startup without re-enabling TOML hot
-reload or allowing an unbound revision to publish. Add restart tests with a manual configured
-provider and a typed Discovery Source alongside typed Proxy Host state. Then run the Phase 16
-failure campaign, obtain independent application-security/usability review, resolve every
-critical/high finding, and disposition the locked React Router RSC-mode advisory. Do not begin
-Phase 17 release claims before those gates close.
+Preserve the accepted Phase 16 candidate, obtain external human application-security and protocol
+review, and complete the documented production-release conditions: long fuzz/soak, restore and
+upgrade drills, vulnerability scanning, SBOM, signing, provenance, and multi-architecture release
+evidence. The local reviews under `docs/reviews/` are independent-style evidence only.
 
 ## Known risks
 
 - Activation is global and Admin-only until candidate ownership/approval metadata supports safe
   narrower authority.
 - Browser sessions remain process-local and disappear on restart.
-- Typed startup currently disables the only provider reconciliation loop, leaving file/DNS
-  provider groups on static fallback and provider status unable to advance.
 - One OIDC issuer, loopback localhost origin, English UI, and four built-in roles are Phase 16
   limits.
-- `npm audit` reports two high entries for React Router RSC/server functionality not used by this
-  static SPA; independent review must disposition them.
+- `npm audit` reports two high entries for one React Router RSC/server advisory. The local review
+  accepts non-reachability only while the static client-only deployment assumptions, production
+  module-graph gate, reassessment triggers, and documented review expiry remain satisfied.
 - Transitive `proc-macro-error2 2.0.1` has a pre-existing future-incompatibility warning.
-- Product remains production NO-GO pending later phases and independent review.
+- Product remains production NO-GO pending Phase 23 release gates and independent review.
 
 ## Tooling
 

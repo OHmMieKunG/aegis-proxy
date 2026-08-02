@@ -5,6 +5,8 @@ export type Session = components["schemas"]["BrowserSession"];
 export type Action = components["schemas"]["TokenScope"];
 export type ProxyHost = components["schemas"]["ProxyHostObject"];
 export type StoredProxyHost = components["schemas"]["StoredProxyHost"];
+export type StoredProxyHostDraft = components["schemas"]["StoredProxyHostDraft"];
+export type ProxyHostApplicationState = components["schemas"]["ProxyHostApplicationState"];
 export type AccessPolicy = components["schemas"]["AccessPolicyObject"];
 export type Certificate = components["schemas"]["CertificateObject"];
 export type StreamHost = components["schemas"]["StreamHostObject"];
@@ -71,6 +73,7 @@ export class ApiError extends Error {
   constructor(
     public readonly status: number,
     message: string,
+    public readonly code?: string,
   ) {
     super(message.slice(0, 240));
   }
@@ -94,7 +97,7 @@ export const api = createClient<paths>({
 });
 api.use(middleware);
 
-function message(error: unknown, status: number): string {
+function errorCode(error: unknown): string | undefined {
   if (
     error &&
     typeof error === "object" &&
@@ -103,14 +106,19 @@ function message(error: unknown, status: number): string {
     typeof error.error === "object" &&
     "code" in error.error
   ) {
-    return `${status}: ${String(error.error.code)}`;
+    return String(error.error.code);
   }
-  return `${status}: request failed`;
+  return undefined;
 }
 
 function unwrap<T>(result: Result<T>): T {
   if (result.response.ok && result.data !== undefined) return result.data;
-  throw new ApiError(result.response.status, message(result.error, result.response.status));
+  const code = errorCode(result.error);
+  throw new ApiError(
+    result.response.status,
+    code ? `${result.response.status}: ${code}` : `${result.response.status}: request failed`,
+    code,
+  );
 }
 
 function unsafeHeaders() {
@@ -195,6 +203,71 @@ export async function listProxyHosts(): Promise<StoredProxyHost[]> {
   return unwrap(await api.GET("/v1/proxy-hosts"));
 }
 
+export async function listProxyHostDrafts(): Promise<StoredProxyHostDraft[]> {
+  return unwrap(await api.GET("/v1/proxy-host-drafts"));
+}
+
+export async function proxyHostApplicationState(): Promise<ProxyHostApplicationState> {
+  return unwrap(await api.GET("/v1/proxy-hosts/application-state"));
+}
+
+export async function createProxyHostDraft(
+  object: ProxyHost,
+  appliedGeneration?: number,
+) {
+  return unwrap(
+    await api.POST("/v1/proxy-host-drafts", {
+      params: { header: { "X-Aegis-Object-Generation": appliedGeneration } },
+      body: object,
+    }),
+  );
+}
+
+export async function updateProxyHostDraft(
+  id: string,
+  object: ProxyHost,
+  draftGeneration: number,
+) {
+  return unwrap(
+    await api.PUT("/v1/proxy-host-drafts/{id}", {
+      params: {
+        path: { id },
+        header: { "X-Aegis-Draft-Generation": draftGeneration },
+      },
+      body: object,
+    }),
+  );
+}
+
+export async function discardProxyHostDraft(id: string, draftGeneration: number) {
+  return unwrap(
+    await api.DELETE("/v1/proxy-host-drafts/{id}", {
+      params: {
+        path: { id },
+        header: { "X-Aegis-Draft-Generation": draftGeneration },
+      },
+    }),
+  );
+}
+
+export async function promoteProxyHostDraft(
+  id: string,
+  draftGeneration: number,
+  revision: string,
+) {
+  return unwrap(
+    await api.POST("/v1/proxy-host-drafts/{id}/promote", {
+      params: {
+        path: { id },
+        header: {
+          "If-Match": ifMatch(revision),
+          "X-Aegis-Draft-Generation": draftGeneration,
+        },
+      },
+    }),
+  );
+}
+
 export async function listPolicies(): Promise<Array<Stored<AccessPolicy>>> {
   return unwrap(await api.GET("/v1/access-policies"));
 }
@@ -216,11 +289,54 @@ export async function createProxyHost(object: ProxyHost, revision: string) {
   );
 }
 
+export async function getProxyHost(id: string): Promise<StoredProxyHost> {
+  return unwrap(
+    await api.GET("/v1/proxy-hosts/{id}", {
+      params: { path: { id } },
+    }),
+  );
+}
+
+export async function updateProxyHost(
+  id: string,
+  object: ProxyHost,
+  generation: number,
+  revision: string,
+) {
+  return unwrap(
+    await api.PUT("/v1/proxy-hosts/{id}", {
+      params: {
+        path: { id },
+        header: {
+          "If-Match": ifMatch(revision),
+          "X-Aegis-Object-Generation": generation,
+        },
+      },
+      body: object,
+    }),
+  );
+}
+
+export async function deleteProxyHost(id: string, generation: number, revision: string) {
+  return unwrap(
+    await api.DELETE("/v1/proxy-hosts/{id}", {
+      params: {
+        path: { id },
+        header: {
+          "If-Match": ifMatch(revision),
+          "X-Aegis-Object-Generation": generation,
+        },
+      },
+    }),
+  );
+}
+
 export async function activateProxyHost(candidate: string, revision: string): Promise<void> {
-  const result = await api.POST("/v1/config/typed-candidates/{id}/activate", {
-    params: { path: { id: candidate }, header: { "If-Match": ifMatch(revision) } },
-  });
-  if (!result.response.ok) throw new ApiError(result.response.status, "Activation failed");
+  unwrap(
+    await api.POST("/v1/config/typed-candidates/{id}/activate", {
+      params: { path: { id: candidate }, header: { "If-Match": ifMatch(revision) } },
+    }),
+  );
 }
 
 export async function listResource(resource: Resource): Promise<Array<Stored<unknown>>> {

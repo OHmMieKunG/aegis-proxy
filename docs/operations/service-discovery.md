@@ -2,10 +2,11 @@
 
 Current implementation supports only bounded file and DNS A/AAAA providers. Providers replace endpoint lists in one predeclared upstream group; trusted base configuration still owns routes, listeners, transport, TLS, egress, balancing, health, retry, and circuit policy. Providers default disabled. Static endpoints are mandatory and serve as startup and post-stale fallback.
 
-> **Current limitation:** if durable typed state selects typed startup, the provider reconciliation
-> task is not started. File and DNS sources stay on static fallback and runtime provider status
-> does not advance. Do not rely on dynamic discovery in that mode until the P0 in
-> [`STATUS.md`](../../STATUS.md) is closed.
+One supervisor-owned reconciliation task runs in both file-managed and typed-startup modes. Typed
+startup reconciles the exact active bound state and keeps the TOML base restart-only; file-managed
+mode retains its supported TOML reload behavior. Durable provider mutation requires the configured
+administrative HMAC audit writer. Until that writer is registered and writable, reconciliation
+retains static or last-known-good routing without creating or activating a provider candidate.
 
 ## File provider
 
@@ -52,6 +53,8 @@ DNS providers do not implement SRV, TXT metadata, labels, port discovery, or pol
 3. Replace endpoints in provider-owned group on cloned base configuration.
 4. Run full configuration and egress validation.
 5. Persist immutable candidate and activate through normal CAS, prepare, atomic publish, probation, and drain flow.
+6. Record bounded system-actor intent and terminal outcomes through the same durable HMAC audit
+   chain used by administrative mutations.
 
 Invalid refresh never replaces active snapshot. Last accepted provider endpoints remain until `stale_after_secs`; expiry activates static endpoints. Recovery needs one new valid/stable result. Initial startup serves static endpoints until first provider poll succeeds. Removing or disabling provider activates static endpoints.
 

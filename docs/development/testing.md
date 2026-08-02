@@ -36,6 +36,46 @@ cargo test -p rust-proxy --test ha_chaos
 cargo test -p rust-proxy --test signal_cli
 ```
 
+## Browser tests
+
+Before browser execution, verify that the client-only production graph excludes React Router's RSC
+server request/action handler:
+
+```bash
+npm --prefix ui run security:router
+```
+
+This is a module-graph and generated-chunk check, not a replacement for `npm audit` or browser
+execution. See the [advisory disposition](../security/react-router-advisory-disposition.md).
+
+The checked-in Playwright package is version 1.62.0. A Linux host with Docker can run Chromium in
+the matching pinned Noble image without changing repository file ownership. Build and serve the
+production UI in one terminal:
+
+```bash
+npm --prefix ui run build
+cd ui
+npm exec vite -- preview --host 0.0.0.0 --port 4173
+```
+
+Run the focused Proxy Host suite from the repository root in another terminal:
+
+```bash
+docker run --rm --network host --ipc host \
+  -e HOME=/tmp/playwright-home \
+  -v "$PWD:/work:ro" \
+  -w /work/ui \
+  mcr.microsoft.com/playwright@sha256:baed2032d533817f3dbe6425de795788430ba345e819a1201337009ba17c9d07 \
+  npx playwright test tests/ui.spec.ts --grep "Proxy Host" \
+  --output /tmp/aegis-playwright-results --reporter=line
+```
+
+The read-only repository mount and container-local output avoid host-owned Vite/Playwright cache
+artifacts. This command executes Chromium; `playwright --list` is not browser evidence.
+The focused lifecycle scenario covers inactive draft save/reopen/discard/promotion, activation
+failure after promotion, desired-versus-active labels, and the existing create/edit/toggle/copy/
+delete/conflict/recovery/audit outcomes.
+
 Pebble requires disposable local Docker fixture:
 
 ```bash

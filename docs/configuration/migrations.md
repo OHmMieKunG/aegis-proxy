@@ -51,14 +51,20 @@ No migration exposes token plaintext or stored password hashes.
 
 ## Typed Proxy Host store
 
-The internal Proxy Host desired-state file uses strict schema version 1. Unknown fields, future
-versions, zero generations, duplicate owner/object identities, duplicate domains, malformed typed
-objects, oversized state, symlinks, and broad file permissions fail opening the store. No automatic
-downgrade or repair is attempted. Administration opens the store at
+The internal Proxy Host file now uses strict schema version 2 with separate `objects` (applied
+desired state) and `drafts` (inactive working state). Schema version 1 loads additively: every
+existing record remains applied and the draft set is empty. The next successful Proxy Host or draft
+write publishes schema 2. Existing candidate binding schema numbers and hash inputs do not change,
+so active bindings remain valid without rewrite. Unknown fields, future versions, zero generations,
+duplicate owner/object identities, duplicate applied domains, malformed typed objects, oversized
+state, symlinks, and broad file permissions fail opening the store. No automatic downgrade or
+repair is attempted. Older binaries that only accept schema 1 cannot open schema 2; downgrade
+requires restoring a matching binary/state backup. Administration opens the store at
 `<state_dir>/admin/proxy-hosts.json`; corrupt or insecure state fails administration startup rather
-than being skipped. Read/create endpoints do not migrate or repair it. Process-local store epoch is
-concurrency state, is not serialized, and resets safely on restart because no in-flight request
-survives restart. A release migration command must exist before schema can change incompatibly.
+than being skipped. Read endpoints do not rewrite it. Process-local store epoch is concurrency
+state, is not serialized, and resets safely on restart because no in-flight request survives
+restart. Draft-local and applied generations remain durable and separate. A release migration
+command must exist before schema can change incompatibly.
 
 The internal Access Policy store follows the same no-repair rule at
 `<state_dir>/admin/access-policies.json`. Its schema version is one, IDs are globally unique,

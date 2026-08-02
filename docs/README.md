@@ -6,10 +6,23 @@
 - [`PLAN.md`](../PLAN.md): active roadmap and next work.
 - [`README.md`](../README.md): product overview and quick start.
 - [`SECURITY.md`](../SECURITY.md): private vulnerability reporting.
+- [NPMPlus product direction](product/npmplus-direction-reset.md): product definition, reuse/gap
+  analysis, object model, activation workflow, migration risks, and first implementation unit.
+- [NPMPlus compatibility matrix](product/npmplus-compatibility-matrix.md): workflow-level GUI,
+  API, runtime, migration, security, evidence, classification, and target-phase inventory.
 - [Phase 0–16 repository readiness audit](reviews/repository-readiness-phase-0-16.md): current
   implementation, runtime acceptance, and open gates.
 - [Phase 16 implementation candidate](reviews/phase-16-completion.md): browser/OIDC/UI scope,
   verification, and open production gates.
+- [Phase 16 Save-and-apply failure campaign](reviews/phase-16-save-apply-failure-campaign.md):
+  desired/candidate/active/audit/recovery boundary matrix, deterministic failpoints, and operator
+  outcomes.
+- [Phase 16 Proxy Host draft/application-state evidence](reviews/phase-16-proxy-host-drafts.md):
+  durable transition, CAS, migration, startup, provider-exclusion, and browser contract.
+- [Phase 16 independent-style security review](reviews/phase-16-independent-security-review.md),
+  [operator-usability review](reviews/phase-16-operator-usability-review.md), and
+  [final acceptance](reviews/phase-16-final-acceptance.md): final bounded findings, remediation,
+  traceability, and release conditions.
 - [Phase 15 Proxy Host compiler](reviews/phase-15-proxy-host-compiler.md): current high-level object
   compilation boundary and validation evidence.
 - [Phase 15 candidate preview](reviews/phase-15-candidate-preview.md): safe typed preview boundary
@@ -93,9 +106,11 @@
 - [Providers](architecture/providers.md)
 - [Middleware stages](configuration/middleware.md)
 - [Secret handling](security/secret-handling.md)
+- [React Router advisory disposition](security/react-router-advisory-disposition.md)
 - [Trusted proxies](security/trusted-proxies.md)
 - [Threat/control matrix](security/threat-control-matrix.md)
 - [ADRs](adr/)
+  - [ADR-0031: Proxy Host draft and application state](adr/0031-proxy-host-draft-application-state.md)
 
 ## Developers
 
@@ -115,5 +130,5 @@ traceability. Dated results are not current test results.
 [The 2026-07-22 repository documentation audit](history/validation/repository-documentation-audit-2026-07-22.md)
 is retained there as superseded evidence.
 
-The web-administration guide documents the implemented Phase 16 task workflows. Unsupported future
-automation remains documented only in the roadmap.
+The web-administration guide documents implemented browser behavior. Unsupported product workflows
+remain classified in the compatibility matrix and scheduled only in the roadmap.

@@ -24,6 +24,9 @@ const MAX_STATE_BYTES: usize = 64 * 1024;
 const MAX_SOURCE_BYTES: usize = 128;
 const STATE_SCHEMA_VERSION: u32 = 1;
 
+/// Revision source prefix whose suffix names the immutable typed provider base.
+pub const TYPED_PROVIDER_SOURCE_PREFIX: &str = "typed+providers:";
+
 static OWNED_STATE_DIRS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
 
 #[derive(Debug)]
@@ -120,6 +123,9 @@ pub enum RevisionError {
     /// Filesystem operation failed.
     #[error("revision storage I/O failed: {0}")]
     Io(#[from] std::io::Error),
+    /// Atomic publication completed but parent-directory durability is uncertain.
+    #[error("revision storage durability is indeterminate")]
+    Indeterminate(#[source] std::io::Error),
     /// Another process owns this state directory.
     #[error("revision state directory is already locked")]
     Locked,
@@ -281,18 +287,16 @@ impl RevisionStore {
             source: source.to_owned(),
             binding_hash: binding_hash.map(str::to_owned),
         };
-        write_new_synced(
+        write_immutable_atomic(
             &self.config_dir.join("revisions").join(format!("{id}.toml")),
             &canonical,
         )?;
         let metadata_bytes = serde_json::to_vec_pretty(&metadata)
             .map_err(|error| RevisionError::Serialization(error.to_string()))?;
-        write_new_synced(
+        write_immutable_atomic(
             &self.config_dir.join("metadata").join(format!("{id}.json")),
             &metadata_bytes,
         )?;
-        sync_directory(&self.config_dir.join("revisions"))?;
-        sync_directory(&self.config_dir.join("metadata"))?;
         Ok(metadata)
     }
 
@@ -430,6 +434,32 @@ impl RevisionStore {
             || !matches!(
                 journal.phase,
                 ActivationPhase::Intent | ActivationPhase::Probation
+            )
+        {
+            return Err(RevisionError::Conflict);
+        }
+        self.restore_previous(&journal)?;
+        let mut rolled_back = journal;
+        rolled_back.phase = ActivationPhase::RolledBack;
+        rolled_back.updated_unix_secs = unix_time()?;
+        self.write_journal(&rolled_back)?;
+        self.active()
+    }
+
+    /// Restore the previous revision after an indeterminate post-publication transition.
+    pub fn rollback_indeterminate_activation(
+        &self,
+        candidate_id: &str,
+    ) -> Result<Option<ActivePointer>, RevisionError> {
+        let _guard = self
+            .mutation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let journal = self.load_journal()?.ok_or(RevisionError::Conflict)?;
+        if journal.candidate.id != candidate_id
+            || !matches!(
+                journal.phase,
+                ActivationPhase::Intent | ActivationPhase::Probation | ActivationPhase::Committed
             )
         {
             return Err(RevisionError::Conflict);
@@ -581,9 +611,23 @@ impl RevisionStore {
         }
         let mut protected = HashSet::new();
         if let Some(pointer) = self.active()? {
+            let active_metadata = self.metadata(&pointer.active.id)?;
             protected.insert(pointer.active.id);
             if let Some(previous) = pointer.previous {
                 protected.insert(previous.id);
+            }
+            if let Some(base_id) = active_metadata
+                .source
+                .strip_prefix(TYPED_PROVIDER_SOURCE_PREFIX)
+            {
+                validate_revision_id(base_id)?;
+                let base = self.metadata(base_id)?;
+                if base.binding_hash != active_metadata.binding_hash {
+                    return Err(RevisionError::InvalidStored(
+                        "typed provider revision binding does not match its base".into(),
+                    ));
+                }
+                protected.insert(base_id.to_owned());
             }
         }
         if let Some(journal) = self.load_journal()? {
@@ -704,9 +748,32 @@ fn canonical_config(config: &Config) -> Result<Vec<u8>, RevisionError> {
 fn write_new_synced(path: &Path, bytes: &[u8]) -> Result<(), RevisionError> {
     let mut file = OpenOptions::new().create_new(true).write(true).open(path)?;
     secure_file_permissions(&file)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
+    if let Err(error) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+        drop(file);
+        let _ = fs::remove_file(path);
+        return Err(RevisionError::Io(error));
+    }
     Ok(())
+}
+
+fn write_immutable_atomic(path: &Path, bytes: &[u8]) -> Result<(), RevisionError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => return Err(RevisionError::Conflict),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    let temporary = temporary_path(path)?;
+    write_new_synced(&temporary, bytes)?;
+    if let Err(error) = rename_immutable(&temporary, path) {
+        let _ = fs::remove_file(&temporary);
+        return Err(error.into());
+    }
+    fs::remove_file(&temporary).map_err(RevisionError::Indeterminate)?;
+    sync_immutable_parent(
+        path.parent()
+            .ok_or_else(|| RevisionError::InvalidStored("state path has no parent".into()))?,
+    )
+    .map_err(RevisionError::Indeterminate)
 }
 
 fn read_bounded(path: &Path, maximum: usize) -> Result<Vec<u8>, RevisionError> {
@@ -752,20 +819,13 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), Revisio
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| RevisionError::InvalidStored("state path is not UTF-8".into()))?;
-    let temporary = parent.join(format!(
-        ".{file_name}.{}.{}.tmp",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|_| RevisionError::InvalidStored("system clock predates Unix epoch".into()))?
-            .as_nanos()
-    ));
+    let temporary = temporary_path(path)?;
     write_new_synced(&temporary, &bytes)?;
-    if let Err(error) = fs::rename(&temporary, path) {
+    if let Err(error) = rename_state(&temporary, path, file_name) {
         let _ = fs::remove_file(&temporary);
         return Err(RevisionError::Io(error));
     }
-    sync_directory(parent)
+    sync_state_parent(parent, file_name).map_err(RevisionError::Indeterminate)
 }
 
 fn remove_synced(path: &Path) -> Result<(), RevisionError> {
@@ -773,7 +833,8 @@ fn remove_synced(path: &Path) -> Result<(), RevisionError> {
         Ok(()) => sync_directory(
             path.parent()
                 .ok_or_else(|| RevisionError::InvalidStored("state path has no parent".into()))?,
-        ),
+        )
+        .map_err(RevisionError::Indeterminate),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(RevisionError::Io(error)),
     }
@@ -807,14 +868,110 @@ fn secure_file_permissions(file: &File) -> Result<(), RevisionError> {
     Ok(())
 }
 
+fn temporary_path(path: &Path) -> Result<PathBuf, RevisionError> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| RevisionError::InvalidStored("state path has no parent".into()))?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| RevisionError::InvalidStored("state path is not UTF-8".into()))?;
+    Ok(parent.join(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| RevisionError::InvalidStored("system clock predates Unix epoch".into()))?
+            .as_nanos()
+    )))
+}
+
+#[cfg(not(test))]
+fn rename_immutable(temporary: &Path, path: &Path) -> Result<(), std::io::Error> {
+    fs::hard_link(temporary, path)
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_IMMUTABLE_RENAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FAIL_IMMUTABLE_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FAIL_STATE_SYNC: std::cell::RefCell<Option<&'static str>> = const { std::cell::RefCell::new(None) };
+    static FAIL_STATE_RENAME: std::cell::RefCell<Option<&'static str>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(not(test))]
+fn rename_state(temporary: &Path, path: &Path, _file_name: &str) -> Result<(), std::io::Error> {
+    fs::rename(temporary, path)
+}
+
+#[cfg(test)]
+fn rename_state(temporary: &Path, path: &Path, file_name: &str) -> Result<(), std::io::Error> {
+    let failed = FAIL_STATE_RENAME.with_borrow_mut(|target| {
+        if target.is_some_and(|target| target == file_name) {
+            target.take();
+            true
+        } else {
+            false
+        }
+    });
+    if failed {
+        return Err(std::io::Error::other("injected state rename failure"));
+    }
+    fs::rename(temporary, path)
+}
+
+#[cfg(test)]
+fn rename_immutable(temporary: &Path, path: &Path) -> Result<(), std::io::Error> {
+    if FAIL_IMMUTABLE_RENAME.replace(false) {
+        return Err(std::io::Error::other("injected immutable rename failure"));
+    }
+    fs::hard_link(temporary, path)
+}
+
+#[cfg(not(test))]
+fn sync_immutable_parent(path: &Path) -> Result<(), std::io::Error> {
+    sync_directory(path)
+}
+
+#[cfg(test)]
+fn sync_immutable_parent(path: &Path) -> Result<(), std::io::Error> {
+    if FAIL_IMMUTABLE_SYNC.replace(false) {
+        return Err(std::io::Error::other(
+            "injected immutable parent sync failure",
+        ));
+    }
+    sync_directory(path)
+}
+
+#[cfg(not(test))]
+fn sync_state_parent(path: &Path, _file_name: &str) -> Result<(), std::io::Error> {
+    sync_directory(path)
+}
+
+#[cfg(test)]
+fn sync_state_parent(path: &Path, file_name: &str) -> Result<(), std::io::Error> {
+    let failed = FAIL_STATE_SYNC.with_borrow_mut(|target| {
+        if target.is_some_and(|target| target == file_name) {
+            target.take();
+            true
+        } else {
+            false
+        }
+    });
+    if failed {
+        return Err(std::io::Error::other("injected state parent sync failure"));
+    }
+    sync_directory(path)
+}
+
 #[cfg(unix)]
-fn sync_directory(path: &Path) -> Result<(), RevisionError> {
+fn sync_directory(path: &Path) -> Result<(), std::io::Error> {
     File::open(path)?.sync_all()?;
     Ok(())
 }
 
 #[cfg(not(unix))]
-fn sync_directory(_path: &Path) -> Result<(), RevisionError> {
+fn sync_directory(_path: &Path) -> Result<(), std::io::Error> {
     Ok(())
 }
 
@@ -903,6 +1060,43 @@ mod tests {
             store.load(&metadata.id),
             Err(RevisionError::InvalidStored(_))
         ));
+        drop(store);
+        fs::remove_dir_all(state).expect("cleanup");
+    }
+
+    #[test]
+    fn immutable_candidate_failures_never_publish_an_activatable_partial() {
+        let state = temporary_state();
+        let store = RevisionStore::open(&state).expect("store");
+
+        FAIL_IMMUTABLE_RENAME.set(true);
+        assert!(matches!(
+            store.create_candidate(&config(), "rename-failure"),
+            Err(RevisionError::Io(_))
+        ));
+        assert!(store.list().expect("list after rename failure").is_empty());
+        let first = store
+            .create_candidate(&config(), "rename-retry")
+            .expect("retry after known failure");
+        assert_eq!(
+            store.load(&first.id).expect("complete first").listeners[0].bind,
+            config().listeners[0].bind
+        );
+
+        FAIL_IMMUTABLE_SYNC.set(true);
+        assert!(matches!(
+            store.create_candidate(&config_on(8081), "sync-uncertainty"),
+            Err(RevisionError::Indeterminate(_))
+        ));
+        assert_eq!(store.list().expect("complete candidates"), vec![first]);
+        let second = store
+            .create_candidate(&config_on(8081), "sync-retry")
+            .expect("retry incomplete candidate");
+        assert_eq!(
+            store.load(&second.id).expect("complete second").listeners[0].bind,
+            config_on(8081).listeners[0].bind
+        );
+
         drop(store);
         fs::remove_dir_all(state).expect("cleanup");
     }
@@ -1060,6 +1254,154 @@ mod tests {
     }
 
     #[test]
+    fn active_pointer_uncertainty_recovers_previous_on_restart() {
+        let state = temporary_state();
+        let store = RevisionStore::open(&state).expect("store");
+        let first = store
+            .create_candidate(&config_on(8080), "first")
+            .expect("first");
+        store
+            .begin_activation(&first.id, None)
+            .expect("first intent");
+        store.mark_probation(&first.id).expect("first probation");
+        store.commit_activation(&first.id).expect("first commit");
+        let second = store
+            .create_candidate(&config_on(8081), "second")
+            .expect("second");
+
+        FAIL_STATE_SYNC.with_borrow_mut(|target| *target = Some("active.json"));
+        assert!(matches!(
+            store.begin_activation(&second.id, Some(&first.id)),
+            Err(RevisionError::Indeterminate(_))
+        ));
+        assert_eq!(
+            store
+                .active()
+                .expect("visible pointer")
+                .expect("active")
+                .active
+                .id,
+            second.id
+        );
+        drop(store);
+
+        let reopened = RevisionStore::open(&state).expect("reopen");
+        assert_eq!(
+            reopened
+                .recover_incomplete()
+                .expect("recover")
+                .expect("active")
+                .active
+                .id,
+            first.id
+        );
+        assert_eq!(
+            reopened
+                .load_journal()
+                .expect("journal")
+                .expect("journal")
+                .phase,
+            ActivationPhase::RolledBack
+        );
+        drop(reopened);
+        fs::remove_dir_all(state).expect("cleanup");
+    }
+
+    #[test]
+    fn active_pointer_prepublication_failure_is_known_and_retryable() {
+        let state = temporary_state();
+        let store = RevisionStore::open(&state).expect("store");
+        let first = store
+            .create_candidate(&config_on(8080), "first")
+            .expect("first");
+        store
+            .begin_activation(&first.id, None)
+            .expect("first intent");
+        store.mark_probation(&first.id).expect("first probation");
+        store.commit_activation(&first.id).expect("first commit");
+        let second = store
+            .create_candidate(&config_on(8081), "second")
+            .expect("second");
+
+        FAIL_STATE_RENAME.with_borrow_mut(|target| *target = Some("active.json"));
+        assert!(matches!(
+            store.begin_activation(&second.id, Some(&first.id)),
+            Err(RevisionError::Io(_))
+        ));
+        assert_eq!(
+            store.active().expect("pointer").expect("active").active.id,
+            first.id
+        );
+        store
+            .begin_activation(&second.id, Some(&first.id))
+            .expect("retry known failure");
+        store
+            .rollback_activation(&second.id)
+            .expect("rollback retry intent");
+
+        drop(store);
+        fs::remove_dir_all(state).expect("cleanup");
+    }
+
+    #[test]
+    fn post_publication_durability_uncertainty_can_restore_previous() {
+        let state = temporary_state();
+        let store = RevisionStore::open(&state).expect("store");
+        let first = store
+            .create_candidate(&config_on(8080), "first")
+            .expect("first");
+        store
+            .begin_activation(&first.id, None)
+            .expect("first intent");
+        store.mark_probation(&first.id).expect("first probation");
+        store.commit_activation(&first.id).expect("first commit");
+        let second = store
+            .create_candidate(&config_on(8081), "second")
+            .expect("second");
+        store
+            .begin_activation(&second.id, Some(&first.id))
+            .expect("second intent");
+        store.mark_probation(&second.id).expect("second probation");
+
+        FAIL_STATE_SYNC.with_borrow_mut(|target| *target = Some("activation.json"));
+        assert!(matches!(
+            store.commit_activation(&second.id),
+            Err(RevisionError::Indeterminate(_))
+        ));
+        assert_eq!(
+            store
+                .load_journal()
+                .expect("journal")
+                .expect("journal")
+                .phase,
+            ActivationPhase::Committed
+        );
+        assert_eq!(
+            store
+                .rollback_indeterminate_activation(&second.id)
+                .expect("durable rollback")
+                .expect("active")
+                .active
+                .id,
+            first.id
+        );
+        drop(store);
+
+        let reopened = RevisionStore::open(&state).expect("reopen");
+        assert_eq!(
+            reopened
+                .recover_incomplete()
+                .expect("recover")
+                .expect("active")
+                .active
+                .id,
+            first.id
+        );
+        drop(reopened);
+        fs::remove_dir_all(state).expect("cleanup");
+    }
+
+    #[test]
     fn restart_recovers_intent_written_before_pointer_switch() {
         let state = temporary_state();
         let store = RevisionStore::open(&state).expect("store");
@@ -1109,6 +1451,9 @@ mod tests {
             .expect("first intent");
         store.mark_probation(&first.id).expect("first probation");
         store.commit_activation(&first.id).expect("first commit");
+        let pending = store
+            .create_candidate(&config_on(8081), "persisted-not-activated")
+            .expect("pending candidate");
         drop(store);
 
         let reopened = RevisionStore::open(&state).expect("reopen");
@@ -1117,6 +1462,7 @@ mod tests {
             .expect("recovery")
             .expect("active");
         assert_eq!(recovered.active.id, first.id);
+        assert_ne!(recovered.active.id, pending.id);
         drop(reopened);
         fs::remove_dir_all(state).expect("cleanup");
     }
@@ -1224,6 +1570,69 @@ mod tests {
             Err(RevisionError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound
         ));
         assert_eq!(store.list().expect("retained revisions").len(), 73);
+        drop(store);
+        fs::remove_dir_all(state).expect("cleanup");
+    }
+
+    #[test]
+    fn retention_protects_typed_base_for_active_provider_binding() {
+        let state = temporary_state();
+        let store = RevisionStore::open(&state).expect("store");
+        let binding = "a".repeat(64);
+        let base = store
+            .create_bound_candidate(&config(), "typed", &binding)
+            .expect("base");
+        let source = format!("{TYPED_PROVIDER_SOURCE_PREFIX}{}", base.id);
+        let mut revisions = vec![base];
+        for poll_secs in 2..=73 {
+            let mut candidate = config();
+            candidate.runtime.config_poll_secs = poll_secs;
+            revisions.push(
+                store
+                    .create_bound_candidate(&candidate, &source, &binding)
+                    .expect("candidate"),
+            );
+        }
+        store
+            .begin_activation(&revisions[71].id, None)
+            .expect("first intent");
+        store
+            .mark_probation(&revisions[71].id)
+            .expect("first probation");
+        store
+            .commit_activation(&revisions[71].id)
+            .expect("first commit");
+        store
+            .begin_activation(&revisions[72].id, Some(&revisions[71].id))
+            .expect("second intent");
+        store
+            .mark_probation(&revisions[72].id)
+            .expect("second probation");
+        store
+            .commit_activation(&revisions[72].id)
+            .expect("second commit");
+        for revision in &revisions {
+            let mut aged = revision.clone();
+            aged.created_unix_secs = 0;
+            write_json_atomic(
+                &state
+                    .join("config/metadata")
+                    .join(format!("{}.json", revision.id)),
+                &aged,
+            )
+            .expect("age metadata");
+        }
+
+        let mut newest = config();
+        newest.runtime.config_poll_secs = 74;
+        store
+            .create_bound_candidate(&newest, &source, &binding)
+            .expect("trigger retention");
+        assert!(store.load(&revisions[0].id).is_ok());
+        assert!(matches!(
+            store.load(&revisions[1].id),
+            Err(RevisionError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound
+        ));
         drop(store);
         fs::remove_dir_all(state).expect("cleanup");
     }

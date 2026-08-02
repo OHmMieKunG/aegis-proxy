@@ -353,6 +353,90 @@ paths:
             application/json:
               schema: {$ref: "#/components/schemas/ProxyHostDelete"}
         default: {$ref: "#/components/responses/Error"}
+  /v1/proxy-host-drafts:
+    get:
+      operationId: listProxyHostDrafts
+      responses:
+        "200":
+          description: Stable inactive Proxy Host drafts owned by authenticated principal
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 4096
+                items: {$ref: "#/components/schemas/StoredProxyHostDraft"}
+        default: {$ref: "#/components/responses/Error"}
+    post:
+      operationId: createProxyHostDraft
+      parameters: [{$ref: "#/components/parameters/AppliedGeneration"}]
+      requestBody: {$ref: "#/components/requestBodies/ProxyHostObject"}
+      responses:
+        "201":
+          description: Inactive draft created without compilation or activation
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ProxyHostDraftResponse"}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/proxy-host-drafts/{id}:
+    get:
+      operationId: getProxyHostDraft
+      parameters: [{$ref: "#/components/parameters/TypedObjectId"}]
+      responses:
+        "200":
+          description: Owned inactive Proxy Host draft
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/StoredProxyHostDraft"}
+        default: {$ref: "#/components/responses/Error"}
+    put:
+      operationId: updateProxyHostDraft
+      parameters:
+        - {$ref: "#/components/parameters/TypedObjectId"}
+        - {$ref: "#/components/parameters/DraftGeneration"}
+      requestBody: {$ref: "#/components/requestBodies/ProxyHostObject"}
+      responses:
+        "200":
+          description: Exact inactive draft generation replaced without compilation or activation
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ProxyHostDraftResponse"}
+        default: {$ref: "#/components/responses/Error"}
+    delete:
+      operationId: discardProxyHostDraft
+      parameters:
+        - {$ref: "#/components/parameters/TypedObjectId"}
+        - {$ref: "#/components/parameters/DraftGeneration"}
+      responses:
+        "200":
+          description: Exact inactive draft discarded without changing desired or active state
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ProxyHostDraftResponse"}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/proxy-host-drafts/{id}/promote:
+    post:
+      operationId: promoteProxyHostDraft
+      parameters:
+        - {$ref: "#/components/parameters/TypedObjectId"}
+        - {$ref: "#/components/parameters/IfMatch"}
+        - {$ref: "#/components/parameters/DraftGeneration"}
+      responses:
+        "200":
+          description: Exact draft promoted to desired state and immutable non-active candidate created
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ProxyHostCreate"}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/proxy-hosts/application-state:
+    get:
+      operationId: getProxyHostApplicationState
+      responses:
+        "200":
+          description: Owner-scoped desired, draft, and exact active state comparison
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ProxyHostApplicationState"}
+        default: {$ref: "#/components/responses/Error"}
   /v1/proxy-hosts/validate:
     post:
       operationId: validateProxyHost
@@ -861,6 +945,16 @@ components:
       in: header
       required: true
       schema: {type: integer, minimum: 1}
+    AppliedGeneration:
+      name: X-Aegis-Object-Generation
+      in: header
+      required: false
+      schema: {type: integer, minimum: 1}
+    DraftGeneration:
+      name: X-Aegis-Draft-Generation
+      in: header
+      required: true
+      schema: {type: integer, minimum: 1}
     AfterSequence:
       name: after_sequence
       in: query
@@ -1019,6 +1113,45 @@ components:
       properties:
         generation: {type: integer, minimum: 1}
         object: {$ref: "#/components/schemas/ProxyHostObject"}
+    StoredProxyHostDraft:
+      type: object
+      additionalProperties: false
+      required: [generation, base_generation, object]
+      properties:
+        generation: {type: integer, minimum: 1}
+        base_generation:
+          oneOf:
+            - {type: integer, minimum: 1}
+            - {type: "null"}
+        object: {$ref: "#/components/schemas/ProxyHostObject"}
+    ProxyHostDraftResponse:
+      type: object
+      additionalProperties: false
+      required: [draft]
+      properties:
+        draft: {$ref: "#/components/schemas/StoredProxyHostDraft"}
+    ProxyHostApplicationState:
+      type: object
+      additionalProperties: false
+      required: [active_revision, recovery_required, active_state_known, objects]
+      properties:
+        active_revision: {type: string}
+        recovery_required: {type: boolean}
+        active_state_known: {type: boolean}
+        objects:
+          type: array
+          maxItems: 12288
+          items: {$ref: "#/components/schemas/ProxyHostApplicationEntry"}
+    ProxyHostApplicationEntry:
+      type: object
+      additionalProperties: false
+      required: [object_id, desired, draft, active, desired_matches_active]
+      properties:
+        object_id: {$ref: "#/components/schemas/ObjectId"}
+        desired: {type: boolean}
+        draft: {type: boolean}
+        active: {type: boolean}
+        desired_matches_active: {type: boolean}
     AccessPolicyObject:
       type: object
       additionalProperties: false

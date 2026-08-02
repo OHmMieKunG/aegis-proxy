@@ -189,6 +189,39 @@ allow = ["127.0.0.1/32"]
         response
     }
 
+    fn raw_draft_request(
+        socket: &str,
+        method: &str,
+        path: &str,
+        expected_revision: Option<&str>,
+        draft_generation: u64,
+        token: Option<&str>,
+        body: Option<&str>,
+    ) -> String {
+        let mut stream = UnixStream::connect(socket).expect("connect admin socket");
+        let authorization = token
+            .map(|token| format!("Authorization: Bearer {token}\r\n"))
+            .unwrap_or_default();
+        let if_match = expected_revision
+            .map(|revision| format!("If-Match: \"{revision}\"\r\n"))
+            .unwrap_or_default();
+        let body = body.unwrap_or_default();
+        let content_type = if body.is_empty() {
+            ""
+        } else {
+            "Content-Type: application/json\r\n"
+        };
+        write!(
+            stream,
+            "{method} {path} HTTP/1.1\r\nHost: localhost\r\n{authorization}{if_match}X-Aegis-Draft-Generation: {draft_generation}\r\n{content_type}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .expect("write request");
+        let mut response = String::new();
+        stream.read_to_string(&mut response).expect("read response");
+        response
+    }
+
     #[test]
     fn private_cli_enforces_cas_rbac_token_and_audit_contracts() {
         let root = root();
@@ -203,7 +236,7 @@ allow = ["127.0.0.1/32"]
         fs::set_permissions(&admin_state, fs::Permissions::from_mode(0o700))
             .expect("admin state mode");
         let proxy_host_store = serde_json::json!({
-            "schema_version": 1,
+            "schema_version": 2,
             "objects": [
                 {
                     "generation": 3,
@@ -230,6 +263,59 @@ allow = ["127.0.0.1/32"]
                             "domain": "other.example.test",
                             "forward_host": "127.0.0.1",
                             "forward_port": 9002,
+                            "forward_protocol": "http",
+                            "automatic_https": "disabled",
+                            "access_policy_ref": null,
+                            "enabled": false
+                        }
+                    }
+                }
+            ],
+            "drafts": [
+                {
+                    "generation": 2,
+                    "base_generation": 3,
+                    "object": {
+                        "api_version": "v1",
+                        "metadata": {"id": "stored-cli", "owner_id": owner.clone()},
+                        "spec": {
+                            "domain": "stored-draft.example.test",
+                            "forward_host": "127.0.0.1",
+                            "forward_port": 9101,
+                            "forward_protocol": "http",
+                            "automatic_https": "disabled",
+                            "access_policy_ref": null,
+                            "enabled": false
+                        }
+                    }
+                },
+                {
+                    "generation": 1,
+                    "base_generation": null,
+                    "object": {
+                        "api_version": "v1",
+                        "metadata": {"id": "other-draft", "owner_id": "other"},
+                        "spec": {
+                            "domain": "other-draft.example.test",
+                            "forward_host": "127.0.0.1",
+                            "forward_port": 9102,
+                            "forward_protocol": "http",
+                            "automatic_https": "disabled",
+                            "access_policy_ref": null,
+                            "enabled": false
+                        }
+                    }
+                },
+                {
+                    "generation": 1,
+                    "base_generation": null,
+                    "object": {
+                        "api_version": "v1",
+                        "metadata": {"id": "provider-draft", "owner_id": "provider-nodes"},
+                        "spec": {
+                            "domain": "provider-draft.example.test",
+                            "forward_host": "127.0.0.1",
+                            "forward_port": 9103,
                             "forward_protocol": "http",
                             "automatic_https": "disabled",
                             "access_policy_ref": null,
@@ -432,6 +518,80 @@ allow = ["127.0.0.1/32"]
         assert_eq!(typed_get_json["generation"], 3);
 
         let expected = active_revision(&state);
+        for (id, object) in [
+            ("other-draft", &proxy_host_store["drafts"][1]["object"]),
+            ("provider-draft", &proxy_host_store["drafts"][2]["object"]),
+        ] {
+            assert!(
+                raw_get(socket, &format!("/v1/proxy-host-drafts/{id}"))
+                    .starts_with("HTTP/1.1 404 "),
+                "cross-owner draft read exposed {id}"
+            );
+            let body = serde_json::to_string(object).expect("draft object JSON");
+            assert!(
+                raw_draft_request(
+                    socket,
+                    "PUT",
+                    &format!("/v1/proxy-host-drafts/{id}"),
+                    None,
+                    1,
+                    None,
+                    Some(&body),
+                )
+                .starts_with("HTTP/1.1 403 "),
+                "cross-owner draft update allowed {id}"
+            );
+            assert!(
+                raw_draft_request(
+                    socket,
+                    "DELETE",
+                    &format!("/v1/proxy-host-drafts/{id}"),
+                    None,
+                    1,
+                    None,
+                    None,
+                )
+                .starts_with("HTTP/1.1 409 "),
+                "cross-owner draft discard allowed {id}"
+            );
+            assert!(
+                raw_draft_request(
+                    socket,
+                    "POST",
+                    &format!("/v1/proxy-host-drafts/{id}/promote"),
+                    Some(&expected),
+                    1,
+                    None,
+                    None,
+                )
+                .starts_with("HTTP/1.1 409 "),
+                "cross-owner draft promotion allowed {id}"
+            );
+        }
+        assert!(
+            raw_draft_request(
+                socket,
+                "DELETE",
+                "/v1/proxy-host-drafts/stored-cli",
+                None,
+                1,
+                None,
+                None,
+            )
+            .starts_with("HTTP/1.1 409 ")
+        );
+        assert!(
+            raw_draft_request(
+                socket,
+                "POST",
+                "/v1/proxy-host-drafts/stored-cli/promote",
+                Some(&expected),
+                1,
+                None,
+                None,
+            )
+            .starts_with("HTTP/1.1 409 ")
+        );
         for (command, object) in [
             (
                 "stream-host",
@@ -924,6 +1084,43 @@ allow = ["127.0.0.1/32"]
         fs::write(&token_file, plaintext).expect("token file");
         fs::set_permissions(&token_file, fs::Permissions::from_mode(0o600)).expect("token mode");
         let token_ref = format!("file://{}", token_file.display());
+        assert!(
+            raw_draft_request(
+                socket,
+                "GET",
+                "/v1/proxy-host-drafts/stored-cli",
+                None,
+                2,
+                Some(plaintext),
+                None,
+            )
+            .starts_with("HTTP/1.1 200 ")
+        );
+        let owned_draft = serde_json::to_string(&proxy_host_store["drafts"][0]["object"])
+            .expect("owned draft JSON");
+        for (method, path, body) in [
+            (
+                "PUT",
+                "/v1/proxy-host-drafts/stored-cli",
+                Some(owned_draft.as_str()),
+            ),
+            ("DELETE", "/v1/proxy-host-drafts/stored-cli", None),
+            ("POST", "/v1/proxy-host-drafts/stored-cli/promote", None),
+        ] {
+            let response = raw_draft_request(
+                socket,
+                method,
+                path,
+                (method == "POST").then_some(current.as_str()),
+                2,
+                Some(plaintext),
+                body,
+            );
+            assert!(
+                response.starts_with("HTTP/1.1 403 "),
+                "scope-limited draft {method} was not denied: {response}"
+            );
+        }
         let policy_revisions_before = fs::read_dir(state.join("config/revisions"))
             .expect("revision directory")
             .count();

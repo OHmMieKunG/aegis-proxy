@@ -360,6 +360,70 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/proxy-host-drafts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listProxyHostDrafts"];
+        put?: never;
+        post: operations["createProxyHostDraft"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/proxy-host-drafts/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getProxyHostDraft"];
+        put: operations["updateProxyHostDraft"];
+        post?: never;
+        delete: operations["discardProxyHostDraft"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/proxy-host-drafts/{id}/promote": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["promoteProxyHostDraft"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/proxy-hosts/application-state": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getProxyHostApplicationState"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/proxy-hosts/validate": {
         parameters: {
             query?: never;
@@ -1025,6 +1089,27 @@ export interface components {
             generation: number;
             object: components["schemas"]["ProxyHostObject"];
         };
+        StoredProxyHostDraft: {
+            generation: number;
+            base_generation: number | null;
+            object: components["schemas"]["ProxyHostObject"];
+        };
+        ProxyHostDraftResponse: {
+            draft: components["schemas"]["StoredProxyHostDraft"];
+        };
+        ProxyHostApplicationState: {
+            active_revision: string;
+            recovery_required: boolean;
+            active_state_known: boolean;
+            objects: components["schemas"]["ProxyHostApplicationEntry"][];
+        };
+        ProxyHostApplicationEntry: {
+            object_id: components["schemas"]["ObjectId"];
+            desired: boolean;
+            draft: boolean;
+            active: boolean;
+            desired_matches_active: boolean;
+        };
         AccessPolicyObject: {
             /** @constant */
             api_version: "v1";
@@ -1243,6 +1328,8 @@ export interface components {
         ObjectId: string;
         TypedObjectId: components["schemas"]["ObjectId"];
         ObjectGeneration: number;
+        AppliedGeneration: number;
+        DraftGeneration: number;
         AfterSequence: number;
         Limit: number;
         Origin: string;
@@ -1938,6 +2025,170 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProxyHostDelete"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    listProxyHostDrafts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Stable inactive Proxy Host drafts owned by authenticated principal */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StoredProxyHostDraft"][];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    createProxyHostDraft: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Aegis-Object-Generation"?: components["parameters"]["AppliedGeneration"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: components["requestBodies"]["ProxyHostObject"];
+        responses: {
+            /** @description Inactive draft created without compilation or activation */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProxyHostDraftResponse"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getProxyHostDraft: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["TypedObjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Owned inactive Proxy Host draft */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StoredProxyHostDraft"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    updateProxyHostDraft: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Aegis-Draft-Generation": components["parameters"]["DraftGeneration"];
+            };
+            path: {
+                id: components["parameters"]["TypedObjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody: components["requestBodies"]["ProxyHostObject"];
+        responses: {
+            /** @description Exact inactive draft generation replaced without compilation or activation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProxyHostDraftResponse"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    discardProxyHostDraft: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Aegis-Draft-Generation": components["parameters"]["DraftGeneration"];
+            };
+            path: {
+                id: components["parameters"]["TypedObjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Exact inactive draft discarded without changing desired or active state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProxyHostDraftResponse"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    promoteProxyHostDraft: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": components["parameters"]["IfMatch"];
+                "X-Aegis-Draft-Generation": components["parameters"]["DraftGeneration"];
+            };
+            path: {
+                id: components["parameters"]["TypedObjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Exact draft promoted to desired state and immutable non-active candidate created */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProxyHostCreate"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getProxyHostApplicationState: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Owner-scoped desired, draft, and exact active state comparison */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProxyHostApplicationState"];
                 };
             };
             default: components["responses"]["Error"];

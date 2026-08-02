@@ -94,6 +94,24 @@ pub fn reconcile_startup(
     proxy_hosts
         .reconcile_candidates(&retained)
         .map_err(|error| failed("typed candidate reconciliation", error))?;
+    if let Some(active_revision) = active_revision.filter(|_| active_is_typed) {
+        let metadata = revisions
+            .metadata(active_revision)
+            .map_err(|error| failed("active typed revision", error))?;
+        let binding_hash = metadata.binding_hash.ok_or_else(|| {
+            StartupReconcileError("active typed revision: binding is missing".into())
+        })?;
+        proxy_hosts
+            .load_candidate(active_revision, &binding_hash)
+            .map_err(|error| failed("active typed binding", error))?;
+        let config = revisions
+            .load(active_revision)
+            .map_err(|error| failed("active typed configuration", error))?;
+        return Ok(Some(ReconciledStartup {
+            config,
+            revision_id: active_revision.to_owned(),
+        }));
+    }
 
     let access_policies = AccessPolicyStore::open(state_dir.join("admin/access-policies.json"))
         .map_err(|error| failed("Access Policy store", error))?;
@@ -273,10 +291,10 @@ mod tests {
         config
     }
 
-    fn proxy(domain: &str) -> ApiObject<ProxyHostSpec> {
+    fn proxy(id: &str, domain: &str) -> ApiObject<ProxyHostSpec> {
         serde_json::from_value(serde_json::json!({
             "api_version": "v1",
-            "metadata": {"id": "restart-host", "owner_id": "alice"},
+            "metadata": {"id": id, "owner_id": "alice"},
             "spec": {
                 "domain": domain,
                 "forward_host": "127.0.0.1",
@@ -296,7 +314,7 @@ mod tests {
         let config = base(&root);
         ProxyHostStore::open(root.join("admin/proxy-hosts.json"))
             .expect("store")
-            .create(proxy("restart.example.test"))
+            .create(proxy("restart-host", "restart.example.test"))
             .expect("create");
 
         let first = reconcile_startup(&config)
@@ -332,7 +350,7 @@ mod tests {
         let config = base(&root);
         ProxyHostStore::open(root.join("admin/proxy-hosts.json"))
             .expect("store")
-            .create(proxy("example.test"))
+            .create(proxy("conflict-host", "example.test"))
             .expect("create");
 
         let error = reconcile_startup(&config).expect_err("domain conflict");
@@ -340,6 +358,82 @@ mod tests {
         let revisions = RevisionStore::open(&root).expect("revisions");
         assert!(revisions.active().expect("active pointer").is_none());
         drop(revisions);
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn resumes_exact_active_typed_revision_without_applying_newer_desired_or_draft() {
+        let root = temporary_directory("active-not-draft");
+        let config = base(&root);
+        let store = ProxyHostStore::open(root.join("admin/proxy-hosts.json")).expect("store");
+        store
+            .create(proxy("active-host", "active.example.test"))
+            .expect("create active object");
+        store
+            .create(proxy("deleted-host", "deleted.example.test"))
+            .expect("create object later deleted");
+        drop(store);
+        let first = reconcile_startup(&config)
+            .expect("first reconcile")
+            .expect("typed startup");
+        let revisions = RevisionStore::open(&root).expect("revisions");
+        revisions
+            .begin_activation(first.revision_id(), None)
+            .expect("begin activation");
+        revisions
+            .mark_probation(first.revision_id())
+            .expect("mark probation");
+        revisions
+            .commit_activation(first.revision_id())
+            .expect("commit activation");
+        drop(revisions);
+
+        let store = ProxyHostStore::open(root.join("admin/proxy-hosts.json")).expect("store");
+        let owner: crate::ObjectId = "alice".parse().expect("owner");
+        let active_id: crate::ObjectId = "active-host".parse().expect("active id");
+        let deleted_id: crate::ObjectId = "deleted-host".parse().expect("deleted id");
+        let mut disabled = store.get(&owner, &active_id).expect("active object").object;
+        disabled.spec.enabled = false;
+        store
+            .update(disabled, 1)
+            .expect("persist disabled desired state");
+        store
+            .delete(&owner, &deleted_id, 1)
+            .expect("persist deleted desired state");
+        store
+            .create_draft(proxy("draft-host", "draft.example.test"), None)
+            .expect("create inactive draft");
+        drop(store);
+        let resumed = reconcile_startup(&config)
+            .expect("restart reconcile")
+            .expect("typed startup");
+
+        assert_eq!(resumed.revision_id(), first.revision_id());
+        assert!(
+            resumed
+                .config()
+                .routes
+                .iter()
+                .any(|route| route.hosts == ["active.example.test"])
+        );
+        assert!(
+            resumed
+                .config()
+                .routes
+                .iter()
+                .any(|route| route.hosts == ["deleted.example.test"])
+        );
+        assert!(
+            !resumed
+                .config()
+                .routes
+                .iter()
+                .any(|route| route.hosts == ["draft.example.test"])
+        );
+        let store =
+            ProxyHostStore::open(root.join("admin/proxy-hosts.json")).expect("reopen store");
+        assert_eq!(store.list_drafts(&owner).len(), 1);
+        assert_eq!(store.snapshot().objects().len(), 1);
         fs::remove_dir_all(root).expect("cleanup");
     }
 }

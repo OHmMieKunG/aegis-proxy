@@ -15,6 +15,9 @@ use sha2::Sha256;
 use thiserror::Error;
 use zeroize::Zeroizing;
 
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
+
 const MIN_KEY_BYTES: usize = 32;
 const MAX_KEY_BYTES: usize = 64;
 const MAX_AUDIT_BYTES: u64 = 64 * 1024 * 1024;
@@ -31,6 +34,9 @@ pub enum AuditError {
     /// Audit filesystem operation failed.
     #[error("audit storage I/O failed: {0}")]
     Io(#[from] std::io::Error),
+    /// An append began but its durable completion could not be confirmed.
+    #[error("audit append durability is indeterminate")]
+    Indeterminate(#[source] std::io::Error),
     /// Audit key is outside the approved bound.
     #[error("audit key must contain 32 to 64 bytes")]
     InvalidKey,
@@ -179,6 +185,8 @@ pub struct AuditLog {
     path: PathBuf,
     key: Zeroizing<Vec<u8>>,
     state: Mutex<AuditState>,
+    #[cfg(test)]
+    fail_next_sync: AtomicBool,
 }
 
 impl fmt::Debug for AuditLog {
@@ -223,6 +231,8 @@ impl AuditLog {
                 bytes,
                 failed: false,
             }),
+            #[cfg(test)]
+            fail_next_sync: AtomicBool::new(false),
         })
     }
 
@@ -276,10 +286,20 @@ impl AuditLog {
             .file
             .write_all(&line)
             .and_then(|()| state.file.flush())
-            .and_then(|()| state.file.sync_data())
         {
             state.failed = true;
-            return Err(AuditError::Io(error));
+            return Err(AuditError::Indeterminate(error));
+        }
+        #[cfg(test)]
+        if self.fail_next_sync.swap(false, Ordering::AcqRel) {
+            state.failed = true;
+            return Err(AuditError::Indeterminate(std::io::Error::other(
+                "injected audit sync failure",
+            )));
+        }
+        if let Err(error) = state.file.sync_data() {
+            state.failed = true;
+            return Err(AuditError::Indeterminate(error));
         }
         state.bytes += line.len() as u64;
         state.sequence = sequence;
@@ -295,6 +315,11 @@ impl AuditLog {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut file = File::open(&self.path)?;
         read_records(&mut file, state.bytes, &self.key)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_sync(&self) {
+        self.fail_next_sync.store(true, Ordering::Release);
     }
 }
 
@@ -693,6 +718,29 @@ mod tests {
                 .expect("read")
                 .contains("private-audit-canary")
         );
+        fs::remove_dir_all(directory).expect("remove");
+    }
+
+    #[test]
+    fn indeterminate_append_gates_writer_and_restart_validates_visible_record() {
+        let directory = directory("indeterminate");
+        let path = directory.join("audit.jsonl");
+        let _ = fs::remove_dir_all(&directory);
+        let key = b"audit-test-key-is-at-least-32-bytes".to_vec();
+        let log = AuditLog::open(&path, key.clone()).expect("open");
+        log.fail_next_sync();
+        assert!(matches!(
+            log.append(event(AuditOutcome::Success)),
+            Err(AuditError::Indeterminate(_))
+        ));
+        assert!(matches!(
+            log.append(event(AuditOutcome::Failed)),
+            Err(AuditError::Unavailable)
+        ));
+        drop(log);
+
+        let reopened = AuditLog::open(&path, key).expect("validated reopen");
+        assert_eq!(reopened.records().expect("records").len(), 1);
         fs::remove_dir_all(directory).expect("remove");
     }
 }

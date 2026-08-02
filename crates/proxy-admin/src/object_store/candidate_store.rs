@@ -1,6 +1,36 @@
 use super::*;
 
 impl ProxyHostStore {
+    /// Copy one verified typed binding to a provider-derived configuration revision.
+    pub fn clone_candidate_binding(
+        &self,
+        source_revision: &str,
+        target_revision: &str,
+        expected_hash: &str,
+    ) -> Result<BoundProxyHostCandidate, ProxyHostStoreError> {
+        let source = self.load_candidate(source_revision, expected_hash)?;
+        if source.schema_version == CANDIDATE_SCHEMA_V2 {
+            self.bind_unified_candidate(
+                target_revision,
+                expected_hash,
+                UnifiedCandidateState {
+                    proxy_hosts: &source.objects,
+                    stream_hosts: &source.stream_hosts,
+                    discovery_sources: &source.discovery_sources,
+                    access_policies: &source.access_policies,
+                    certificates: &source.certificates,
+                },
+            )
+        } else {
+            self.bind_candidate_with_access_policies(
+                target_revision,
+                expected_hash,
+                &source.objects,
+                &source.access_policies,
+            )
+        }
+    }
+
     /// Return the canonical typed desired-state hash used by revision metadata.
     pub fn binding_hash(
         objects: &[ApiObject<ProxyHostSpec>],
@@ -118,8 +148,7 @@ impl ProxyHostStore {
         if bytes.len() as u64 > MAX_TRANSACTION_BYTES {
             return Err(ProxyHostStoreError::Limit);
         }
-        write_private_file(&path, &bytes)?;
-        File::open(&self.candidate_dir)?.sync_all()?;
+        self.persist_candidate_binding(&path, &bytes)?;
         Ok(BoundProxyHostCandidate {
             schema_version: CANDIDATE_SCHEMA_V1,
             binding_hash,
@@ -186,8 +215,7 @@ impl ProxyHostStore {
         if bytes.len() as u64 > MAX_TRANSACTION_BYTES {
             return Err(ProxyHostStoreError::Limit);
         }
-        write_private_file(&path, &bytes)?;
-        File::open(&self.candidate_dir)?.sync_all()?;
+        self.persist_candidate_binding(&path, &bytes)?;
         Ok(BoundProxyHostCandidate {
             schema_version: CANDIDATE_SCHEMA_V2,
             binding_hash,
@@ -339,4 +367,76 @@ impl ProxyHostStore {
     pub(super) fn candidate_path(&self, revision_id: &str) -> PathBuf {
         self.candidate_dir.join(format!("{revision_id}.json"))
     }
+
+    fn persist_candidate_binding(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+    ) -> Result<(), ProxyHostStoreError> {
+        let parent = self
+            .candidate_dir
+            .parent()
+            .ok_or(ProxyHostStoreError::Invalid)?;
+        let mut suffix = [0_u8; 8];
+        getrandom::fill(&mut suffix).map_err(|_| ProxyHostStoreError::Invalid)?;
+        let temporary = parent.join(format!(
+            ".proxy-host-candidate-{}.tmp",
+            URL_SAFE_NO_PAD.encode(suffix)
+        ));
+        if let Err(error) = write_private_file(&temporary, bytes) {
+            let _ = fs::remove_file(&temporary);
+            return Err(error.into());
+        }
+        if let Err(error) = rename_candidate_binding(&temporary, path) {
+            let _ = fs::remove_file(&temporary);
+            return Err(error.into());
+        }
+        let publication = sync_candidate_directory(&self.candidate_dir);
+        let cleanup = fs::remove_file(&temporary)
+            .and_then(|()| File::open(parent).and_then(|directory| directory.sync_all()));
+        publication.map_err(ProxyHostStoreError::CandidateIndeterminate)?;
+        cleanup.map_err(ProxyHostStoreError::CandidateIndeterminate)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_candidate_rename(&self) {
+        FAIL_CANDIDATE_RENAME.set(true);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_candidate_sync(&self) {
+        FAIL_CANDIDATE_SYNC.set(true);
+    }
+}
+
+#[cfg(not(test))]
+fn rename_candidate_binding(temporary: &Path, path: &Path) -> Result<(), std::io::Error> {
+    fs::hard_link(temporary, path)
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_CANDIDATE_RENAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FAIL_CANDIDATE_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn rename_candidate_binding(temporary: &Path, path: &Path) -> Result<(), std::io::Error> {
+    if FAIL_CANDIDATE_RENAME.replace(false) {
+        return Err(std::io::Error::other("injected candidate rename failure"));
+    }
+    fs::hard_link(temporary, path)
+}
+
+#[cfg(not(test))]
+fn sync_candidate_directory(path: &Path) -> Result<(), std::io::Error> {
+    File::open(path)?.sync_all()
+}
+
+#[cfg(test)]
+fn sync_candidate_directory(path: &Path) -> Result<(), std::io::Error> {
+    if FAIL_CANDIDATE_SYNC.replace(false) {
+        return Err(std::io::Error::other("injected candidate sync failure"));
+    }
+    File::open(path)?.sync_all()
 }

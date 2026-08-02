@@ -50,5 +50,16 @@ were not re-verified. See [`STATUS.md`](../STATUS.md).
 | thiserror | Typed internal errors | default | MIT/Apache-2.0 | Proc macro | manual impl | Keep small |
 
 `cargo tree -e features`, `cargo audit`, `cargo deny check`, source/license review, and transitive
-unsafe review are release gates. Phase 21 must make them reproducible in CI. No Git dependency is
+unsafe review are release gates. Phase 23 must make them reproducible in CI. No Git dependency is
 permitted.
+
+## Frontend dependency disposition
+
+The 2026-08-01 review keeps React/React DOM 18.3.1 and `react-router-dom`/`react-router` 7.18.2
+locked. The only upstream patch for GHSA-qwww-vcr4-c8h2 is `react-router` 8.3.0, which requires
+React 19.2.7 and has no matching `react-router-dom` release. The audit-suggested 7.11.0 downgrade is
+affected by the preceding CVE-2026-22030. No broad or unsafe dependency change was made. The
+[formal non-reachability disposition](security/react-router-advisory-disposition.md) and
+`npm --prefix ui run security:router` record the client-only import, build-graph, bundle, deployment,
+expiry, and independent-review evidence. The scanner finding remains present pending a compatible
+upgrade.

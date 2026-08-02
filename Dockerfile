@@ -9,6 +9,7 @@ RUN cd ui \
     && cp src/generated/api.ts /tmp/api.ts \
     && npm run generate \
     && cmp /tmp/api.ts src/generated/api.ts \
+    && npm run security:router \
     && npm run typecheck \
     && npm exec vite build
 

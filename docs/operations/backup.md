@@ -6,6 +6,10 @@ and `audit`. Symlinks, special files, traversal, broad source permissions,
 temporary locks, and the age identity are rejected or excluded. Existing
 backup destinations are never replaced.
 
+`admin/proxy-hosts.json` is captured as one file, so its applied Proxy Hosts and inactive drafts
+remain from the same atomic generation. Restore it only with a binary that supports its schema;
+restored drafts remain inactive and startup still resumes the exact active bound revision.
+
 ## Create and verify
 
 Configure one or more public X25519 recipients in
@@ -50,7 +54,8 @@ capacity has been measured.
 
 Local tests authenticate, decrypt, and checksum a small archive in under one
 second; this is not an RTO benchmark. Automated clean-host extraction and a
-topology-specific 60-minute RTO drill remain unverified. Phase 21 deployment
-drills must measure real archive size, transfer, identity access, binary
-installation, listener validation, traffic promotion, and rollback. Until then,
-the proposed 15-minute RPO and 60-minute RTO are objectives, not guarantees.
+topology-specific 60-minute RTO drill remain unverified. Phase 20 adds the
+supported staged restore workflow; Phase 23 deployment drills must measure real
+archive size, transfer, identity access, binary installation, listener
+validation, traffic promotion, and rollback. Until then, the proposed
+15-minute RPO and 60-minute RTO are objectives, not guarantees.

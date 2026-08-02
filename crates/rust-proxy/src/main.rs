@@ -818,11 +818,21 @@ async fn run(cli: Cli) -> Result<(), BoxError> {
                 signal.cancel();
             });
             let result = if let Some(startup) = reconciled {
-                aegisproxy_core::run_managed_revision_with_control_on_node(
+                let provider_state_dir = PathBuf::from(&startup_config.runtime.state_dir);
+                aegisproxy_core::run_managed_bound_revision_with_control_on_node(
                     startup_config,
                     startup.revision_id().to_owned(),
                     identity,
                     cancel,
+                    move |source_revision, target_revision, binding_hash| {
+                        aegisproxy_admin::clone_provider_candidate_binding(
+                            &provider_state_dir,
+                            source_revision,
+                            target_revision,
+                            binding_hash,
+                        )
+                        .map_err(|error| error.to_string())
+                    },
                     run_admin,
                 )
                 .await

@@ -7,8 +7,9 @@
     "dev": "vite",
     "generate": "openapi-typescript ../config/schema/admin-openapi.yaml -o src/generated/api.ts",
     "generate:check": "npm run generate && git diff --exit-code -- src/generated/api.ts",
+    "security:router": "node scripts/check-react-router-reachability.mjs",
     "typecheck": "tsc --noEmit",
-    "build": "npm run generate:check && tsc --noEmit && vite build",
+    "build": "npm run generate:check && npm run security:router && tsc --noEmit && vite build",
     "test:e2e": "playwright test"
   },
   "dependencies": {

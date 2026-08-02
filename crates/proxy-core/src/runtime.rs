@@ -4,7 +4,7 @@ use std::{
     future::Future,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
     },
     time::Instant,
 };
@@ -547,9 +547,12 @@ pub enum ActivationError {
     /// Structural probation rejected the published candidate.
     #[error("candidate failed structural probation")]
     Probation,
+    /// Durable activation state is uncertain before runtime publication.
+    #[error("durable activation state requires recovery; administrative mutations are disabled")]
+    RecoveryRequired,
     /// In-memory rollback succeeded but durable rollback failed.
     #[error("durable rollback failed; administrative mutations are disabled")]
-    RecoveryRequired,
+    RollbackFailed,
 }
 
 /// Successful atomic activation outcome.
@@ -568,8 +571,12 @@ pub struct ActivationCoordinator {
     runtime: RuntimeHandle,
     process_shutdown: CancellationToken,
     mutation: tokio::sync::Mutex<()>,
-    administration_ready: AtomicBool,
+    administration_state: AtomicU8,
 }
+
+const ADMINISTRATION_READY: u8 = 0;
+const ADMINISTRATION_RECOVERY_REQUIRED: u8 = 1;
+const ADMINISTRATION_ROLLBACK_FAILED: u8 = 2;
 
 impl ActivationCoordinator {
     /// Create a coordinator for one locked revision store and runtime.
@@ -583,7 +590,7 @@ impl ActivationCoordinator {
             runtime,
             process_shutdown,
             mutation: tokio::sync::Mutex::new(()),
-            administration_ready: AtomicBool::new(true),
+            administration_state: AtomicU8::new(ADMINISTRATION_READY),
         }
     }
 
@@ -608,7 +615,7 @@ impl ActivationCoordinator {
 
     /// Whether durable mutation remains safe after the latest activation.
     pub fn administration_ready(&self) -> bool {
-        self.administration_ready.load(Ordering::Acquire)
+        self.administration_state.load(Ordering::Acquire) == ADMINISTRATION_READY
     }
 
     async fn activate_with_probe<F>(
@@ -622,8 +629,12 @@ impl ActivationCoordinator {
     {
         let _guard = self.mutation.lock().await;
         let _runtime_guard = self.runtime.lock_mutation().await;
-        if !self.administration_ready() {
-            return Err(ActivationError::RecoveryRequired);
+        match self.administration_state.load(Ordering::Acquire) {
+            ADMINISTRATION_RECOVERY_REQUIRED => {
+                return Err(ActivationError::RecoveryRequired);
+            }
+            ADMINISTRATION_ROLLBACK_FAILED => return Err(ActivationError::RollbackFailed),
+            _ => {}
         }
         let candidate_id = candidate_id.to_owned();
         let expected_active = expected_active.map(str::to_owned);
@@ -647,13 +658,23 @@ impl ActivationCoordinator {
         .await?;
         drop(current);
         let revisions = Arc::clone(&self.revisions);
-        let journal = tokio::task::spawn_blocking({
+        let journal = match tokio::task::spawn_blocking({
             let candidate_id = candidate_id.clone();
             let expected_active = expected_active.clone();
             move || revisions.begin_activation(&candidate_id, expected_active.as_deref())
         })
         .await
-        .map_err(|error| ProxyError::Preparation(error.to_string()))??;
+        .map_err(|error| ProxyError::Preparation(error.to_string()))?
+        {
+            Ok(journal) => journal,
+            Err(RevisionError::Indeterminate(error)) => {
+                tracing::error!(%error, "durable activation state is indeterminate");
+                self.administration_state
+                    .store(ADMINISTRATION_RECOVERY_REQUIRED, Ordering::Release);
+                return Err(ActivationError::RecoveryRequired);
+            }
+            Err(error) => return Err(ActivationError::Revision(error)),
+        };
 
         let retired = self.runtime.publish(Arc::clone(&candidate));
         if let Err(error) = self.mark_probation(&candidate_id).await {
@@ -709,19 +730,31 @@ impl ActivationCoordinator {
         failed.stop_background().await;
         let revisions = Arc::clone(&self.revisions);
         let candidate_id = candidate_id.to_owned();
-        match tokio::task::spawn_blocking(move || revisions.rollback_activation(&candidate_id))
-            .await
+        let indeterminate = matches!(
+            &original,
+            ActivationError::Revision(RevisionError::Indeterminate(_))
+        );
+        match tokio::task::spawn_blocking(move || {
+            if indeterminate {
+                revisions.rollback_indeterminate_activation(&candidate_id)
+            } else {
+                revisions.rollback_activation(&candidate_id)
+            }
+        })
+        .await
         {
             Ok(Ok(_)) => original,
             Ok(Err(error)) => {
                 tracing::error!(%error, "durable activation rollback failed");
-                self.administration_ready.store(false, Ordering::Release);
-                ActivationError::RecoveryRequired
+                self.administration_state
+                    .store(ADMINISTRATION_ROLLBACK_FAILED, Ordering::Release);
+                ActivationError::RollbackFailed
             }
             Err(error) => {
                 tracing::error!(%error, "durable activation rollback task failed");
-                self.administration_ready.store(false, Ordering::Release);
-                ActivationError::RecoveryRequired
+                self.administration_state
+                    .store(ADMINISTRATION_ROLLBACK_FAILED, Ordering::Release);
+                ActivationError::RollbackFailed
             }
         }
     }

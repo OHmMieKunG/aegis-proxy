@@ -1,7 +1,7 @@
 # Threat-to-control verification matrix
 
-Evidence review date: 2026-07-29
-Documentation rebaseline: 2026-07-29
+Evidence review date: 2026-08-02
+Documentation rebaseline: 2026-08-02
 
 Status meanings: **verified-local** means named automated/local evidence passed; **deferred** means
 the feature is absent and guarded by scope; **external-gate** means local evidence exists but
@@ -15,7 +15,7 @@ independent review is still required. A status is not a vulnerability-free claim
 | Host-header/open-proxy misuse | Host/authority consistency; configured route/upstream only; CONNECT/absolute-form rejection | route authority tests; `rejects_absolute_form_connect_and_missing_host` | external-gate: protocol review pending |
 | SSRF | configured endpoints; CIDR policy at resolve/refresh/connect; pinned socket addresses | egress policy, raw-answer, rebind, custom resolver tests | external-gate: target-network review pending |
 | DNS rebinding/poisoning | Hickory TTLs; bounded/deduplicated answers; revalidation and stale deadline | DNS rebind, mixed answer, stale/NXDOMAIN/provider tests | verified-local; DNSSEC not claimed |
-| Provider task availability | static fallback; bounded provider state; fail-closed source validation | provider unit/failure tests; typed-startup source audit | external-gate: typed startup currently omits provider reconciliation and must be fixed before controlled GO |
+| Provider task availability | one supervisor-owned task in file/typed modes; static fallback; bounded provider state; fail-closed source validation and durable system-actor audit | provider unit/failure tests; typed-startup real-daemon restart and HMAC audit assertions | verified-local; external topology and provider-source abuse review remain release gates |
 | Path traversal/policy bypass | one ASCII canonical path; encoded separator/backslash/dot rejection | route property tests; encoded-separator integration test; path fuzz target | external-gate: corpus review pending |
 | TLS downgrade/weak policy | Rustls TLS 1.2/1.3 only; no plaintext/insecure verification fallback | TLS 1.2/1.3 matrix, ALPN, wrong-name/custom-CA tests | external-gate: independent TLS scanner pending |
 | Certificate/account-key theft | age-encrypted keys/accounts; restrictive files; redacted types | key/account round trips, permissions, wrong identity, backup tests | external-gate: host key custody review pending |
@@ -34,7 +34,7 @@ independent review is still required. A status is not a vulnerability-free claim
 | Compression bombs/side channels | no request decompression; streaming response compression; sensitive exclusions | compression eligibility, highly compressible and sensitive-response tests | verified-local; CPU profiling under target traffic pending |
 | FD/memory/CPU exhaustion | bounded accept/in-flight/upstream/background state; deployment limits | limit release, max-series, drain/cancellation tests | external-gate: host/container exhaustion campaign pending |
 | ReDoS | exact/prefix routing only; no runtime regex feature | config schema/source inventory | deferred; reopen before regex matchers |
-| Dependency supply chain | Rust and npm lockfiles; exact internal versions; registry-only sources; no Node production runtime or CDN assets | dependency review; source scan; current `npm audit`; Cargo audit/deny unavailable locally | external-gate: React Router RSC-mode high advisory remains in the locked SPA dependency; Rust scan tools unavailable |
+| Dependency supply chain | Rust and npm lockfiles; exact internal versions; registry-only sources; no Node production runtime or CDN assets | dependency review; source scan; current `npm audit`; [React Router import/module-graph disposition](react-router-advisory-disposition.md); production-image `security:router` gate; Cargo audit/deny unavailable locally | conditional: independent-style review accepts RSC-mode non-reachability under the disposition assumptions and expiry; scanner finding remains visible, external human review and Rust scan tools remain release gates |
 | Malicious container metadata/socket | no Docker provider; no Docker socket mount | ADR-0017/0020; compose/Dockerfile inspection | deferred; reopen before container discovery |
 | Unsafe defaults/privilege escalation | private admin Unix socket; non-root deploy; no implicit route; safe Rust | config defaults, admin permissions, deployment validation | external-gate: platform hardening review pending |
 | Container escape impact | non-root, read-only root, dropped caps, no-new-privileges, limits | compose/Dockerfile/systemd inspection; confinement examples | external-gate: image/host scanner and reviewer pending |

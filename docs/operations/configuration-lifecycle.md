@@ -14,7 +14,7 @@ Revision retention keeps every revision for at least 30 days and always keeps th
 rust-proxy run --config /etc/rust-proxy/proxy.toml
 ```
 
-Normal startup reads and validates the configured file before opening durable state. An invalid file exits nonzero. If durable typed Proxy Hosts, Stream Hosts, or Discovery Sources exist, startup recompiles their complete desired state over that file, creates or resumes a bound revision, and exits nonzero on any reconciliation error. It never silently starts from the file-only routes. After runtime preparation and listener binding succeed, the candidate revision and activation journal are committed before traffic is accepted.
+Normal startup reads and validates the configured file before opening durable state. An invalid file exits nonzero. If durable typed Proxy Hosts, Stream Hosts, or Discovery Sources exist, startup recompiles their complete applied desired state over that file, creates or resumes a bound revision, and exits nonzero on any reconciliation error. Intentional Proxy Host drafts are loaded and validated but excluded from this snapshot. When an exact active typed binding exists, startup resumes it rather than activating a newer desired object or draft. It never silently starts from the file-only routes. After runtime preparation and listener binding succeed, the candidate revision and activation journal are committed before traffic is accepted.
 
 Without durable typed state, the daemon polls the file by SHA-256 content hash at `runtime.config_poll_secs`. Unix `SIGHUP` triggers the same path immediately. Unchanged bytes are not reparsed. Invalid candidates, preparation failures, restart-only changes, and stale compare-and-swap attempts leave the active pointer and runtime unchanged. With durable typed state, the mounted file is the restart-time base and is not hot-reloaded; use the typed API for live changes and restart to apply a base-file edit.
 
@@ -48,6 +48,9 @@ Offline activation and rollback are intentionally absent. Mutation requires prep
 - Crash after pointer replacement or during probation: restart restores the previous revision.
 - Crash after committed journal replacement: restart verifies and retains the new revision.
 - Corrupt, oversized, unknown-field, hash-mismatched, or missing referenced state fails closed.
+- Proxy Host drafts survive restart but remain outside desired compilation, candidates, providers,
+  and active routing. A promoted desired state that failed activation remains pending and is not
+  changed back into a draft.
 - If in-memory rollback succeeds but durable rollback fails, traffic uses the old snapshot and further administrative mutation is disabled until restart/recovery.
 
 Automated tests cover same-hash concurrency, stale compare-and-swap, journal-before-pointer recovery, incomplete probation, committed restart, invalid live reload, explicit recovery, Unix SIGHUP activation, removed-endpoint idle connection eviction, active-work drain deadlines, and accepted requests returning either the old or new successful response during reload. The ext4 campaign is recorded in [dated crash-recovery evidence](../history/validation/phase-5-crash-recovery.md); physical power-loss guarantees still require testing on the deployment storage stack.

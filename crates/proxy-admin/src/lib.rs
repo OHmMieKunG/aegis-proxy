@@ -55,7 +55,7 @@ pub use discovery_source::{
 };
 pub use object_store::{
     BoundProxyHostCandidate, ProxyHostClaims, ProxyHostSnapshot, ProxyHostStore,
-    ProxyHostStoreError, StoredProxyHost, UnifiedCandidateState,
+    ProxyHostStoreError, StoredProxyHost, StoredProxyHostDraft, UnifiedCandidateState,
 };
 pub use preview::{
     CandidateActivation, GeneratedProxyHostPreview, ProxyHostCandidatePreview,
@@ -65,6 +65,18 @@ pub use proxy_host::{PreparedProxyHost, ProxyHostPreparationError, prepare_proxy
 pub use rbac::{Action, Role, TokenScopeError, TokenScopes};
 pub use server::{AdminServerError, WebAsset, WebAssetLoader, serve, serve_with_web_assets};
 pub use startup::{ReconciledStartup, StartupReconcileError, reconcile_startup};
+
+/// Copy a verified typed desired-state binding to a provider-derived revision.
+pub fn clone_provider_candidate_binding(
+    state_dir: impl AsRef<std::path::Path>,
+    source_revision: &str,
+    target_revision: &str,
+    expected_hash: &str,
+) -> Result<(), ProxyHostStoreError> {
+    ProxyHostStore::open(state_dir.as_ref().join("admin/proxy-hosts.json"))?
+        .clone_candidate_binding(source_revision, target_revision, expected_hash)
+        .map(|_| ())
+}
 pub use stream_host::{
     StoredStreamHost, StreamHostCompileError, StreamHostStore, StreamHostStoreError,
     compile_stream_hosts,

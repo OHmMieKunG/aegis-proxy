@@ -30,9 +30,8 @@ the Unix listener or data plane.
 
 At process startup, durable typed objects are compiled over the validated mounted TOML base and
 bound to an exact resumed or new revision before listeners start. The base is restart-only once
-typed state exists. Current working-tree limitation: that startup path does not start the file/DNS
-provider reconciliation task, so provider-backed groups remain on static fallback until the
-release-blocking runtime defect is fixed.
+typed state exists. The managed-runtime supervisor owns one file/DNS provider reconciliation task
+in file-managed and typed-startup modes; the optional TOML watcher is not its owner.
 
 Phase 15 now includes a library-only strict Proxy Host object and side-effect-free compiler. Caller
 RBAC supplies immutable owner, object, domain, policy, listener, certificate, and upstream-template
@@ -55,17 +54,36 @@ metadata exists. These validation and preview handlers expose no mutation, audit
 revision, or activation handle. They include immutable identity/domain claims from durable desired
 state, so a new object cannot silently replace a persisted object or domain.
 
-`ProxyHostStore` is a separate library boundary for desired state. It stores strict schema-v1 JSON
-under a caller-selected private path, limits state to 4,096 objects and 2 MiB, indexes by owner then
-object ID, rejects duplicate domains globally, and uses object-local monotonic generations for
-compare-and-swap update/delete. Stable ordered serialization is fsynced before atomic rename; an
-in-memory mutation is restored if persistence fails. Store has no compiler context, audit writer,
-revision service, activation coordinator, runtime handle, or network access. Administration opens
-it at `<state_dir>/admin/proxy-hosts.json`; `GET /v1/proxy-hosts` and
+`ProxyHostStore` is a separate library boundary for applied desired state and inactive drafts. Its
+strict schema-v2 private JSON has separate ordered `objects` and `drafts` namespaces, each bounded
+to 4,096 records within the existing 2 MiB file limit. Schema-v1 records load deterministically as
+applied with no drafts. Applied records reject duplicate domains globally and use object-local
+generations; drafts use independent generations plus the exact applied `base_generation`. Stable
+ordered serialization is fsynced before atomic rename; an
+in-memory mutation is restored when failure before rename proves the durable state is unchanged.
+If rename succeeds but the parent-directory sync fails, durability is indeterminate: the visible
+new state remains in memory, all mutation snapshots and create/update/delete operations fail with
+`recovery_required`, and no uncertain state is compiled or activated. Restart strictly rereads and
+validates the atomic file; a successful reopen establishes its generations and clears the
+process-local gate, while invalid or unreadable state fails startup and leaves mutation
+unavailable. Store has no compiler context, audit writer, revision service, activation coordinator,
+runtime handle, or network access. Administration opens it at
+`<state_dir>/admin/proxy-hosts.json`; `GET /v1/proxy-hosts` and
 `GET /v1/proxy-hosts/{id}` return only authenticated owner's records under `read_proxy_hosts`.
 Single-object responses carry generation ETags. Typed create/update/delete consume a complete stable
 snapshot, compile and validate post-mutation state, create an immutable revision, then use snapshot
 epoch as a store CAS. Update/delete also require exact object generation. None activates runtime.
+
+Draft list/create/read/update/discard routes expose only the authenticated owner's inactive records.
+Save draft performs no compilation, candidate creation, desired-epoch change, or activation.
+Promotion requires exact draft generation, base applied generation, desired epoch, owner, identity,
+domain, and active-revision CAS. It compiles and binds the proposed complete desired state before
+one atomic store publication replaces applied state and removes the draft. The existing activation
+endpoint then activates only that candidate. Promotion followed by failed activation is pending
+application, not a draft; last-known-good routing remains active. The owner-scoped application-state
+route compares desired records and drafts with the exact active binding without exposing candidate
+identifiers. Startup and providers consume only `snapshot().objects()`, so drafts survive restart
+but cannot enter canonical compilation or provider reconciliation. See [ADR-0031](../adr/0031-proxy-host-draft-application-state.md).
 
 `compile_proxy_hosts` is the non-persistent aggregate boundary needed before mutation. Caller passes
 current stored objects separately from complete desired objects. Only current identities reserve
@@ -92,7 +110,11 @@ configuration candidates remain unbound. Identical configuration with different 
 not deduplicated into one revision.
 The configuration revision store remains the retention authority. Admin startup and typed
 candidate creation reconcile the bounded snapshot directory against its retained metadata.
-Reconciliation validates every entry before deletion, preserves every retained matching binding,
+Candidate revisions and typed bindings publish complete fsynced temporary files through atomic
+no-replace links. Failure before publication is known unchanged; a failure after the immutable
+link is treated as durability uncertainty and the candidate is not returned as usable. A revision
+without complete metadata is not listed or activatable, while an exact visible immutable binding
+can only be recovered idempotently. Reconciliation validates every entry before deletion, preserves every retained matching binding,
 and removes only snapshots whose revision metadata is already absent. Tampering, unexpected entry
 types, and retained binding mismatches fail closed. The separate file transactions intentionally
 provide restart-safe eventual cleanup rather than claiming cross-directory atomicity.
@@ -152,6 +174,17 @@ existing activation coordinator. Missing, stale, orphaned, already-active, tampe
 candidates fail without publication. The compiler itself still has no activation or persistence
 capability. Operator activation stays disabled until candidates carry safe ownership and approval
 metadata.
+
+The activation coordinator writes journal intent and confirms the active-pointer directory sync
+before its infallible in-memory `ArcSwap` publication. An active-pointer post-rename uncertainty
+gates administration and startup restores the previous pointer from intent. Failures after runtime
+publication first republish the retired snapshot, then durably roll back. Post-publication journal
+uncertainty accepts the visibly committed phase only for that exact rollback; rollback failure has
+the distinct `rollback_failed` API result and keeps administration gated. Terminal audit failure
+does not undo an already committed runtime: mutation and activation success instead return
+`audit_failed_after_save` or `audit_failed_after_activation`, and the audit writer remains gated
+until restart validates its HMAC chain. The complete boundary contract is the
+[Phase 16 failure campaign](../reviews/phase-16-save-apply-failure-campaign.md).
 
 `POST /v1/config/typed-revisions/{id}/rollback` is the canonical typed rollback boundary. It
 requires Admin role, exact `rollback_typed_revision` token scope, and exact active-revision CAS. The target must

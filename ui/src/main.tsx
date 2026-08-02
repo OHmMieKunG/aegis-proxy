@@ -7,6 +7,7 @@ import {
   Dashboard,
   HealthPage,
   Logs,
+  ProxyHostEditor,
   ProxyHosts,
   ResourcePage,
   Revisions,
@@ -17,6 +18,8 @@ import {
   healthLoader,
   logsLoader,
   proxyHostAction,
+  proxyHostEditorAction,
+  proxyHostEditorLoader,
   proxyHostLoader,
   resourceLoader,
   revisionsLoader,
@@ -41,6 +44,24 @@ const router = createBrowserRouter([
         element: <ProxyHosts />,
         loader: proxyHostLoader,
         action: proxyHostAction,
+      },
+      {
+        path: "proxy-hosts/new",
+        element: <ProxyHostEditor />,
+        loader: proxyHostEditorLoader,
+        action: proxyHostEditorAction,
+      },
+      {
+        path: "proxy-hosts/:id/edit",
+        element: <ProxyHostEditor />,
+        loader: proxyHostEditorLoader,
+        action: proxyHostEditorAction,
+      },
+      {
+        path: "proxy-hosts/:id/duplicate",
+        element: <ProxyHostEditor />,
+        loader: proxyHostEditorLoader,
+        action: proxyHostEditorAction,
       },
       ...(["stream-hosts", "certificates", "access-policies", "users"] as const).map(
         (resource) => ({

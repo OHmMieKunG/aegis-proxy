@@ -1,6 +1,6 @@
 # AegisProxy verified status
 
-Verification date: 2026-07-29
+Verification date: 2026-08-01
 Branch: `feat/phase-16-gui-mvp`
 Verification basis: Phase 14 plus Phase 15 compiler `fa7913f`, preview service `d3de105`, typed diff
 `2617f0e`, API-token scopes `81bd500`, owned Proxy Host endpoints `00cfa32`, typed object store
@@ -19,8 +19,8 @@ content; activation and rollback revalidate current policy state (`20449a3`).
 Phase 16 adds browser OIDC sessions (`1b395ba`), durable setup identity binding (`7b0aa7a`), the
 embedded typed client shell (`eaf5025`), administration workflows (`ea499b8`), and browser
 regression coverage (`4ddef29`). Closed asset-cache and exact action allowlists are in `9205971`.
-The current working tree adds typed startup reconciliation and its focused, daemon, and Compose
-restart regressions; it is not yet an immutable reviewed candidate.
+HEAD `22c6e07` adds typed startup reconciliation and its focused, daemon, and Compose restart
+regressions; it is not yet an immutable reviewed release candidate.
 Typed certificate ownership and managed-HTTPS selection metadata (`edcb53b`) now have bounded
 private persistence, exact owner-scoped CRUD permissions, API/CLI operations, and separated runtime
 status and direct-renewal routes.
@@ -49,8 +49,26 @@ serialization or terminal audit, and shutdown drains those permits before the ad
 service exits. Token, backup, and restore JSON now passes exact action
 authorization, durable audit intent, and exact content-type validation before deserialization.
 User mutations preserve missing, invalid, stale, capacity, and unavailable error classes.
+The 2026-07-29 product reset audit inspected the product documents, ADRs, Phase 14–16 evidence,
+typed object contracts/stores, compiler/activation/startup paths, UI routes/client/browser tests,
+configuration/deployment/certificate/provider/backup documentation, and current upstream NPMPlus
+workflow baseline. That reset changed documentation only; the subsequent working-tree Phase 16 P0
+implements typed-startup provider reconciliation.
 
 Working tree at Phase 14 start: clean at `10aae8c`
+
+## Product direction
+
+AegisProxy now targets an
+[NPMPlus-compatible reverse-proxy-management product](docs/product/npmplus-direction-reset.md)
+with an independent Rust-native core. NPMPlus defines the primary terminology and ordinary host,
+certificate, access, and administration workflows. Caddy-style automatic HTTPS and Traefik-style
+providers are selective later additions. Generic gateway, ingress, service-mesh, and provider
+expansion is deferred until the agreed
+[compatibility baseline](docs/product/npmplus-compatibility-matrix.md) is complete.
+
+Compatibility is a workflow/outcome target, not Nginx configuration, database, private API,
+implementation, source-code, or pixel-level compatibility. Complete parity is not claimed.
 
 ## Release status
 
@@ -68,14 +86,29 @@ Keycloak import/profile configuration, standard OIDC callback parameters, quoted
 GUI's schema-2 activation route.
 
 Controlled-test GO remains withheld. Normal `run --config` startup now reconciles durable typed
-objects over the mounted restart-time TOML base, resumes or creates an immutable bound revision,
-and fails closed when the overlay is invalid. Focused reconciliation, real-daemon typed-route, and
-rebuilt Compose restart regressions pass for the manual Proxy Host path. Audit found that typed
-startup also disables the only file/DNS provider reconciliation task; provider-backed groups stay
-on static fallback and runtime provider status cannot advance. That P0, missing Proxy Host
-edit/disable/delete controls, and the incomplete failure campaign keep controlled-test GO closed.
-`npm audit --audit-level=high` still reports two high React Router RSC/server-mode findings;
-applicability is not independently dispositioned.
+objects over the mounted restart-time TOML base, resumes the exact active bound revision instead of
+a newer draft, and fails closed when the overlay is invalid. The managed runtime now owns exactly
+one provider reconciliation task in file-managed and typed modes. Typed Discovery Sources resume
+after restart through bound provider revisions and transactional activation while typed mode keeps
+TOML restart-only. Focused startup and real-daemon restart tests cover changed provider output,
+manual-object coexistence, inactive drafts, unchanged live TOML, and joined SIGTERM shutdown.
+The seven-field Proxy Host browser lifecycle now covers edit, enable, disable, duplicate, confirmed
+delete, stale conflict, saved-not-active activation failure, and persistence uncertainty without
+requiring candidate mechanics. A ProxyHostStore indeterminate post-rename result now gates all
+later mutations and compilation until restart validates the visible durable file. The bounded
+Save-and-apply failure campaign now distinguishes immutable candidate publication, active-pointer
+uncertainty, rollback failure, and terminal audit durability without losing or misreporting the
+last-known-good runtime. The working tree now adds schema-v2 inactive Proxy Host drafts with exact
+draft/base/applied CAS, deterministic schema-v1 migration, explicit application-state reads, and
+restart-safe Save draft/discard/promotion. Independent-style local security and usability review
+accepts the bounded Phase 16 scope with release conditions; external human signoff remains open.
+`npm audit --audit-level=high` still reports two high package entries for the one React Router RSC
+advisory GHSA-qwww-vcr4-c8h2. The only patched Router release requires React 19 and has no matching
+`react-router-dom` release; the audit-suggested downgrade is affected by the preceding related CVE.
+The [formal disposition](docs/security/react-router-advisory-disposition.md) classifies the affected
+RSC server path as unreachable in the static client-only SPA and adds a production import/module-
+graph gate. The scanner finding remains visible; local independent-style review accepts the
+disposition conditionally, while external human review remains required before release.
 
 ## Implemented
 
@@ -89,6 +122,10 @@ applicability is not independently dispositioned.
 - Typed startup reconciliation compiles durable Proxy Host, Stream Host, and Discovery Source
   desired state over the mounted restart-time base, resumes or creates an exact bound revision,
   and fails startup when reconciliation is invalid. Typed mode does not hot-reload that base.
+- One supervisor-owned provider coordinator runs in file-managed and typed-startup modes. Typed
+  provider revisions copy the exact immutable typed binding, use canonical validation and
+  transactional activation, preserve the active last-known-good runtime on failure, and resume
+  typed Discovery Sources after restart.
 - ACME HTTP-01, Cloudflare DNS-01, TLS-ALPN-01, wildcard DNS certificates, encrypted account/key
   state, bounded renewal, and prior working-certificate retention.
 - Fixed-stage middleware, Basic auth, ForwardAuth, IP policy, rate limiting, CORS, headers,
@@ -103,14 +140,16 @@ applicability is not independently dispositioned.
 
 ## Partial or experimental
 
-- ACME requires explicit low-level issuer/challenge policy; common automatic HTTPS is Phase 17.
+- ACME requires explicit low-level issuer/challenge policy; the product certificate lifecycle is
+  Phase 18.
 - SSE uses generic streaming and skips compression but lacks a focused protocol test.
-- Typed startup currently omits the provider reconciliation task. File and DNS providers therefore
-  remain on their static endpoints whenever typed desired state selects this startup mode. This is
-  a release-critical regression, not an approved operating mode.
-- Browser administration exposes the common Proxy Host create/deploy path, but Proxy Host
-  edit/disable/delete controls and task-specific forms for secondary typed resources remain
-  incomplete.
+- Browser administration exposes the complete seven-field Proxy Host create/edit/enable/disable/
+  duplicate/confirmed-delete Save-and-apply lifecycle. It reports stale conflicts, saved desired
+  state versus active runtime, and recovery-required persistence uncertainty without exposing
+  candidate or generation mechanics in the ordinary path. Durable inactive drafts can be created,
+  edited, discarded, or promoted through exact CAS; they survive restart outside compilation and
+  provider reconciliation. Multiple domains, locations, and task-specific forms for secondary
+  typed resources remain incomplete.
 - Phase 15 has a strict library-only `v1` envelope, deterministic Proxy Host compiler, safe
   side-effect-free typed preview, and bounded field-level diff. Existing primitives validate
   ownership, references, domains, conflicts, listener/certificate policy, generated configuration,
@@ -163,12 +202,36 @@ applicability is not independently dispositioned.
   and invalidates old dependent candidates rather than being pinned by consumers.
 - Preview returns redacted config, fingerprints, and activation class; a separate pure function
   produces the ordered typed diff. Neither can persist or activate candidates.
+- Typed object persistence is not fully uniform. `TypedStore`, `AccessPolicyStore`, and
+  `ProxyHostStore` preserve visible state and gate later writes after an indeterminate post-rename
+  directory-sync failure. Proxy Host mutation snapshots also fail closed so uncertain desired
+  state cannot be compiled or activated. `ProxyHostStore` still lacks the shared store's explicit
+  same-process path ownership registration; that narrower difference does not justify a broad
+  store rewrite.
+- `ProxyHostStore` file schema 2 separates applied records from inactive drafts in one atomic file.
+  Schema-1 files load all existing records as applied with an empty draft set; candidate binding
+  schemas and hashes remain unchanged. Draft generations are independent, promotion checks the
+  exact applied base and desired epoch, and the existing post-rename recovery gate blocks both
+  namespaces plus compilation on uncertainty.
+- Low-level TOML configuration uses schema version 1. Separately, deprecated typed snapshot schema
+  1 covers Proxy Hosts only, while unified snapshot schema 2 binds Proxy Hosts, Stream Hosts,
+  Discovery Sources, and exact Access Policy/Certificate dependencies.
+- The checked-in generated TypeScript client matches the current admin OpenAPI. Existing drift
+  validation remains the only generated-client source of truth.
+- The largest measured production module is approximately 1,230 lines, below the recorded
+  1,500-line rationale threshold. Module size alone does not justify a Phase 16 refactor.
 - Restore validates archives but does not extract or activate them.
 - Fleet operation uses external orchestration; no cluster or consensus exists.
 - Fuzzing has dated smoke evidence, not long campaigns. Reload benchmark is narrow and dated.
 
 ## Absent or deferred
 
+- Multiple Proxy Host domains, Proxy Locations, Redirection Hosts, Dead Hosts, typed advanced host
+  controls, and a browser retry-apply workflow. Ordinary Save draft, discard, and Save and apply are
+  implemented in the working tree.
+- End-to-end certificate request/import/assignment/revocation, force HTTPS, HSTS, DNS credential,
+  access-list ordering, basic-auth credential, and supported ForwardAuth task workflows.
+- NPM/NPMPlus import, settings mutation, automated restore, and complete operational compatibility.
 - Multiple OIDC issuers, public/LAN browser bind, durable browser sessions, custom roles, renewal
   history, and unified secret rotation.
 - Docker, Kubernetes, Consul, SRV discovery, provider approval/conflict workflow.
@@ -179,14 +242,25 @@ applicability is not independently dispositioned.
 
 ## Immediate phase
 
-Finish [Phase 16](PLAN.md#phase-16--npmplus-style-gui-mvp). First restore provider reconciliation
-under typed startup without restoring TOML hot reload or bypassing typed revision binding. Then run
-the controlled failure campaign and obtain independent application-security and usability review.
-Phase 17 and production status remain blocked.
+Phase 16 is accepted with documented release conditions. The typed-startup
+provider P0 and Proxy Host create/edit/enable/disable/duplicate/delete Save-and-apply UI are
+implemented in the working tree. The ProxyHostStore recovery gate, stable API error, and uncertainty
+UI are implemented with deterministic failure injection. Typecheck, generated-client drift,
+production build, and five focused real-Chromium Proxy Host scenarios pass using the pinned
+Playwright image. The bounded failure campaign and its
+[boundary matrix](docs/reviews/phase-16-save-apply-failure-campaign.md) are implemented; final
+workspace and browser regression results are recorded below. The draft/application-state model is
+implemented under [ADR-0031](docs/adr/0031-proxy-host-draft-application-state.md); independent
+application-security and operator-usability reviews now accept the bounded implementation. The
+React Router finding has an accepted local non-reachability disposition and a production-image
+enforcement gate. Provider changes now use the durable HMAC audit chain; adversarial real HTTP
+authorization, least-privilege draft discovery, and activation-response uncertainty are covered.
+This is independent-style local evidence, not external certification. Production status remains
+blocked by the release conditions below.
 
 ## Release blockers
 
-- Phase 14–21 exit criteria for shipped scope.
+- Phase 16–23 exit criteria for shipped scope; completed Phase 14–15 evidence remains binding.
 - Independent application-security and reverse-proxy protocol reviews.
 - No unresolved critical/high findings and signed residual-risk decision.
 - Long fuzz and soak evidence.
@@ -197,32 +271,36 @@ Phase 17 and production status remain blocked.
 
 | Command | Result |
 |---|---|
+| `git diff --check` | passed |
 | `cargo fmt --all -- --check` | passed |
 | `cargo check --workspace --all-targets` | passed; transitive warning below |
 | `cargo check --workspace --all-targets --all-features` | passed with generated UI assets embedded |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | passed |
-| `cargo test --workspace --all-features` | passed: 362 passed, 2 intentionally ignored |
+| `cargo test --workspace --all-features` | passed: 381 passed, 2 intentionally ignored |
 | `cargo test --workspace --doc` | passed; no doctests defined |
 | valid configuration corpus | seven accepted |
 | invalid configuration corpus | three rejected as expected |
-| repository Markdown links | passed: all relative targets across 135 Markdown files exist |
+| repository Markdown links | passed: all relative targets across 144 Markdown files exist |
 | `cargo tree -e features` | passed; 3,005 output lines |
 | `cargo check --manifest-path fuzz/Cargo.toml --all-targets` | passed |
-| Phase 15 OpenAPI/config-schema/manifest/lock comparison against `dev@eb107ec` | passed; no differences |
-| Admin OpenAPI | checked in Rust and parsed with Python/PyYAML; includes OIDC setup binding and 53 token scopes |
+| Phase 15 OpenAPI/config-schema/manifest/lock comparison against `dev@eb107ec` | recorded by Phase 15 closeout; not rerun during the product reset |
+| Admin OpenAPI | Rust route/schema regression passed; prior PyYAML inspection records OIDC setup binding and 53 token scopes |
 | Phase 15 production-module size guidance | current largest measured production module is 1,230 lines; below the 1,500-line rationale threshold |
-| `npm ci`; typecheck; generated-client drift; production build | passed; npm 9.2 emitted the recorded Redocly engine warning |
-| Playwright Chromium/axe suite | passed: 5 scenarios in the pinned Playwright container |
-| Docker Desktop Linux evaluation stack | image built; Keycloak, upstream, and proxy healthy |
-| Real Keycloak/GUI smoke | passed login, setup rotation, validate, preview, create, schema-2 activation, and Host-header traffic |
-| Proxy restart durability | passed reconciliation/resume/fail-closed tests and rebuilt Compose traffic before/after proxy restart |
-| `npm audit` | completed: 2 high findings in React Router's unused RSC/server-mode paths; no critical findings |
-| authorization/ownership/migration/secret/tamper/recovery coverage | passed in the 106-test Admin suite and CLI integration, including typed startup, OIDC binding permissions, collision, recovery, disabled-user, setup-token, audit, and canary checks |
+| UI typecheck, generated-client stability, router reachability gate, and production build | passed; generated output was byte-stable, Vite built 26 modules, and the gate found no RSC server entry/symbol or dynamic import; 279.16 kB JavaScript before gzip |
+| Focused Proxy Host Playwright scenarios | passed in pinned Playwright 1.62.0 Noble Chromium: 5 passed, including least-privilege draft discovery and activation-response uncertainty |
+| Full Playwright browser suite | passed in the same pinned Chromium environment: 9 passed |
+| Production container build | passed as `aegisproxy:phase16-review`; the final manifest list is `sha256:61cc0dfb2a20af25cb765a23dfcfa912b662b9bf5c5875692078a5c5a38c1095`, and the web stage enforced generated-client byte stability, `security:router`, typecheck, and Vite build |
+| Docker Desktop Linux evaluation stack | not rerun during this remediation; the readiness audit records the earlier healthy Keycloak, upstream, and proxy stack |
+| Real Keycloak/GUI smoke | not rerun during the product reset; the readiness audit records login, setup rotation, validate, preview, create, schema-2 activation, and Host-header traffic |
+| Proxy/provider restart durability | typed active-versus-draft reconciliation and real-daemon changed-provider restart tests passed; typed TOML remained restart-only and SIGTERM joined; prior rebuilt-Compose traffic evidence was not rerun |
+| `npm --prefix ui audit --audit-level=high` | exited 1: 2 high package entries for one advisory, GHSA-qwww-vcr4-c8h2; no compatible patch was applied; independent-style review accepts the formal non-reachability disposition subject to its documented assumptions, expiry, and production gate |
+| authorization/ownership/migration/secret/tamper/recovery coverage | passed in the 117-test Admin suite and CLI integration, including draft schema migration/CAS/recovery/promotion, ProxyHostStore/candidate/audit failure injection, typed startup, OIDC binding permissions, collision, disabled-user, setup-token, audit, and canary checks |
 
 ## Unavailable or incomplete checks
 
-- `cargo nextest`, `cargo audit`, `cargo deny`, `cargo machete`, and `cargo llvm-cov`: Cargo reports
-  `no such command`. Dated Elysium audit/deny results are not current scans.
+- `cargo nextest`, `cargo audit`, `cargo deny`, `cargo machete`, and `cargo llvm-cov`: their
+  executables and Cargo subcommands are unavailable. Dated Elysium audit/deny results are not
+  current scans.
 - Docker Desktop's Linux engine is available to the Linux client and was used for the image,
   Compose, and restart checks. Desktop host networking still did not expose loopback listeners to
   Windows/WSL.
@@ -232,8 +310,10 @@ Phase 17 and production status remain blocked.
 - `markdownlint` and `lychee`: unavailable; a direct repository-wide relative-link check passed.
 - `trivy`, `grype`, `syft`, and `cosign`: unavailable, so container scanning, SBOM generation, and
   signature verification were not run.
-- Direct local Playwright launch currently fails because `libnspr4.so` is unavailable; the same
-  five scenarios pass in the pinned Playwright container.
+- Direct host Playwright execution remains unsuitable because generated cache/output ownership and
+  Chromium system libraries vary. The documented pinned-container command uses a read-only
+  repository mount, container-local output, and the host production preview; all five focused
+  Proxy Host scenarios execute and pass there.
 - Pebble, long fuzz/soak, AppArmor enforcement, independent review, SBOM, signing, and container
   scan were not run during this verification.
 
@@ -242,8 +322,15 @@ release. Dated exception: [dependency review](docs/security/dependency-unsafe-re
 
 ## Evidence
 
+- [NPMPlus product direction](docs/product/npmplus-direction-reset.md)
+- [NPMPlus compatibility matrix](docs/product/npmplus-compatibility-matrix.md)
 - [Phase 0–16 repository readiness audit](docs/reviews/repository-readiness-phase-0-16.md)
 - [Phase 16 implementation candidate](docs/reviews/phase-16-completion.md)
+- [Phase 16 Save-and-apply failure campaign](docs/reviews/phase-16-save-apply-failure-campaign.md)
+- [React Router RSC advisory disposition](docs/security/react-router-advisory-disposition.md)
+- [Phase 16 independent-style security review](docs/reviews/phase-16-independent-security-review.md)
+- [Phase 16 operator-usability review](docs/reviews/phase-16-operator-usability-review.md)
+- [Phase 16 final acceptance](docs/reviews/phase-16-final-acceptance.md)
 - [Historical repository documentation audit](docs/history/validation/repository-documentation-audit-2026-07-22.md)
 - [Phase 15 completion](docs/reviews/phase-15-completion.md)
 - [Architecture](docs/architecture/overview.md)

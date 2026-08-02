@@ -6,6 +6,50 @@ AegisProxy has not published a supported release.
 
 - Implemented Rust reverse-proxy foundation through historical phases 0–13.
 - Rebased documentation around verified current state and the active roadmap.
+- Reset the product roadmap around NPMPlus-compatible daily management workflows, with Caddy-style
+  certificate automation and Traefik-style providers treated as selective later additions.
+- Added an evidence-linked NPMPlus compatibility matrix and product-direction analysis covering
+  reuse, typed object evolution, draft/apply recovery, migration, and explicitly unsupported raw
+  Nginx behavior.
+- Restored file/DNS provider reconciliation under typed startup without enabling live TOML reload.
+  Provider-derived revisions retain the exact typed desired-state binding, activate through the
+  existing transactional coordinator, resume after restart, and preserve the active
+  last-known-good runtime on rejected output or activation failure.
+- Added fail-closed durable HMAC audit coverage for provider reconciliation intent, validation,
+  candidate creation, activation, rollback, failure, and no-change outcomes under an explicit
+  system/provider actor without recording provider payloads or secrets.
+- Added the Proxy Host browser lifecycle: task-oriented create/edit, enable/disable, duplicate,
+  confirmed delete, dual-CAS conflict reporting, and one-click Save and apply over the existing
+  immutable typed candidate and transactional activation APIs. Failed activation is reported as
+  saved but not active while the last-known-good runtime remains in service.
+- Added a Proxy Host persistence recovery gate. Known pre-rename failures remain retryable;
+  indeterminate post-rename durability blocks later mutations and candidate compilation until a
+  strict restart reload succeeds. The typed API returns `recovery_required`, and the browser
+  reports the uncertain outcome without attempting activation.
+- Added durable inactive Proxy Host drafts in one schema-v2 store file with deterministic schema-v1
+  migration, independent draft CAS, exact base-generation promotion, restart preservation, and the
+  existing recovery gate. The typed API and browser now support Save draft, resumed edit, discard,
+  Save and apply, and owner-scoped desired/draft/active status without compiling or activating a
+  draft.
+- Established a reproducible focused Chromium command using the version-matched pinned Playwright
+  image and read-only repository mount; the Proxy Host lifecycle, destructive-permission, and
+  recovery-required scenarios execute in a real browser.
+- Distinguished structured activation failure from a lost or unclassified browser response: only
+  a proved backend failure claims the previous runtime remains active; an unknown response asks the
+  operator to refresh before inferring routing state. Draft actions are now visible to roles with
+  draft mutation permission even when activation and destructive actions remain unavailable.
+- Added real Unix-socket HTTP adversarial coverage for cross-owner and provider-owned draft access,
+  stale promotion/discard, and scoped-token denials. Production image builds now run the existing
+  React Router reachability gate before compiling the SPA.
+- Completed the bounded Proxy Host Save-and-apply failure campaign. Immutable revisions and typed
+  bindings now use atomic no-replace publication, active-pointer uncertainty and durable rollback
+  failure have distinct recovery outcomes, and terminal mutation/activation audit uncertainty is
+  reported without misrepresenting active routing. Deterministic tests cover candidate, pointer,
+  rollback, restart, audit, and browser desired-versus-active boundaries.
+- Dispositioned GHSA-qwww-vcr4-c8h2 for independent review after confirming that the only patched
+  React Router release requires an unbounded React/router migration. Added a production Vite
+  module-graph gate proving the affected RSC server handler is absent from the client-only static
+  SPA; the unchanged scanner finding remains reported pending a compatible upgrade.
 - Adopted user-first GUI and typed-control-plane direction with secret isolation.
 - Completed behavior-preserving modularization: focused tests and domain-owned core, configuration,
   and administration modules now replace oversized mixed-responsibility files.

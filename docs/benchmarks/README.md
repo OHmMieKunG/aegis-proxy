@@ -6,6 +6,6 @@ and full traffic loss measurement.
 
 Future results must record hardware, OS/kernel, Rust version, commit/lockfile, build profile,
 configuration, upstream, body size, connections, protocol/TLS, warmup, duration, statistical
-method, and raw results. Correctness/security gates take priority. Phase 21 requires representative
+method, and raw results. Correctness/security gates take priority. Phase 23 requires representative
 throughput, latency, memory, CPU, TLS, HTTP/2, WebSocket, route lookup, certificate lookup, reload,
 failure, and soak evidence before any support envelope.

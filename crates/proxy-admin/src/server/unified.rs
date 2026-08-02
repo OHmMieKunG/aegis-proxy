@@ -270,7 +270,11 @@ pub(super) async fn create_unified_candidate(
             )
             .await);
         }
-        Err(_) => return Err(audited_failure(audit, "compile_failed", ApiError::Internal).await),
+        Err(_) => {
+            return Err(
+                audited_failure(audit, "compilation_failed", ApiError::CompilationFailed).await,
+            );
+        }
     };
     if state.control.runtime().revision().as_ref() != expected_revision {
         return Err(audited_failure(audit, "revision_conflict", ApiError::Conflict).await);
@@ -302,9 +306,12 @@ pub(super) async fn create_unified_candidate(
             );
         }
         Ok(Err(_)) | Err(_) => {
-            return Err(
-                audited_failure(audit, "revision_store_failed", ApiError::Unavailable).await,
-            );
+            return Err(audited_failure(
+                audit,
+                "candidate_persistence_failed",
+                ApiError::CandidatePersistenceFailed,
+            )
+            .await);
         }
     };
     let store = Arc::clone(&state.proxy_hosts);
@@ -328,9 +335,12 @@ pub(super) async fn create_unified_candidate(
     {
         Ok(Ok(_)) => {}
         Ok(Err(_)) | Err(_) => {
-            return Err(
-                audited_failure(audit, "candidate_binding_failed", ApiError::Unavailable).await,
-            );
+            return Err(audited_failure(
+                audit,
+                "candidate_persistence_failed",
+                ApiError::CandidatePersistenceFailed,
+            )
+            .await);
         }
     }
     if state.control.runtime().revision().as_ref() != expected_revision {
@@ -452,7 +462,17 @@ pub(super) async fn rollback_unified_snapshot(
     let target_proxy = target.objects().to_vec();
     let target_stream = target.stream_hosts().to_vec();
     let target_discovery = target.discovery_sources().to_vec();
-    let expected_epoch = proxy_store.snapshot().epoch();
+    let expected_epoch = match proxy_store.mutation_snapshot() {
+        Ok(snapshot) => snapshot.epoch(),
+        Err(ProxyHostStoreError::Indeterminate(_) | ProxyHostStoreError::RecoveryRequired) => {
+            return Err(
+                audited_failure(audit, "recovery_required", ApiError::RecoveryRequired).await,
+            );
+        }
+        Err(_) => {
+            return Err(audited_failure(audit, "object_store_failed", ApiError::Unavailable).await);
+        }
+    };
     let replacements = tokio::task::spawn_blocking(move || {
         proxy_store
             .begin_rollback(&rollback_revision, &target_proxy, expected_epoch)
@@ -505,7 +525,7 @@ pub(super) async fn rollback_unified_snapshot(
                 return Err(audited_failure(
                     audit,
                     "rollback_recovery_failed",
-                    ApiError::Unavailable,
+                    ApiError::RollbackFailed,
                 )
                 .await);
             }
@@ -519,11 +539,11 @@ pub(super) async fn rollback_unified_snapshot(
         tokio::task::spawn_blocking(move || proxy_store.commit_rollback(&forward_id)).await,
         Ok(Ok(()))
     ) {
-        return Err(audited_failure(audit, "rollback_commit_failed", ApiError::Unavailable).await);
+        return Err(
+            audited_failure(audit, "rollback_commit_failed", ApiError::RollbackFailed).await,
+        );
     }
-    audit
-        .record(AuditOutcome::Success, Some(result.active.clone()), None)
-        .await?;
+    record_activation_success(audit, result.active.clone()).await?;
     let mut response = axum::Json(ActivationResponse {
         active: result.active.clone(),
         previous: result.previous,
@@ -542,7 +562,12 @@ async fn desired_state(state: &AppState, audit: &MutationAudit) -> Result<Desire
     match tokio::task::spawn_blocking(move || {
         Ok::<_, ApiError>(DesiredState {
             proxy_hosts: proxy_store
-                .snapshot()
+                .mutation_snapshot()
+                .map_err(|error| match error {
+                    ProxyHostStoreError::Indeterminate(_)
+                    | ProxyHostStoreError::RecoveryRequired => ApiError::RecoveryRequired,
+                    _ => ApiError::Unavailable,
+                })?
                 .objects()
                 .iter()
                 .map(|stored| stored.object.clone())
@@ -564,6 +589,9 @@ async fn desired_state(state: &AppState, audit: &MutationAudit) -> Result<Desire
     .await
     {
         Ok(Ok(desired)) => Ok(desired),
+        Ok(Err(ApiError::RecoveryRequired)) => {
+            Err(audited_failure(audit, "recovery_required", ApiError::RecoveryRequired).await)
+        }
         Ok(Err(error)) => Err(audited_failure(audit, "store_failed", error).await),
         Err(_) => Err(audited_failure(audit, "store_failed", ApiError::Internal).await),
     }
