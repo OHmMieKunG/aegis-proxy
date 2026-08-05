@@ -8,7 +8,8 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::{
-    API_VERSION, AccessPolicyRef, AutomaticHttps, ForwardProtocol, ObjectId, ProxyHostCandidate,
+    API_VERSION, AccessPolicyRef, AutomaticHttps, DomainName, ForwardProtocol, ObjectId,
+    ProxyHostCandidate, ProxyLocation, compile::location_namespace, compile::managed_route_ids,
     compile::namespace,
 };
 
@@ -25,6 +26,8 @@ pub enum CandidateActivation {
 /// Deterministic canonical resources generated for one enabled Proxy Host.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct GeneratedProxyHostPreview {
+    /// Stable custom-location ID; absent for the parent fallback route.
+    pub location_id: Option<ObjectId>,
     /// Generated route ID.
     pub route_id: String,
     /// Selected listener ID.
@@ -44,8 +47,8 @@ pub struct ProxyHostPreviewSummary {
     pub object_id: ObjectId,
     /// Stable owner ID.
     pub owner_id: ObjectId,
-    /// Exact public domain.
-    pub domain: String,
+    /// Ordered exact public domains; the first is the primary display domain.
+    pub domains: Vec<DomainName>,
     /// Configured forward host or IP address.
     pub forward_host: String,
     /// Configured forward port.
@@ -56,10 +59,12 @@ pub struct ProxyHostPreviewSummary {
     pub automatic_https: AutomaticHttps,
     /// Opaque access-policy reference.
     pub access_policy_ref: Option<AccessPolicyRef>,
+    /// Ordered custom locations; ordering is display-only.
+    pub locations: Vec<ProxyLocation>,
     /// Whether canonical runtime resources are present.
     pub enabled: bool,
     /// Generated resources; absent for disabled objects.
-    pub generated: Option<GeneratedProxyHostPreview>,
+    pub generated: Option<Vec<GeneratedProxyHostPreview>>,
     /// Canonical candidate SHA-256 content hash.
     pub candidate_hash: String,
     /// Active route fingerprint for comparison only.
@@ -124,12 +129,13 @@ pub fn preview_proxy_host_candidate(
             api_version: API_VERSION,
             object_id: object.metadata.id.clone(),
             owner_id: object.metadata.owner_id.clone(),
-            domain: object.spec.domain.clone(),
+            domains: object.spec.domains.clone(),
             forward_host: object.spec.forward_host.clone(),
             forward_port: object.spec.forward_port,
             forward_protocol: object.spec.forward_protocol,
             automatic_https: object.spec.automatic_https,
             access_policy_ref: object.spec.access_policy_ref.clone(),
+            locations: object.spec.locations.clone(),
             enabled: object.spec.enabled,
             generated,
             candidate_hash,
@@ -143,24 +149,14 @@ pub fn preview_proxy_host_candidate(
 
 fn generated_resources(
     candidate: &ProxyHostCandidate,
-) -> Result<Option<GeneratedProxyHostPreview>, ProxyHostPreviewError> {
+) -> Result<Option<Vec<GeneratedProxyHostPreview>>, ProxyHostPreviewError> {
     let object = candidate.object();
     if !object.spec.enabled {
         return Ok(None);
     }
     let namespace = namespace(&object.metadata.owner_id, &object.metadata.id);
-    let route_id = format!("{namespace}-route");
     let upstream_group_id = format!("{namespace}-upstream");
     let endpoint_id = format!("{namespace}-endpoint");
-    let route = candidate
-        .config()
-        .routes
-        .iter()
-        .find(|route| route.id == route_id)
-        .ok_or(ProxyHostPreviewError::InvalidCandidate)?;
-    if route.listeners.len() != 1 || route.upstream_group.as_deref() != Some(&upstream_group_id) {
-        return Err(ProxyHostPreviewError::InvalidCandidate);
-    }
     let group = candidate
         .config()
         .upstream_groups
@@ -174,12 +170,94 @@ fn generated_resources(
     {
         return Err(ProxyHostPreviewError::InvalidCandidate);
     }
-    Ok(Some(GeneratedProxyHostPreview {
-        route_id,
-        listener_id: route.listeners[0].clone(),
-        upstream_group_id,
-        endpoint_id,
-    }))
+    let generated = managed_route_ids(&namespace, object.spec.domains.len())
+        .into_iter()
+        .zip(&object.spec.domains)
+        .map(|(route_id, domain)| {
+            let route = candidate
+                .config()
+                .routes
+                .iter()
+                .find(|route| route.id == route_id)
+                .ok_or(ProxyHostPreviewError::InvalidCandidate)?;
+            let listener_id = route
+                .listeners
+                .first()
+                .filter(|_| route.listeners.len() == 1)
+                .cloned()
+                .ok_or(ProxyHostPreviewError::InvalidCandidate)?;
+            if route.hosts.as_slice() != [domain.as_str()]
+                || route.upstream_group.as_deref() != Some(&upstream_group_id)
+            {
+                return Err(ProxyHostPreviewError::InvalidCandidate);
+            }
+            Ok(GeneratedProxyHostPreview {
+                location_id: None,
+                route_id,
+                listener_id,
+                upstream_group_id: upstream_group_id.clone(),
+                endpoint_id: endpoint_id.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut generated = generated;
+    for location in object
+        .spec
+        .locations
+        .iter()
+        .filter(|location| location.enabled)
+    {
+        let namespace =
+            location_namespace(&object.metadata.owner_id, &object.metadata.id, &location.id);
+        let upstream_group_id = format!("{namespace}-upstream");
+        let endpoint_id = format!("{namespace}-endpoint");
+        let group = candidate
+            .config()
+            .upstream_groups
+            .iter()
+            .find(|group| group.id == upstream_group_id)
+            .ok_or(ProxyHostPreviewError::InvalidCandidate)?;
+        if group
+            .endpoints
+            .as_slice()
+            .first()
+            .map(|endpoint| endpoint.id.as_str())
+            != Some(endpoint_id.as_str())
+            || group.endpoints.len() != 1
+        {
+            return Err(ProxyHostPreviewError::InvalidCandidate);
+        }
+        for (route_id, domain) in managed_route_ids(&namespace, object.spec.domains.len())
+            .into_iter()
+            .zip(&object.spec.domains)
+        {
+            let route = candidate
+                .config()
+                .routes
+                .iter()
+                .find(|route| route.id == route_id)
+                .ok_or(ProxyHostPreviewError::InvalidCandidate)?;
+            let listener_id = route
+                .listeners
+                .first()
+                .filter(|_| route.listeners.len() == 1)
+                .cloned()
+                .ok_or(ProxyHostPreviewError::InvalidCandidate)?;
+            if route.hosts.as_slice() != [domain.as_str()]
+                || route.upstream_group.as_deref() != Some(&upstream_group_id)
+            {
+                return Err(ProxyHostPreviewError::InvalidCandidate);
+            }
+            generated.push(GeneratedProxyHostPreview {
+                location_id: Some(location.id.clone()),
+                route_id,
+                listener_id,
+                upstream_group_id: upstream_group_id.clone(),
+                endpoint_id: endpoint_id.clone(),
+            });
+        }
+    }
+    Ok(Some(generated))
 }
 
 fn route_fingerprint(config: &Config) -> String {

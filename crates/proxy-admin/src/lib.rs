@@ -28,8 +28,10 @@ pub use access_policy::{
 };
 pub use api::{
     API_VERSION, AccessPolicyRef, AccessPolicySpec, ApiObject, ApiVersion, AutomaticHttps,
-    CertificateRef, CertificateSpec, ContractError, DiscoverySourceSpec, ForwardProtocol,
-    MiddlewareRef, ObjectId, ObjectMetadata, ProxyHostSpec, StreamHostSpec, StreamProtocol,
+    CertificateRef, CertificateSpec, ContractError, DiscoverySourceSpec, DomainName,
+    ForwardProtocol, MAX_PROXY_HOST_DOMAINS, MAX_PROXY_HOST_LOCATIONS, MiddlewareRef, ObjectId,
+    ObjectMetadata, ProxyHostSpec, ProxyLocation, ProxyLocationMatch, StreamHostSpec,
+    StreamProtocol,
 };
 pub use audit::{AuditError, AuditEvent, AuditLog, AuditOutcome, AuditRecord};
 pub use auth::{IssuedToken, TokenError, TokenMetadata, TokenRecord, TokenStore, TokenStoreError};

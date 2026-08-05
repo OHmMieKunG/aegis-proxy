@@ -7,11 +7,12 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::{
-    AccessPolicyMetadata, ApiObject, AutomaticHttps, CertificateMetadata, CompileContext,
-    ContractError, ObjectId, ProxyHostCandidatePreview, ProxyHostClaims, ProxyHostCompileError,
-    ProxyHostDiff, ProxyHostDiffError, ProxyHostPreviewError, ProxyHostSetCandidate,
-    ProxyHostSetCompileContext, ProxyHostSpec, compile_proxy_host, compile_proxy_hosts,
-    diff_proxy_host_previews, preview_proxy_host_candidate, select_managed_https_policy,
+    AccessPolicyMetadata, ApiObject, AutomaticHttps, CertificateCompileError, CertificateMetadata,
+    CompileContext, ContractError, ObjectId, ProxyHostCandidatePreview, ProxyHostClaims,
+    ProxyHostCompileError, ProxyHostDiff, ProxyHostDiffError, ProxyHostPreviewError,
+    ProxyHostSetCandidate, ProxyHostSetCompileContext, ProxyHostSpec, compile_proxy_host,
+    compile_proxy_hosts, diff_proxy_host_previews, preview_proxy_host_candidate,
+    select_managed_https_policy,
 };
 
 /// Fully validated, non-active Proxy Host preview and creation diff.
@@ -44,6 +45,9 @@ pub enum ProxyHostPreparationError {
     /// Managed HTTPS has no single existing certificate/listener match.
     #[error("proxy host managed HTTPS policy is unavailable")]
     ManagedHttpsUnavailable,
+    /// No single selectable certificate covers every configured domain.
+    #[error("proxy host domains are not covered by one managed HTTPS certificate")]
+    ManagedHttpsDomainsUnavailable,
     /// Canonical compilation failed.
     #[error("proxy host compilation failed")]
     Compile,
@@ -88,9 +92,9 @@ pub(crate) fn prepare_proxy_host_with_claims(
             select_managed_https_policy(
                 certificates,
                 &object.metadata.owner_id,
-                &object.spec.domain,
+                &object.spec.domains,
             )
-            .map_err(|_| ProxyHostPreparationError::ManagedHttpsUnavailable)
+            .map_err(map_certificate_error)
         })
         .transpose()?;
 
@@ -130,7 +134,7 @@ pub(crate) fn prepare_proxy_host_set(
             select_managed_https_policy(
                 certificates,
                 &object.metadata.owner_id,
-                &object.spec.domain,
+                &object.spec.domains,
             )
             .map(|policy| {
                 (
@@ -138,7 +142,7 @@ pub(crate) fn prepare_proxy_host_set(
                     policy,
                 )
             })
-            .map_err(|_| ProxyHostPreparationError::ManagedHttpsUnavailable)
+            .map_err(map_certificate_error)
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
     compile_proxy_hosts(
@@ -157,6 +161,15 @@ pub(crate) fn prepare_proxy_host_set(
 
 fn map_contract_error(_error: ContractError) -> ProxyHostPreparationError {
     ProxyHostPreparationError::InvalidContract
+}
+
+fn map_certificate_error(error: CertificateCompileError) -> ProxyHostPreparationError {
+    match error {
+        CertificateCompileError::DomainNotCovered => {
+            ProxyHostPreparationError::ManagedHttpsDomainsUnavailable
+        }
+        _ => ProxyHostPreparationError::ManagedHttpsUnavailable,
+    }
 }
 
 fn map_compile_error(error: ProxyHostCompileError) -> ProxyHostPreparationError {
@@ -207,7 +220,7 @@ fn single_http_upstream_template_for_set<'a>(
 ) -> Result<&'a str, ProxyHostPreparationError> {
     let managed = current
         .iter()
-        .map(crate::compile::managed_upstream_group_id)
+        .flat_map(crate::compile::managed_upstream_group_ids)
         .collect::<BTreeSet<_>>();
     let mut groups = config.upstream_groups.iter().filter(|group| {
         !managed.contains(&group.id)
@@ -264,7 +277,7 @@ mod tests {
         let output = serde_json::to_string(&first).expect("preview JSON");
         assert!(!output.contains("PREVIEW_SECRET_CANARY"));
         assert!(output.contains("<redacted-secret-reference>"));
-        assert_eq!(first.diff.changes.len(), 8);
+        assert_eq!(first.diff.changes.len(), 9);
         assert_eq!(
             before,
             serde_json::to_vec(&active).expect("active unchanged")
@@ -310,7 +323,7 @@ mod tests {
         value.spec.automatic_https = AutomaticHttps::Managed;
         assert_eq!(
             prepare_proxy_host(&value, &active, &owner).expect_err("policy metadata absent"),
-            ProxyHostPreparationError::ManagedHttpsUnavailable
+            ProxyHostPreparationError::ManagedHttpsDomainsUnavailable
         );
     }
 

@@ -314,6 +314,9 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/ProxyHostCreate"}
+        "422":
+          description: Managed HTTPS has no single selectable certificate covering every configured domain (`certificate_coverage_failed`)
+          $ref: "#/components/responses/Error"
         default: {$ref: "#/components/responses/Error"}
   /v1/proxy-hosts/{id}:
     get:
@@ -339,6 +342,9 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/ProxyHostCreate"}
+        "422":
+          description: Managed HTTPS has no single selectable certificate covering every configured domain (`certificate_coverage_failed`)
+          $ref: "#/components/responses/Error"
         default: {$ref: "#/components/responses/Error"}
     delete:
       operationId: deleteProxyHost
@@ -426,6 +432,9 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/ProxyHostCreate"}
+        "422":
+          description: Managed HTTPS has no single selectable certificate covering every configured domain (`certificate_coverage_failed`)
+          $ref: "#/components/responses/Error"
         default: {$ref: "#/components/responses/Error"}
   /v1/proxy-hosts/application-state:
     get:
@@ -447,6 +456,9 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/ProxyHostValidation"}
+        "422":
+          description: Managed HTTPS has no single selectable certificate covering every configured domain (`certificate_coverage_failed`)
+          $ref: "#/components/responses/Error"
         default: {$ref: "#/components/responses/Error"}
   /v1/proxy-hosts/preview:
     post:
@@ -458,6 +470,9 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/PreparedProxyHost"}
+        "422":
+          description: Managed HTTPS has no single selectable certificate covering every configured domain (`certificate_coverage_failed`)
+          $ref: "#/components/responses/Error"
         default: {$ref: "#/components/responses/Error"}
   /v1/proxy-hosts/candidates/{id}/activate:
     post:
@@ -1078,6 +1093,22 @@ components:
     MiddlewareRef:
       type: string
       pattern: '^[a-z][a-z0-9_-]{0,62}$'
+    ProxyLocation:
+      type: object
+      additionalProperties: false
+      required: [id, match_kind, path, forward_host, forward_port, forward_protocol, access_policy_ref, enabled]
+      properties:
+        id: {$ref: "#/components/schemas/ObjectId"}
+        match_kind: {type: string, enum: [exact, prefix]}
+        path: {type: string, minLength: 2, maxLength: 2048, pattern: '^/'}
+        forward_host: {type: string, minLength: 1, maxLength: 253}
+        forward_port: {type: integer, minimum: 1, maximum: 65535}
+        forward_protocol: {type: string, enum: [http, https]}
+        access_policy_ref:
+          oneOf:
+            - {$ref: "#/components/schemas/ObjectId"}
+            - {type: "null"}
+        enabled: {type: boolean}
     ProxyHostObject:
       type: object
       additionalProperties: false
@@ -1094,9 +1125,14 @@ components:
         spec:
           type: object
           additionalProperties: false
-          required: [domain, forward_host, forward_port, forward_protocol, automatic_https, access_policy_ref, enabled]
+          required: [domains, forward_host, forward_port, forward_protocol, automatic_https, access_policy_ref, locations, enabled]
           properties:
-            domain: {type: string, minLength: 1, maxLength: 253}
+            domains:
+              type: array
+              minItems: 1
+              maxItems: 32
+              uniqueItems: true
+              items: {type: string, minLength: 1, maxLength: 253}
             forward_host: {type: string, minLength: 1, maxLength: 253}
             forward_port: {type: integer, minimum: 1, maximum: 65535}
             forward_protocol: {type: string, enum: [http, https]}
@@ -1105,6 +1141,10 @@ components:
               oneOf:
                 - {$ref: "#/components/schemas/ObjectId"}
                 - {type: "null"}
+            locations:
+              type: array
+              maxItems: 16
+              items: {$ref: "#/components/schemas/ProxyLocation"}
             enabled: {type: boolean}
     StoredProxyHost:
       type: object
@@ -1317,8 +1357,12 @@ components:
     GeneratedProxyHost:
       type: object
       additionalProperties: false
-      required: [route_id, listener_id, upstream_group_id, endpoint_id]
+      required: [location_id, route_id, listener_id, upstream_group_id, endpoint_id]
       properties:
+        location_id:
+          oneOf:
+            - {$ref: "#/components/schemas/ObjectId"}
+            - {type: "null"}
         route_id: {type: string}
         listener_id: {type: string}
         upstream_group_id: {type: string}
@@ -1326,12 +1370,17 @@ components:
     ProxyHostSummary:
       type: object
       additionalProperties: false
-      required: [api_version, object_id, owner_id, domain, forward_host, forward_port, forward_protocol, automatic_https, access_policy_ref, enabled, generated, candidate_hash, active_route_fingerprint, candidate_route_fingerprint, activation]
+      required: [api_version, object_id, owner_id, domains, forward_host, forward_port, forward_protocol, automatic_https, access_policy_ref, locations, enabled, generated, candidate_hash, active_route_fingerprint, candidate_route_fingerprint, activation]
       properties:
         api_version: {const: v1}
         object_id: {$ref: "#/components/schemas/ObjectId"}
         owner_id: {$ref: "#/components/schemas/ObjectId"}
-        domain: {type: string}
+        domains:
+          type: array
+          minItems: 1
+          maxItems: 32
+          uniqueItems: true
+          items: {type: string, minLength: 1, maxLength: 253}
         forward_host: {type: string}
         forward_port: {type: integer, minimum: 1, maximum: 65535}
         forward_protocol: {type: string, enum: [http, https]}
@@ -1340,10 +1389,17 @@ components:
           oneOf:
             - {$ref: "#/components/schemas/ObjectId"}
             - {type: "null"}
+        locations:
+          type: array
+          maxItems: 16
+          items: {$ref: "#/components/schemas/ProxyLocation"}
         enabled: {type: boolean}
         generated:
           oneOf:
-            - {$ref: "#/components/schemas/GeneratedProxyHost"}
+            - type: array
+              minItems: 1
+              maxItems: 544
+              items: {$ref: "#/components/schemas/GeneratedProxyHost"}
             - {type: "null"}
         candidate_hash: {type: string, pattern: '^[0-9a-f]{64}$'}
         active_route_fingerprint: {type: string, pattern: '^[0-9a-f]{16}$'}
@@ -1379,7 +1435,7 @@ components:
             owner_id: {$ref: "#/components/schemas/ObjectId"}
             current_hash: {type: "null"}
             candidate_hash: {type: string, pattern: '^[0-9a-f]{64}$'}
-            changes: {type: array, minItems: 7, maxItems: 8, items: {type: object}}
+            changes: {type: array, minItems: 8, maxItems: 9, items: {type: object}}
     TokenScope:
       type: string
       enum: [read_status, read_config, validate_config, preview_config, create_candidate, activate_config, rollback_config, read_revisions, read_proxy_hosts, create_proxy_host, update_proxy_host, delete_proxy_host, activate_proxy_host, rollback_proxy_host, activate_typed_candidate, rollback_typed_revision, read_access_policies, create_access_policy, update_access_policy, delete_access_policy, read_routes, read_upstreams, drain, read_certificates, read_certificate_objects, create_certificate, update_certificate, delete_certificate, read_stream_hosts, create_stream_host, update_stream_host, delete_stream_host, read_discovery_sources, create_discovery_source, update_discovery_source, delete_discovery_source, read_credentials, create_credential, update_credential, revoke_credential, renew_certificate, read_audit, create_backup, validate_restore, manage_identities, read_tokens, create_token, revoke_token, read_users, create_user, update_user, read_roles, create_web_setup_token]

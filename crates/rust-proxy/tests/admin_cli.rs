@@ -717,12 +717,22 @@ allow = ["127.0.0.1/32"]
             "api_version": "v1",
             "metadata": {"id": "proxy-cli", "owner_id": owner},
             "spec": {
-                "domain": "typed.example.test",
+                "domains": ["typed.example.test", "typed-alias.example.test"],
                 "forward_host": "127.0.0.1",
                 "forward_port": 9001,
                 "forward_protocol": "http",
                 "automatic_https": "disabled",
                 "access_policy_ref": "private-lan",
+                "locations": [{
+                    "id": "loc-api",
+                    "match_kind": "prefix",
+                    "path": "/api",
+                    "forward_host": "127.0.0.1",
+                    "forward_port": 9002,
+                    "forward_protocol": "http",
+                    "access_policy_ref": null,
+                    "enabled": true
+                }],
                 "enabled": true
             }
         });
@@ -752,9 +762,19 @@ allow = ["127.0.0.1/32"]
         assert_eq!(preview_json["preview"]["summary"]["owner_id"], owner);
         assert_eq!(
             preview_json["diff"]["changes"].as_array().map(Vec::len),
-            Some(8)
+            Some(9)
         );
         assert_eq!(active_revision(&state), current);
+        assert_eq!(
+            preview_json["preview"]["summary"]["domains"],
+            proxy_host["spec"]["domains"]
+        );
+        assert_eq!(
+            preview_json["preview"]["summary"]["generated"]
+                .as_array()
+                .map(Vec::len),
+            Some(4)
+        );
 
         let mut protected_proxy_host = proxy_host.clone();
         protected_proxy_host["spec"]["access_policy_ref"] = serde_json::json!("other-policy");
@@ -795,7 +815,7 @@ allow = ["127.0.0.1/32"]
         assert_eq!(active_revision(&state), current);
 
         let mut claimed_domain = proxy_host.clone();
-        claimed_domain["spec"]["domain"] = serde_json::json!("stored.example.test");
+        claimed_domain["spec"]["domains"] = serde_json::json!(["example.test"]);
         let claimed_domain_path = daemon.root.join("claimed-domain.json");
         fs::write(
             &claimed_domain_path,
@@ -1797,7 +1817,8 @@ allow = ["127.0.0.1/32"]
             serde_json::from_slice(&created_list.stdout).expect("created list JSON");
         assert_eq!(created_list_json.as_array().map(Vec::len), Some(2));
         let mut updated_proxy_host = proxy_host.clone();
-        updated_proxy_host["spec"]["domain"] = serde_json::json!("updated.example.test");
+        updated_proxy_host["spec"]["domains"] =
+            serde_json::json!(["updated.example.test", "updated-alias.example.test"]);
         let updated_proxy_host_path = daemon.root.join("updated-proxy-host.json");
         fs::write(
             &updated_proxy_host_path,
@@ -1906,9 +1927,13 @@ allow = ["127.0.0.1/32"]
             updated_binding["objects"]
                 .as_array()
                 .is_some_and(|objects| {
-                    objects
-                        .iter()
-                        .any(|object| object["spec"]["domain"] == "updated.example.test")
+                    objects.iter().any(|object| {
+                        object["spec"]["domains"]
+                            == serde_json::json!([
+                                "updated.example.test",
+                                "updated-alias.example.test"
+                            ])
+                    })
                 })
         );
         let stale_candidate = run(&[
@@ -2047,8 +2072,8 @@ allow = ["127.0.0.1/32"]
             serde_json::from_slice(&rolled_back.stdout).expect("rolled back Proxy Host JSON");
         assert_eq!(rolled_back_json["generation"], 3);
         assert_eq!(
-            rolled_back_json["object"]["spec"]["domain"],
-            "typed.example.test"
+            rolled_back_json["object"]["spec"]["domains"],
+            serde_json::json!(["typed.example.test", "typed-alias.example.test"])
         );
         let stale_delete = run(&[
             "proxy-host",

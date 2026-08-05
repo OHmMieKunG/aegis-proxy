@@ -19,8 +19,9 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
-    ApiObject, DiscoverySourceSpec, ObjectId, ProxyHostSpec, StoredAccessPolicy, StoredCertificate,
-    StreamHostSpec, access_policy::MAX_ACCESS_POLICIES,
+    AccessPolicyRef, ApiObject, ApiVersion, AutomaticHttps, DiscoverySourceSpec, DomainName,
+    ForwardProtocol, ObjectId, ObjectMetadata, ProxyHostSpec, StoredAccessPolicy,
+    StoredCertificate, StreamHostSpec, access_policy::MAX_ACCESS_POLICIES,
 };
 
 const STORE_SCHEMA_VERSION: u32 = 1;
@@ -255,6 +256,88 @@ struct UnifiedBinding<'a> {
     certificates: &'a [StoredCertificate],
 }
 
+#[derive(Serialize)]
+struct LegacyProxyHostObject<'a> {
+    api_version: &'a ApiVersion,
+    metadata: &'a ObjectMetadata,
+    spec: LegacyProxyHostSpec<'a>,
+}
+
+#[derive(Serialize)]
+struct LegacyProxyHostSpec<'a> {
+    domain: &'a str,
+    forward_host: &'a str,
+    forward_port: u16,
+    forward_protocol: ForwardProtocol,
+    automatic_https: AutomaticHttps,
+    access_policy_ref: &'a Option<AccessPolicyRef>,
+    enabled: bool,
+}
+
+#[derive(Serialize)]
+struct LegacyPluralProxyHostObject<'a> {
+    api_version: &'a ApiVersion,
+    metadata: &'a ObjectMetadata,
+    spec: LegacyPluralProxyHostSpec<'a>,
+}
+
+#[derive(Serialize)]
+struct LegacyPluralProxyHostSpec<'a> {
+    domains: &'a [DomainName],
+    forward_host: &'a str,
+    forward_port: u16,
+    forward_protocol: ForwardProtocol,
+    automatic_https: AutomaticHttps,
+    access_policy_ref: &'a Option<AccessPolicyRef>,
+    enabled: bool,
+}
+
+#[derive(Serialize)]
+struct LegacyProxyHostBinding<'a> {
+    schema_version: u32,
+    objects: &'a [LegacyProxyHostObject<'a>],
+}
+
+#[derive(Serialize)]
+struct LegacyProxyHostPolicyBinding<'a> {
+    schema_version: u32,
+    objects: &'a [LegacyProxyHostObject<'a>],
+    access_policies: &'a [StoredAccessPolicy],
+}
+
+#[derive(Serialize)]
+struct LegacyUnifiedBinding<'a> {
+    schema_version: u32,
+    proxy_hosts: &'a [LegacyProxyHostObject<'a>],
+    stream_hosts: &'a [ApiObject<StreamHostSpec>],
+    discovery_sources: &'a [ApiObject<DiscoverySourceSpec>],
+    access_policies: &'a [StoredAccessPolicy],
+    certificates: &'a [StoredCertificate],
+}
+
+#[derive(Serialize)]
+struct LegacyPluralProxyHostBinding<'a> {
+    schema_version: u32,
+    objects: &'a [LegacyPluralProxyHostObject<'a>],
+}
+
+#[derive(Serialize)]
+struct LegacyPluralProxyHostPolicyBinding<'a> {
+    schema_version: u32,
+    objects: &'a [LegacyPluralProxyHostObject<'a>],
+    access_policies: &'a [StoredAccessPolicy],
+}
+
+#[derive(Serialize)]
+struct LegacyPluralUnifiedBinding<'a> {
+    schema_version: u32,
+    proxy_hosts: &'a [LegacyPluralProxyHostObject<'a>],
+    stream_hosts: &'a [ApiObject<StreamHostSpec>],
+    discovery_sources: &'a [ApiObject<DiscoverySourceSpec>],
+    access_policies: &'a [StoredAccessPolicy],
+    certificates: &'a [StoredCertificate],
+}
+
 /// Complete schema-2 typed desired state and exact dependencies.
 #[derive(Debug)]
 pub struct UnifiedCandidateState<'a> {
@@ -373,7 +456,7 @@ impl ProxyHostStore {
             || objects
                 .get(&owner_id)
                 .is_some_and(|owned| owned.contains_key(&object_id))
-            || domain_claimed(&objects, &object.spec.domain, None)
+            || (object.spec.enabled && domains_claimed(&objects, &object.spec.domains, None))
         {
             return Err(if count >= MAX_PROXY_HOSTS {
                 ProxyHostStoreError::Limit
@@ -446,7 +529,13 @@ impl ProxyHostStore {
             .filter(|stored| stored.generation == expected_generation)
             .cloned()
             .ok_or(ProxyHostStoreError::Conflict)?;
-        if domain_claimed(&objects, &object.spec.domain, Some((&owner_id, &object_id))) {
+        if object.spec.enabled
+            && domains_claimed(
+                &objects,
+                &object.spec.domains,
+                Some((&owner_id, &object_id)),
+            )
+        {
             return Err(ProxyHostStoreError::Conflict);
         }
         let stored = StoredProxyHost {
@@ -765,11 +854,12 @@ impl ProxyHostStore {
             .and_then(|owned| owned.get(object_id))
             .cloned();
         if current.as_ref().map(|stored| stored.generation) != draft.base_generation
-            || domain_claimed(
-                &objects,
-                &draft.object.spec.domain,
-                Some((owner_id, object_id)),
-            )
+            || (draft.object.spec.enabled
+                && domains_claimed(
+                    &objects,
+                    &draft.object.spec.domains,
+                    Some((owner_id, object_id)),
+                ))
         {
             return Err(ProxyHostStoreError::Conflict);
         }
@@ -822,9 +912,11 @@ impl ProxyHostStore {
             for (object_id, stored) in owned {
                 let identity = (owner_id.clone(), object_id.clone());
                 claims.objects.insert(identity.clone());
-                claims
-                    .domains
-                    .insert(stored.object.spec.domain.clone(), identity);
+                if stored.object.spec.enabled {
+                    for domain in &stored.object.spec.domains {
+                        claims.domains.insert(domain.to_string(), identity.clone());
+                    }
+                }
             }
         }
         claims
@@ -1088,7 +1180,12 @@ fn canonical_objects(
     for object in &objects {
         validate_object(object)?;
         if !identities.insert((&object.metadata.owner_id, &object.metadata.id))
-            || !domains.insert(&object.spec.domain)
+            || (object.spec.enabled
+                && object
+                    .spec
+                    .domains
+                    .iter()
+                    .any(|domain| !domains.insert(domain)))
         {
             return Err(ProxyHostStoreError::Conflict);
         }
@@ -1282,7 +1379,13 @@ fn index_objects(objects: Vec<StoredProxyHost>) -> Result<ObjectIndex, ProxyHost
         }
         let owner_id = stored.object.metadata.owner_id.clone();
         let object_id = stored.object.metadata.id.clone();
-        if !domains.insert(stored.object.spec.domain.clone())
+        if (stored.object.spec.enabled
+            && stored
+                .object
+                .spec
+                .domains
+                .iter()
+                .any(|domain| !domains.insert(domain.clone())))
             || indexed
                 .entry(owner_id)
                 .or_default()
@@ -1321,9 +1424,9 @@ fn index_drafts(drafts: Vec<StoredProxyHostDraft>) -> Result<DraftIndex, ProxyHo
     Ok(indexed)
 }
 
-fn domain_claimed(
+fn domains_claimed(
     objects: &ObjectIndex,
-    domain: &str,
+    domains: &[crate::DomainName],
     excluded: Option<(&ObjectId, &ObjectId)>,
 ) -> bool {
     objects
@@ -1334,7 +1437,14 @@ fn domain_claimed(
                 .map(move |(object_id, stored)| (owner_id, object_id, stored))
         })
         .any(|(owner_id, object_id, stored)| {
-            excluded != Some((owner_id, object_id)) && stored.object.spec.domain == domain
+            excluded != Some((owner_id, object_id))
+                && stored.object.spec.enabled
+                && stored
+                    .object
+                    .spec
+                    .domains
+                    .iter()
+                    .any(|claimed| domains.contains(claimed))
         })
 }
 

@@ -1,6 +1,6 @@
 # AegisProxy verified status
 
-Verification date: 2026-08-01
+Verification date: 2026-08-02
 Branch: `feat/phase-16-gui-mvp`
 Verification basis: Phase 14 plus Phase 15 compiler `fa7913f`, preview service `d3de105`, typed diff
 `2617f0e`, API-token scopes `81bd500`, owned Proxy Host endpoints `00cfa32`, typed object store
@@ -148,8 +148,9 @@ disposition conditionally, while external human review remains required before r
   state versus active runtime, and recovery-required persistence uncertainty without exposing
   candidate or generation mechanics in the ordinary path. Durable inactive drafts can be created,
   edited, discarded, or promoted through exact CAS; they survive restart outside compilation and
-  provider reconciliation. Multiple domains, locations, and task-specific forms for secondary
-  typed resources remain incomplete.
+  provider reconciliation. Bounded exact multiple domains are implemented across applied/draft
+  state, migration, compilation, managed-HTTPS coverage, and the browser. Proxy Locations and
+  task-specific forms for secondary typed resources remain incomplete.
 - Phase 15 has a strict library-only `v1` envelope, deterministic Proxy Host compiler, safe
   side-effect-free typed preview, and bounded field-level diff. Existing primitives validate
   ownership, references, domains, conflicts, listener/certificate policy, generated configuration,
@@ -226,7 +227,7 @@ disposition conditionally, while external human review remains required before r
 
 ## Absent or deferred
 
-- Multiple Proxy Host domains, Proxy Locations, Redirection Hosts, Dead Hosts, typed advanced host
+- Redirection Hosts, Dead Hosts, typed advanced host
   controls, and a browser retry-apply workflow. Ordinary Save draft, discard, and Save and apply are
   implemented in the working tree.
 - End-to-end certificate request/import/assignment/revocation, force HTTPS, HSTS, DNS credential,
@@ -242,11 +243,27 @@ disposition conditionally, while external human review remains required before r
 
 ## Immediate phase
 
+Phase 17.1 adds a bounded ordered `domains` collection to applied and draft Proxy Hosts. The shared
+Rust validator lowercases and IDNA-normalizes exact DNS names, removes one terminal root dot, and
+rejects duplicates and non-host syntax. The compiler emits one exact route per enabled domain while
+sharing the generated upstream. Singular stored records migrate to one-element lists, and verified
+legacy candidate hashes remain loadable and cloneable so exact-active restart never recompiles or
+auto-activates migration state. [ADR-0032](docs/adr/0032-proxy-host-multiple-domains.md) records the
+contract. Proxy Locations are implemented as the bounded Phase 17.2 unit under
+[ADR-0033](docs/adr/0033-embedded-proxy-locations.md): zero to sixteen stable-ID exact or
+segment-prefix routes share every parent domain, compile deterministically to one upstream target
+per location, inherit or owner-safely override the parent Access Policy, and retain the parent
+draft/CAS/candidate/activation lifecycle. Missing fields migrate to zero locations; old singular
+and Phase 17.1 plural/no-location active bindings remain exactly recoverable without activation.
+The settled workspace suite passes 394 tests with two environment fixtures ignored; focused/full
+Chromium pass 6/6 and 10/10, and the production image build passes. The unchanged React Router
+scanner finding remains under its documented non-reachability disposition.
+
 Phase 16 is accepted with documented release conditions. The typed-startup
 provider P0 and Proxy Host create/edit/enable/disable/duplicate/delete Save-and-apply UI are
 implemented in the working tree. The ProxyHostStore recovery gate, stable API error, and uncertainty
 UI are implemented with deterministic failure injection. Typecheck, generated-client drift,
-production build, and five focused real-Chromium Proxy Host scenarios pass using the pinned
+production build, and six focused real-Chromium Proxy Host scenarios pass using the pinned
 Playwright image. The bounded failure campaign and its
 [boundary matrix](docs/reviews/phase-16-save-apply-failure-campaign.md) are implemented; final
 workspace and browser regression results are recorded below. The draft/application-state model is
@@ -276,25 +293,25 @@ blocked by the release conditions below.
 | `cargo check --workspace --all-targets` | passed; transitive warning below |
 | `cargo check --workspace --all-targets --all-features` | passed with generated UI assets embedded |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | passed |
-| `cargo test --workspace --all-features` | passed: 381 passed, 2 intentionally ignored |
+| `cargo test --workspace --all-features` | passed: 394 passed, 2 intentionally ignored |
 | `cargo test --workspace --doc` | passed; no doctests defined |
 | valid configuration corpus | seven accepted |
 | invalid configuration corpus | three rejected as expected |
-| repository Markdown links | passed: all relative targets across 144 Markdown files exist |
+| repository Markdown links | passed: all relative targets across 148 Markdown files exist |
 | `cargo tree -e features` | passed; 3,005 output lines |
 | `cargo check --manifest-path fuzz/Cargo.toml --all-targets` | passed |
 | Phase 15 OpenAPI/config-schema/manifest/lock comparison against `dev@eb107ec` | recorded by Phase 15 closeout; not rerun during the product reset |
 | Admin OpenAPI | Rust route/schema regression passed; prior PyYAML inspection records OIDC setup binding and 53 token scopes |
-| Phase 15 production-module size guidance | current largest measured production module is 1,230 lines; below the 1,500-line rationale threshold |
-| UI typecheck, generated-client stability, router reachability gate, and production build | passed; generated output was byte-stable, Vite built 26 modules, and the gate found no RSC server entry/symbol or dynamic import; 279.16 kB JavaScript before gzip |
-| Focused Proxy Host Playwright scenarios | passed in pinned Playwright 1.62.0 Noble Chromium: 5 passed, including least-privilege draft discovery and activation-response uncertainty |
-| Full Playwright browser suite | passed in the same pinned Chromium environment: 9 passed |
-| Production container build | passed as `aegisproxy:phase16-review`; the final manifest list is `sha256:61cc0dfb2a20af25cb765a23dfcfa912b662b9bf5c5875692078a5c5a38c1095`, and the web stage enforced generated-client byte stability, `security:router`, typecheck, and Vite build |
+| Production-module size guidance | current largest measured production modules are `object_store.rs` at 1,696 lines and `proxy_hosts.rs` at 1,582 lines; no correctness-driven consolidation was attempted in this bounded unit |
+| UI typecheck, generated-client stability, router reachability gate, and production build | passed; generated output was byte-stable, Vite built 26 modules, and the gate found no RSC server entry/symbol or dynamic import; 286.67 kB JavaScript before gzip |
+| Focused Proxy Host Playwright scenarios | passed in pinned Playwright 1.62.0 Noble Chromium: 6 passed, including location add/remove/reorder/draft/apply/duplicate coverage, multi-domain certificate rejection, least-privilege draft discovery, and activation-response uncertainty |
+| Full Playwright browser suite | passed in the same pinned Chromium environment: 10 passed |
+| Production container build | passed as `aegisproxy:phase17-locations`; the final manifest list is `sha256:50b4f9282a2317b21fed48f7567f670e75fe66be944ddfb477f75e16b7434be5`, and the web stage enforced generated-client byte stability, `security:router`, typecheck, and Vite build |
 | Docker Desktop Linux evaluation stack | not rerun during this remediation; the readiness audit records the earlier healthy Keycloak, upstream, and proxy stack |
 | Real Keycloak/GUI smoke | not rerun during the product reset; the readiness audit records login, setup rotation, validate, preview, create, schema-2 activation, and Host-header traffic |
 | Proxy/provider restart durability | typed active-versus-draft reconciliation and real-daemon changed-provider restart tests passed; typed TOML remained restart-only and SIGTERM joined; prior rebuilt-Compose traffic evidence was not rerun |
 | `npm --prefix ui audit --audit-level=high` | exited 1: 2 high package entries for one advisory, GHSA-qwww-vcr4-c8h2; no compatible patch was applied; independent-style review accepts the formal non-reachability disposition subject to its documented assumptions, expiry, and production gate |
-| authorization/ownership/migration/secret/tamper/recovery coverage | passed in the 117-test Admin suite and CLI integration, including draft schema migration/CAS/recovery/promotion, ProxyHostStore/candidate/audit failure injection, typed startup, OIDC binding permissions, collision, disabled-user, setup-token, audit, and canary checks |
+| authorization/ownership/migration/secret/tamper/recovery coverage | passed in the 128-test Admin suite and real Unix-socket CLI integration, including location policy ownership, exact-active migration, draft/CAS/recovery/promotion, ProxyHostStore/candidate/audit failure injection, typed startup, OIDC binding permissions, collision, disabled-user, setup-token, audit, and canary checks |
 
 ## Unavailable or incomplete checks
 
@@ -312,7 +329,7 @@ blocked by the release conditions below.
   signature verification were not run.
 - Direct host Playwright execution remains unsuitable because generated cache/output ownership and
   Chromium system libraries vary. The documented pinned-container command uses a read-only
-  repository mount, container-local output, and the host production preview; all five focused
+  repository mount, container-local output, and the host production preview; all six focused
   Proxy Host scenarios execute and pass there.
 - Pebble, long fuzz/soak, AppArmor enforcement, independent review, SBOM, signing, and container
   scan were not run during this verification.

@@ -251,7 +251,7 @@ fn certificate_dependencies(
         .filter(|object| object.spec.automatic_https == AutomaticHttps::Managed)
     {
         let policy =
-            select_managed_https_policy(&metadata, &object.metadata.owner_id, &object.spec.domain)
+            select_managed_https_policy(&metadata, &object.metadata.owner_id, &object.spec.domains)
                 .map_err(|error| failed("managed HTTPS selection", error))?;
         let id = metadata
             .iter()
@@ -394,14 +394,49 @@ mod tests {
         let deleted_id: crate::ObjectId = "deleted-host".parse().expect("deleted id");
         let mut disabled = store.get(&owner, &active_id).expect("active object").object;
         disabled.spec.enabled = false;
+        disabled
+            .spec
+            .domains
+            .push("newer.example.test".parse().expect("domain"));
+        disabled.spec.locations.push(
+            serde_json::from_value(serde_json::json!({
+                "id": "loc-newer",
+                "match_kind": "prefix",
+                "path": "/newer",
+                "forward_host": "127.0.0.1",
+                "forward_port": 9002,
+                "forward_protocol": "http",
+                "access_policy_ref": null,
+                "enabled": true
+            }))
+            .expect("desired location"),
+        );
         store
             .update(disabled, 1)
             .expect("persist disabled desired state");
         store
             .delete(&owner, &deleted_id, 1)
             .expect("persist deleted desired state");
+        let mut draft = proxy("draft-host", "draft.example.test");
+        draft
+            .spec
+            .domains
+            .push("draft-alias.example.test".parse().expect("domain"));
+        draft.spec.locations.push(
+            serde_json::from_value(serde_json::json!({
+                "id": "loc-draft",
+                "match_kind": "prefix",
+                "path": "/draft",
+                "forward_host": "127.0.0.1",
+                "forward_port": 9003,
+                "forward_protocol": "http",
+                "access_policy_ref": null,
+                "enabled": true
+            }))
+            .expect("draft location"),
+        );
         store
-            .create_draft(proxy("draft-host", "draft.example.test"), None)
+            .create_draft(draft, None)
             .expect("create inactive draft");
         drop(store);
         let resumed = reconcile_startup(&config)
@@ -430,6 +465,12 @@ mod tests {
                 .iter()
                 .any(|route| route.hosts == ["draft.example.test"])
         );
+        assert!(resumed.config().routes.iter().all(|route| {
+            route.hosts != ["newer.example.test"] && route.hosts != ["draft-alias.example.test"]
+        }));
+        assert!(resumed.config().routes.iter().all(|route| {
+            route.path_prefixes != ["/newer"] && route.path_prefixes != ["/draft"]
+        }));
         let store =
             ProxyHostStore::open(root.join("admin/proxy-hosts.json")).expect("reopen store");
         assert_eq!(store.list_drafts(&owner).len(), 1);

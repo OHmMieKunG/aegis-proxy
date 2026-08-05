@@ -533,6 +533,18 @@ fn user_store_errors_preserve_client_contracts() {
 }
 
 #[test]
+fn certificate_coverage_has_a_stable_validation_contract() {
+    assert_eq!(
+        ApiError::CertificateCoverageFailed.contract(),
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "certificate_coverage_failed",
+            "no single selectable certificate covers every configured domain",
+        )
+    );
+}
+
+#[test]
 fn candidate_route_migration_is_fail_closed() {
     assert!(candidate_schema_matches_route(1, true));
     assert!(candidate_schema_matches_route(2, false));

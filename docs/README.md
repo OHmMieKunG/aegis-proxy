@@ -23,6 +23,10 @@
   [operator-usability review](reviews/phase-16-operator-usability-review.md), and
   [final acceptance](reviews/phase-16-final-acceptance.md): final bounded findings, remediation,
   traceability, and release conditions.
+- [Phase 17.1 multiple-domain Proxy Hosts](reviews/phase-17-multiple-domains.md): bounded contract,
+  migration, compiler, certificate, restart, API, and browser evidence.
+- [Phase 17.2 Proxy Locations](reviews/phase-17-proxy-locations.md): stable nested identity, path
+  precedence, migration, policy inheritance, compiler, restart, API, and browser evidence.
 - [Phase 15 Proxy Host compiler](reviews/phase-15-proxy-host-compiler.md): current high-level object
   compilation boundary and validation evidence.
 - [Phase 15 candidate preview](reviews/phase-15-candidate-preview.md): safe typed preview boundary
@@ -111,6 +115,8 @@
 - [Threat/control matrix](security/threat-control-matrix.md)
 - [ADRs](adr/)
   - [ADR-0031: Proxy Host draft and application state](adr/0031-proxy-host-draft-application-state.md)
+  - [ADR-0032: Bounded exact domains on Proxy Hosts](adr/0032-proxy-host-multiple-domains.md)
+  - [ADR-0033: Embedded typed Proxy Locations](adr/0033-embedded-proxy-locations.md)
 
 ## Developers
 

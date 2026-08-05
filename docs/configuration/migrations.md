@@ -66,6 +66,20 @@ state, is not serialized, and resets safely on restart because no in-flight requ
 restart. Draft-local and applied generations remain durable and separate. A release migration
 command must exist before schema can change incompatibly.
 
+Phase 17.1 keeps this store schema number and changes the Proxy Host field contract additively on
+read: exactly one legacy `domain` or current `domains` is accepted, never both. A singular applied
+or draft record becomes a normalized one-element list in memory; the next successful write emits
+only `domains`. Lists contain 1–32 values and older binaries cannot read plural records, so
+downgrade requires the matching old binary and backup. Candidate loading separately verifies the
+exact former one-domain binding serialization. Old active bindings therefore remain authoritative
+and are not automatically recompiled or activated; an explicit later apply creates a plural hash.
+
+Phase 17.2 also keeps ProxyHostStore schema 2. Missing `locations` loads as an empty list for applied
+and draft records, preserving both generations. New writes emit the bounded list. Candidate loading
+accepts the exact Phase 17.1 plural-domain/no-location serialization as well as the earlier singular
+form; no active candidate is rewritten or automatically applied. Once a nonempty location list is
+written, older binaries cannot read it and downgrade requires a matching backup.
+
 The internal Access Policy store follows the same no-repair rule at
 `<state_dir>/admin/access-policies.json`. Its schema version is one, IDs are globally unique,
 records use canonical ID order and exact generations, and Administration acquires exclusive

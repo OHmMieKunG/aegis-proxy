@@ -203,6 +203,117 @@ fn compiles_valid_variants_deterministically() {
 }
 
 #[test]
+fn locations_compile_per_domain_with_shared_targets_and_policy_inheritance() {
+    let config = base_config();
+    let mut parts = parts();
+    let (policy_id, metadata) = policy_metadata(&config, "private", "alice", &[], true);
+    parts.policies.insert(policy_id, metadata);
+    let mut value = object();
+    value
+        .spec
+        .domains
+        .push("www.new.example.test".parse().expect("domain"));
+    value.spec.access_policy_ref = Some(serde_json::from_str("\"private\"").expect("policy"));
+    value.spec.locations = serde_json::from_value(serde_json::json!([
+        {
+            "id": "loc-api",
+            "match_kind": "prefix",
+            "path": "/api",
+            "forward_host": "api.example.test",
+            "forward_port": 9000,
+            "forward_protocol": "http",
+            "access_policy_ref": null,
+            "enabled": true
+        },
+        {
+            "id": "loc-health",
+            "match_kind": "exact",
+            "path": "/health",
+            "forward_host": "127.0.0.1",
+            "forward_port": 9001,
+            "forward_protocol": "https",
+            "access_policy_ref": "private",
+            "enabled": true
+        }
+    ]))
+    .expect("locations");
+
+    let candidate =
+        compile_proxy_host(&value, &context(&config, &parts, None)).expect("location candidate");
+    assert_eq!(candidate.config().routes.len(), config.routes.len() + 6);
+    assert_eq!(
+        candidate.config().upstream_groups.len(),
+        config.upstream_groups.len() + 3
+    );
+    let api_routes = candidate
+        .config()
+        .routes
+        .iter()
+        .filter(|route| route.path_prefixes == ["/api"])
+        .collect::<Vec<_>>();
+    assert_eq!(api_routes.len(), 2);
+    assert!(
+        api_routes
+            .iter()
+            .all(|route| route.middlewares == ["private-policy"])
+    );
+    let api_group = candidate
+        .config()
+        .upstream_groups
+        .iter()
+        .find(|group| api_routes[0].upstream_group.as_deref() == Some(group.id.as_str()))
+        .expect("shared location group");
+    assert_eq!(api_group.endpoints[0].url.port(), Some(9000));
+    assert_eq!(api_routes[0].upstream_group, api_routes[1].upstream_group);
+    assert_eq!(
+        candidate
+            .config()
+            .routes
+            .iter()
+            .filter(|route| route.paths == ["/health"])
+            .count(),
+        2
+    );
+    let mut reordered = value.clone();
+    reordered.spec.locations.reverse();
+    let reordered = compile_proxy_host(&reordered, &context(&config, &parts, None))
+        .expect("reordered locations");
+    assert_eq!(
+        serde_json::to_vec(candidate.config()).expect("candidate config"),
+        serde_json::to_vec(reordered.config()).expect("reordered config")
+    );
+
+    let mut disabled = value.clone();
+    disabled.spec.locations[0].enabled = false;
+    let candidate = compile_proxy_host(&disabled, &context(&config, &parts, None))
+        .expect("disabled location candidate");
+    assert!(
+        !candidate
+            .config()
+            .routes
+            .iter()
+            .any(|route| route.path_prefixes == ["/api"])
+    );
+
+    let (other_id, other_policy) = policy_metadata(&config, "other", "bob", &[], true);
+    parts.policies.insert(other_id, other_policy);
+    let mut unauthorized = value.clone();
+    unauthorized.spec.locations[0].access_policy_ref =
+        Some(serde_json::from_str("\"other\"").expect("policy"));
+    assert_eq!(
+        compile_proxy_host(&unauthorized, &context(&config, &parts, None)).unwrap_err(),
+        ProxyHostCompileError::UnauthorizedAccessPolicy
+    );
+
+    let mut duplicate = value;
+    duplicate.spec.locations[1].path = "/api".into();
+    assert_eq!(
+        compile_proxy_host(&duplicate, &context(&config, &parts, None)).unwrap_err(),
+        ProxyHostCompileError::InvalidLocation
+    );
+}
+
+#[test]
 fn shared_access_policy_compiles_only_for_explicit_owner() {
     let config = base_config();
     let mut parts = parts();
@@ -297,7 +408,7 @@ fn compiles_complete_desired_state_deterministically_and_preserves_pending_objec
     let mut second = object();
     second.metadata.owner_id = "bob".parse().expect("owner");
     second.metadata.id = "proxy-second".parse().expect("object ID");
-    second.spec.domain = "second.example.test".into();
+    second.spec.domains = vec!["second.example.test".parse().expect("domain")];
 
     let ordered = compile_proxy_hosts(
         &[],
@@ -330,6 +441,76 @@ fn compiles_complete_desired_state_deterministically_and_preserves_pending_objec
 }
 
 #[test]
+fn compiles_one_route_per_domain_with_one_shared_upstream() {
+    let config = base_config();
+    let policies = BTreeMap::new();
+    let https = BTreeMap::new();
+    let mut host = object();
+    host.spec.domains = ["new.example.test", "www.example.test", "api.example.test"]
+        .into_iter()
+        .map(|domain| domain.parse().expect("domain"))
+        .collect();
+
+    let candidate = compile_proxy_hosts(
+        &[],
+        std::slice::from_ref(&host),
+        &set_context(&config, &policies, &https),
+    )
+    .expect("multi-domain candidate");
+    let generated = candidate
+        .config()
+        .routes
+        .iter()
+        .filter(|route| route.id.starts_with("ph-"))
+        .collect::<Vec<_>>();
+    assert_eq!(generated.len(), 3);
+    assert_eq!(
+        generated
+            .iter()
+            .flat_map(|route| route.hosts.iter().map(String::as_str))
+            .collect::<Vec<_>>(),
+        ["new.example.test", "www.example.test", "api.example.test"]
+    );
+    assert!(
+        generated
+            .windows(2)
+            .all(|routes| { routes[0].upstream_group == routes[1].upstream_group })
+    );
+    assert_eq!(
+        candidate.config().upstream_groups.len(),
+        config.upstream_groups.len() + 1
+    );
+}
+
+#[test]
+fn only_enabled_hosts_claim_domains() {
+    let config = base_config();
+    let policies = BTreeMap::new();
+    let https = BTreeMap::new();
+    let enabled = object();
+    let mut disabled = object();
+    disabled.metadata.id = "proxy-disabled".parse().expect("ID");
+    disabled.spec.enabled = false;
+    compile_proxy_hosts(
+        &[],
+        &[enabled.clone(), disabled.clone()],
+        &set_context(&config, &policies, &https),
+    )
+    .expect("disabled conflict is inactive");
+
+    disabled.spec.enabled = true;
+    assert_eq!(
+        compile_proxy_hosts(
+            &[],
+            &[enabled, disabled],
+            &set_context(&config, &policies, &https),
+        )
+        .expect_err("enabled conflict"),
+        ProxyHostCompileError::ConflictingDomain
+    );
+}
+
+#[test]
 fn aggregate_replaces_only_reserved_managed_resources() {
     let config = base_config();
     let parts = parts();
@@ -341,7 +522,7 @@ fn aggregate_replaces_only_reserved_managed_resources() {
         .config()
         .clone();
     let mut desired = current.clone();
-    desired.spec.domain = "replacement.example.test".into();
+    desired.spec.domains = vec!["replacement.example.test".parse().expect("domain")];
 
     let replacement = compile_proxy_hosts(
         std::slice::from_ref(&current),
@@ -405,7 +586,7 @@ fn aggregate_rejects_manual_takeover_partial_resources_and_duplicate_state() {
     partial
         .routes
         .iter_mut()
-        .find(|route| route.id == ManagedIds::new(&current).route)
+        .find(|route| route.id == ManagedIds::new(&current).routes[0])
         .expect("managed route")
         .paths
         .push("/tampered".into());
@@ -445,26 +626,11 @@ fn rejects_invalid_conflicting_and_unauthorized_inputs() {
         ProxyHostCompileError::UnsupportedConfigurationVersion
     );
 
-    for (domain, expected) in [
-        ("", ProxyHostCompileError::InvalidDomain),
-        ("bad..example", ProxyHostCompileError::InvalidDomain),
-        (
-            "*.example.test",
-            ProxyHostCompileError::UnsupportedDomainForm,
-        ),
-        ("täst.example", ProxyHostCompileError::UnsupportedDomainForm),
-        (
-            "example.test.",
-            ProxyHostCompileError::UnsupportedDomainForm,
-        ),
-    ] {
-        value.spec.domain = domain.into();
-        assert_eq!(
-            compile_proxy_host(&value, &context(&config, &parts, None))
-                .expect_err("invalid domain"),
-            expected
-        );
-    }
+    value.spec.domains.clear();
+    assert_eq!(
+        compile_proxy_host(&value, &context(&config, &parts, None)).expect_err("empty domain list"),
+        ProxyHostCompileError::InvalidDomain
+    );
 
     value = object();
     value.spec.forward_host = "bad host".into();
@@ -524,15 +690,15 @@ fn rejects_invalid_conflicting_and_unauthorized_inputs() {
         ProxyHostCompileError::ConflictingObjectId
     );
     parts.objects.clear();
-    value.spec.domain = "example.test".into();
+    value.spec.domains = vec!["example.test".parse().expect("domain")];
     assert_eq!(
         compile_proxy_host(&value, &context(&config, &parts, None))
             .expect_err("existing route domain"),
         ProxyHostCompileError::ConflictingDomain
     );
-    value.spec.domain = "new.example.test".into();
+    value.spec.domains = vec!["new.example.test".parse().expect("domain")];
     parts.domains.insert(
-        value.spec.domain.clone(),
+        value.spec.domains[0].to_string(),
         ("bob".parse().expect("owner"), "other".parse().expect("ID")),
     );
     assert_eq!(
@@ -550,7 +716,7 @@ fn revision_candidate_does_not_activate_or_leak_plaintext() {
     let state = temp_state();
     let store = RevisionStore::open(&state).expect("revision store");
     let mut rejected = object();
-    rejected.spec.domain = "*.example.test".into();
+    rejected.spec.domains.clear();
     assert!(compile_proxy_host(&rejected, &context(&config, &parts, None)).is_err());
     assert!(store.list().expect("revision list").is_empty());
     assert!(store.active().expect("active pointer").is_none());

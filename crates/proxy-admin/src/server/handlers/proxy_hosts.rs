@@ -1575,5 +1575,8 @@ fn map_proxy_host_preparation_error(error: ProxyHostPreparationError) -> ApiErro
         | ProxyHostPreparationError::AccessPolicyUnavailable
         | ProxyHostPreparationError::ManagedHttpsUnavailable
         | ProxyHostPreparationError::Compile => ApiError::InvalidRequest,
+        ProxyHostPreparationError::ManagedHttpsDomainsUnavailable => {
+            ApiError::CertificateCoverageFailed
+        }
     }
 }

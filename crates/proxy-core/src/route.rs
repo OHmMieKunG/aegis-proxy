@@ -552,6 +552,35 @@ mod tests {
     }
 
     #[test]
+    fn location_matching_is_exact_then_longest_segment_prefix_then_host_fallback() {
+        let mut fallback = route("fallback");
+        fallback.path_prefixes.clear();
+        let mut api = route("api");
+        api.path_prefixes = vec!["/api".into()];
+        let mut versioned = route("versioned");
+        versioned.path_prefixes = vec!["/api/v1".into()];
+        let mut exact = route("exact");
+        exact.path_prefixes.clear();
+        exact.paths = vec!["/api".into()];
+        let config = config(vec![fallback, api, versioned, exact]);
+        let index = RouteIndex::compile(&config);
+        let selected = |path: &str| {
+            let request = Request::builder()
+                .uri(path)
+                .header(HOST, "example.test")
+                .body(())
+                .expect("request");
+            index
+                .select(&config, &request, "public")
+                .map(|route| route.id.as_str())
+        };
+        assert_eq!(selected("/api"), Some("exact"));
+        assert_eq!(selected("/api/v1/users?limit=1"), Some("versioned"));
+        assert_eq!(selected("/api/v2"), Some("api"));
+        assert_eq!(selected("/api2"), Some("fallback"));
+    }
+
+    #[test]
     fn canonicalizes_authority_and_rejects_host_ambiguity() {
         let request = Request::builder()
             .uri("/")

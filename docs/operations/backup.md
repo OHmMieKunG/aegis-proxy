@@ -9,6 +9,12 @@ backup destinations are never replaced.
 `admin/proxy-hosts.json` is captured as one file, so its applied Proxy Hosts and inactive drafts
 remain from the same atomic generation. Restore it only with a binary that supports its schema;
 restored drafts remain inactive and startup still resumes the exact active bound revision.
+Legacy singular-domain records are normalized to one-element lists on load. Candidate files retain
+their recorded legacy binding hash, so restore does not recompile or activate them. Once a plural
+record is written, downgrade requires restoring the earlier binary and matching backup.
+Embedded Proxy Locations are part of each applied or draft Proxy Host record and therefore remain
+in the same atomic backup file. Restore never promotes a draft or recompiles a newer location list;
+the exact recorded active binding remains the restart authority.
 
 ## Create and verify
 

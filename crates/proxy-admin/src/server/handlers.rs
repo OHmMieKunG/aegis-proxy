@@ -33,11 +33,18 @@ pub(super) async fn access_policy_dependencies(
 > {
     let ids = objects
         .iter()
-        .filter_map(|object| {
+        .flat_map(|object| {
             object
                 .spec
                 .access_policy_ref
-                .as_ref()
+                .iter()
+                .chain(
+                    object
+                        .spec
+                        .locations
+                        .iter()
+                        .filter_map(|location| location.access_policy_ref.as_ref()),
+                )
                 .map(|reference| reference.id().clone())
         })
         .collect::<BTreeSet<_>>();

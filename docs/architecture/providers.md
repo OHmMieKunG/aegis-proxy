@@ -33,6 +33,13 @@ create routes, listeners, policies, certificates, or secrets.
 Proxy Host drafts are outside desired-state snapshots and candidate bindings; no provider API can
 list, mutate, promote, compile, or activate them. Reconciliation continues from applied bound state
 while an owner edits an inactive draft.
+Current file and DNS providers reconcile endpoint lists only; they do not emit Proxy Hosts. The
+typed Proxy Host compiler nevertheless applies the same multi-domain conflict checks against
+retained manual/provider-owned runtime routes, and legacy one-domain typed bindings can be cloned
+onto provider-derived revisions without changing their attested hash.
+Embedded Proxy Locations inherit parent ownership and are not provider objects. Providers cannot
+read drafts or inject location configuration; retained provider routes still participate in the
+canonical whole-state validation before any location candidate can activate.
 
 SRV, Docker, Kubernetes, Consul, approval policies, and multi-source conflict resolution are absent.
 Phase 22 adds approved providers on the stable typed domain model after core NPMPlus-compatible

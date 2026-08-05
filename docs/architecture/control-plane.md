@@ -119,6 +119,22 @@ and removes only snapshots whose revision metadata is already absent. Tampering,
 types, and retained binding mismatches fail closed. The separate file transactions intentionally
 provide restart-safe eventual cleanup rather than claiming cross-directory atomicity.
 
+Proxy Hosts carry 1–32 ordered normalized exact domains under
+[ADR-0032](../adr/0032-proxy-host-multiple-domains.md). The first domain is display-primary; stable
+owner/object identity remains independent of domain order. Complete-state compilation checks every
+enabled claim before emitting one route per domain and one shared upstream group/endpoint. Drafts
+remain outside this path. Singular stored objects deserialize to one-element lists, while candidate
+loading can attest the exact former serialization hash so the active pointer remains authoritative
+across upgrade. Migration never invokes compilation or activation.
+
+Proxy Hosts also carry zero to sixteen embedded stable-ID locations under
+[ADR-0033](../adr/0033-embedded-proxy-locations.md). Locations remain inside the parent applied and
+draft generations. Compilation sorts enabled locations by ID, creates one shared upstream per
+location, and emits one exact or segment-prefix route for every parent domain. A missing location
+policy inherits the parent; an override is included in the candidate dependency binding and must
+permit the parent owner. Missing `locations` migrates to an empty list, and both singular-domain and
+Phase 17.1 plural/no-location candidate hashes remain attestable without rewriting active state.
+
 `ApiObject<AccessPolicySpec>` binds one globally unique policy ID to an owner,
 explicit shared-owner IDs, enabled state, and opaque canonical middleware IDs. It contains no
 middleware definitions or credentials. `compile_access_policy_metadata` validates canonical

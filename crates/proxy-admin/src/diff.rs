@@ -4,18 +4,18 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::{
-    API_VERSION, AccessPolicyRef, AutomaticHttps, ForwardProtocol, GeneratedProxyHostPreview,
-    ObjectId, ProxyHostPreviewSummary,
+    API_VERSION, AccessPolicyRef, AutomaticHttps, DomainName, ForwardProtocol,
+    GeneratedProxyHostPreview, ObjectId, ProxyHostPreviewSummary, ProxyLocation,
 };
 
-const MAX_CHANGES: usize = 8;
+const MAX_CHANGES: usize = 9;
 
 /// Stable typed Proxy Host field path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProxyHostField {
-    /// Public domain.
-    Domain,
+    /// Ordered public domains.
+    Domains,
     /// Forward host or IP address.
     ForwardHost,
     /// Forward TCP port.
@@ -26,6 +26,8 @@ pub enum ProxyHostField {
     AutomaticHttps,
     /// Opaque access-policy reference.
     AccessPolicyRef,
+    /// Ordered embedded custom locations.
+    Locations,
     /// Enabled desired state.
     Enabled,
     /// Generated canonical runtime resources.
@@ -48,8 +50,8 @@ pub enum DiffOperation {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum ProxyHostDiffValue {
-    /// Canonical domain.
-    Domain(String),
+    /// Ordered canonical domains.
+    Domains(Vec<DomainName>),
     /// Canonical forward host or IP address.
     ForwardHost(String),
     /// Explicit forward port.
@@ -60,10 +62,12 @@ pub enum ProxyHostDiffValue {
     AutomaticHttps(AutomaticHttps),
     /// Optional opaque policy reference; no policy content is copied.
     AccessPolicyRef(Option<AccessPolicyRef>),
+    /// Ordered bounded custom locations.
+    Locations(Vec<ProxyLocation>),
     /// Enabled desired state.
     Enabled(bool),
     /// Generated identifiers; no runtime or secret state is copied.
-    GeneratedResources(GeneratedProxyHostPreview),
+    GeneratedResources(Vec<GeneratedProxyHostPreview>),
 }
 
 /// One ordered typed field change.
@@ -200,11 +204,11 @@ pub fn diff_proxy_host_previews(
     })
 }
 
-fn fields(summary: &ProxyHostPreviewSummary) -> [(ProxyHostField, ProxyHostDiffValue); 7] {
+fn fields(summary: &ProxyHostPreviewSummary) -> [(ProxyHostField, ProxyHostDiffValue); 8] {
     [
         (
-            ProxyHostField::Domain,
-            ProxyHostDiffValue::Domain(summary.domain.clone()),
+            ProxyHostField::Domains,
+            ProxyHostDiffValue::Domains(summary.domains.clone()),
         ),
         (
             ProxyHostField::ForwardHost,
@@ -227,6 +231,10 @@ fn fields(summary: &ProxyHostPreviewSummary) -> [(ProxyHostField, ProxyHostDiffV
             ProxyHostDiffValue::AccessPolicyRef(summary.access_policy_ref.clone()),
         ),
         (
+            ProxyHostField::Locations,
+            ProxyHostDiffValue::Locations(summary.locations.clone()),
+        ),
+        (
             ProxyHostField::Enabled,
             ProxyHostDiffValue::Enabled(summary.enabled),
         ),
@@ -243,18 +251,22 @@ mod tests {
             api_version: "v1",
             object_id: "proxy-diff".parse().expect("object ID"),
             owner_id: "alice".parse().expect("owner ID"),
-            domain: "diff.example.test".into(),
+            domains: vec!["diff.example.test".parse().expect("domain")],
             forward_host: "127.0.0.1".into(),
             forward_port: 9000,
             forward_protocol: ForwardProtocol::Http,
             automatic_https: AutomaticHttps::Disabled,
             access_policy_ref: None,
+            locations: Vec::new(),
             enabled,
-            generated: enabled.then(|| GeneratedProxyHostPreview {
-                route_id: "ph-test-route".into(),
-                listener_id: "public".into(),
-                upstream_group_id: "ph-test-upstream".into(),
-                endpoint_id: "ph-test-endpoint".into(),
+            generated: enabled.then(|| {
+                vec![GeneratedProxyHostPreview {
+                    location_id: None,
+                    route_id: "ph-test-route".into(),
+                    listener_id: "public".into(),
+                    upstream_group_id: "ph-test-upstream".into(),
+                    endpoint_id: "ph-test-endpoint".into(),
+                }]
             }),
             candidate_hash: if enabled { "a" } else { "b" }.repeat(64),
             active_route_fingerprint: "0000000000000001".into(),
@@ -270,7 +282,7 @@ mod tests {
         let second = diff_proxy_host_previews(None, &candidate).expect("diff");
         assert_eq!(first, second);
         assert_eq!(first.changes.len(), MAX_CHANGES);
-        assert_eq!(first.changes[0].field, ProxyHostField::Domain);
+        assert_eq!(first.changes[0].field, ProxyHostField::Domains);
         assert_eq!(
             first.changes[MAX_CHANGES - 1].field,
             ProxyHostField::GeneratedResources

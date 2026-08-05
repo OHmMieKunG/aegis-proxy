@@ -298,18 +298,7 @@ pub(crate) fn validate_route_matchers(route: &RouteConfig) -> Result<(), ConfigE
 }
 
 fn validate_path(route_id: &str, path: &str, prefix: bool) -> Result<(), ConfigError> {
-    let valid = !path.is_empty()
-        && path.len() <= MAX_PATH_BYTES
-        && path.is_ascii()
-        && path.starts_with('/')
-        && !path.contains('%')
-        && !path.contains('\\')
-        && !path.contains('?')
-        && !path.contains('#')
-        && !path.contains("//")
-        && (!prefix || path == "/" || !path.ends_with('/'))
-        && !path.split('/').any(|segment| matches!(segment, "." | ".."));
-    if !valid {
+    if !crate::valid_route_path(path, prefix) {
         return Err(ConfigError::Invalid(format!(
             "route {route_id} has non-canonical path {path:?}"
         )));
@@ -453,7 +442,69 @@ pub fn validate_exact_host(value: &str) -> Result<(), ConfigError> {
     valid_certificate_host(value)
 }
 
+/// Normalize one user-facing exact DNS name to canonical lowercase ASCII.
+///
+/// One terminal root dot is accepted and removed. IP literals, wildcards, URL syntax, and
+/// non-DNS host forms remain unsupported.
+pub fn normalize_exact_host(value: &str) -> Result<String, ConfigError> {
+    if value.is_empty()
+        || value.trim() != value
+        || value.chars().any(|character| {
+            character.is_ascii()
+                && !(character.is_ascii_alphanumeric() || matches!(character, '-' | '.'))
+        })
+    {
+        return Err(ConfigError::Invalid("invalid exact host".into()));
+    }
+    let value = value.strip_suffix('.').unwrap_or(value);
+    if value.is_empty() || value.ends_with('.') {
+        return Err(ConfigError::Invalid("invalid exact host".into()));
+    }
+    let url::Host::Domain(domain) =
+        url::Host::parse(value).map_err(|_| ConfigError::Invalid("invalid exact host".into()))?
+    else {
+        return Err(ConfigError::Invalid(
+            "IP literals are unsupported exact hosts".into(),
+        ));
+    };
+    validate_exact_host(&domain)?;
+    Ok(domain)
+}
+
 /// Validate one canonical ASCII DNS upstream name without performing resolution.
 pub fn validate_upstream_hostname(value: &str) -> Result<(), ConfigError> {
     valid_upstream_host(value).map_err(|message| ConfigError::Invalid(message.into()))
+}
+
+#[cfg(test)]
+mod exact_host_tests {
+    use super::normalize_exact_host;
+
+    #[test]
+    fn normalizes_case_root_dot_and_idna_and_rejects_non_hosts() {
+        assert_eq!(
+            normalize_exact_host("WWW.Example.COM.").expect("normalized"),
+            "www.example.com"
+        );
+        assert_eq!(
+            normalize_exact_host("täst.example").expect("IDNA"),
+            "xn--tst-qla.example"
+        );
+        for invalid in [
+            "",
+            " bad.example",
+            "bad..example",
+            "*.example.com",
+            "127.0.0.1",
+            "https://example.com",
+            "example.com:443",
+            "example.com/path",
+            "user@example.com",
+        ] {
+            assert!(
+                normalize_exact_host(invalid).is_err(),
+                "accepted {invalid:?}"
+            );
+        }
+    }
 }

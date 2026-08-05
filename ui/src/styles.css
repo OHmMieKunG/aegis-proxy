@@ -76,6 +76,18 @@ input:focus, select:focus, textarea:focus, button:focus-visible, a:focus-visible
   outline: 3px solid #77e6bf; outline-offset: 2px;
 }
 .field-row { display: grid; grid-template-columns: 2fr 1fr; gap: 1rem; }
+.domain-fields { display: grid; gap: .8rem; margin: 0; padding: 1rem; border: 1px solid var(--line); }
+.domain-fields legend { color: #fff; font-weight: 800; padding: 0 .35rem; }
+.domain-fields > p { margin-bottom: 0; }
+.location-fields { display: grid; gap: 1rem; margin: 0; padding: 1rem; border: 1px solid var(--line); }
+.location-fields legend { color: #fff; font-weight: 800; padding: 0 .35rem; }
+.location-fields > p { margin-bottom: 0; }
+.location-row { display: grid; gap: .75rem; padding: 1rem; border: 1px solid var(--line); background: #0b1117; }
+.location-row > .error { margin: 0; font-size: .8rem; }
+.domain-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .5rem; align-items: end; }
+.domain-row > .error { grid-column: 1 / -1; margin: 0; font-size: .8rem; }
+.domain-actions { display: flex; gap: .35rem; }
+.domain-actions button { padding-inline: .65rem; }
 .check { grid-template-columns: auto 1fr; justify-content: start; align-items: center; }
 .check input { width: 1.1rem; height: 1.1rem; }
 .actions { display: flex; gap: .65rem; flex-wrap: wrap; }
@@ -103,6 +115,8 @@ pre {
 .plain-list li, .object-list li { display: flex; justify-content: space-between; gap: 1rem; padding: .85rem 0; border-top: 1px solid var(--line); }
 .object-list li div, .object-list li span { min-width: 0; }
 .object-list li div > span { display: block; color: var(--muted); margin-top: .3rem; overflow-wrap: anywhere; }
+.domain-summary > summary { color: #fff; }
+.domain-summary ul { margin: .25rem 0 0; padding-left: 1.25rem; color: var(--muted); }
 .host-state { display: flex; align-items: center; justify-content: flex-end; gap: .75rem; }
 .action-menu { position: relative; }
 .action-menu > summary { white-space: nowrap; }
@@ -135,7 +149,7 @@ th { color: var(--muted); font-size: .72rem; text-transform: uppercase; letter-s
 @media (max-width: 620px) {
   header { align-items: flex-start; }
   .identity { flex-wrap: wrap; justify-content: flex-end; }
-  .split, .field-row { grid-template-columns: 1fr; }
+  .split, .field-row, .domain-row { grid-template-columns: 1fr; }
   .page-heading { display: block; }
   .page-heading .state { display: inline-block; margin-bottom: 1rem; }
   .page-heading .button-link { display: inline-block; }

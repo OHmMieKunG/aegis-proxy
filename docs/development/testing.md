@@ -55,7 +55,8 @@ production UI in one terminal:
 ```bash
 npm --prefix ui run build
 cd ui
-npm exec vite -- preview --host 0.0.0.0 --port 4173
+AEGISPROXY_VITE_CACHE_DIR=/tmp/aegisproxy-vite-cache \
+  npm exec vite -- preview --host 0.0.0.0 --port 4173
 ```
 
 Run the focused Proxy Host suite from the repository root in another terminal:
@@ -71,10 +72,17 @@ docker run --rm --network host --ipc host \
 ```
 
 The read-only repository mount and container-local output avoid host-owned Vite/Playwright cache
-artifacts. This command executes Chromium; `playwright --list` is not browser evidence.
+artifacts. Start the host preview first so the read-only container reuses it; the explicit Vite
+cache directory also avoids stale root-owned metadata. This command executes Chromium;
+`playwright --list` is not browser evidence.
 The focused lifecycle scenario covers inactive draft save/reopen/discard/promotion, activation
 failure after promotion, desired-versus-active labels, and the existing create/edit/toggle/copy/
-delete/conflict/recovery/audit outcomes.
+delete/conflict/recovery/audit outcomes. It also covers structured multi-domain add/remove/reorder,
+list summaries, duplication, and all-domain managed-HTTPS rejection.
+The same lifecycle scenario covers structured Proxy Location add/remove/reorder, draft persistence,
+promotion, duplicate ID replacement, and the exact/segment-prefix helper contract. Focused Rust
+tests cover shared location targets, policy inheritance/authorization, request-path precedence,
+store uncertainty, and exact-active restart with newer desired/draft locations.
 
 Pebble requires disposable local Docker fixture:
 

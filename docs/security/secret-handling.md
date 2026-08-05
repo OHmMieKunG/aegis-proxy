@@ -45,7 +45,7 @@ credentials. Delete returns only the deleted secret-free record.
 Private typed Proxy Host validation/preview/create/update/delete endpoints apply authorization before JSON deserialization,
 require exact principal ownership, and reuse this redaction boundary. They return fixed error
 envelopes and cannot expose or resolve secrets. Validation/preview cannot persist or activate.
-Create may persist only the secret-free seven-field object and a canonical immutable candidate; it
+Create may persist only the secret-free bounded Proxy Host object and a canonical immutable candidate; it
 cannot activate. Access-policy update/delete likewise cannot create or activate configuration
 revisions. Validation/preview and persisted candidate creation consume only policy secret-free
 metadata after owner/share checks. Candidate bindings retain exact policy records; activation and
@@ -69,7 +69,7 @@ plaintext credential field.
 Typed activation accepts only an opaque revision ID and metadata-only desired-state snapshot. It
 recompiles and hashes the already validated configuration without resolving secret references;
 errors and audit records use fixed codes, not configuration or secret contents.
-Immutable typed candidate snapshots contain strict seven-field Proxy Host objects plus referenced
+Immutable typed candidate snapshots contain strict bounded Proxy Host objects plus referenced
 Access Policy records containing only IDs, ownership/sharing, enabled state, and opaque middleware
 IDs. Their hash is bound into revision metadata, and activation verifies file schema, permissions,
 size, revision identity, hash, canonical order, and equality with current desired and policy state.

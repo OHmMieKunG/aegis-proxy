@@ -13,6 +13,10 @@ affected, an immutable candidate; they never activate implicitly. Canonical Admi
 activation and rollback verify complete schema-2 state and dependencies through the existing
 atomic coordinator. Deprecated Proxy Host activation/rollback aliases accept schema 1 only. The
 embedded GUI is a removable client of these same endpoints and receives no implicit authority.
+Proxy Host payloads expose `domains` as an ordered 1–32 item array. The server accepts legacy
+singular `domain` only as an exclusive migration input alias; responses and generated clients use
+the plural form. Supplying both fields, duplicate normalized names, or unsupported match syntax is
+an invalid request.
 
 Local socket peers are authenticated by kernel credentials and receive the
 fixed `admin` role. Automation may additionally send a bearer API token. Token

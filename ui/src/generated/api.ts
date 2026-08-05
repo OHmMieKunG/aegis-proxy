@@ -1066,6 +1066,18 @@ export interface components {
             };
         };
         MiddlewareRef: string;
+        ProxyLocation: {
+            id: components["schemas"]["ObjectId"];
+            /** @enum {string} */
+            match_kind: "exact" | "prefix";
+            path: string;
+            forward_host: string;
+            forward_port: number;
+            /** @enum {string} */
+            forward_protocol: "http" | "https";
+            access_policy_ref: components["schemas"]["ObjectId"] | null;
+            enabled: boolean;
+        };
         ProxyHostObject: {
             /** @constant */
             api_version: "v1";
@@ -1074,7 +1086,7 @@ export interface components {
                 owner_id: components["schemas"]["ObjectId"];
             };
             spec: {
-                domain: string;
+                domains: string[];
                 forward_host: string;
                 forward_port: number;
                 /** @enum {string} */
@@ -1082,6 +1094,7 @@ export interface components {
                 /** @enum {string} */
                 automatic_https: "disabled" | "managed";
                 access_policy_ref: components["schemas"]["ObjectId"] | null;
+                locations: components["schemas"]["ProxyLocation"][];
                 enabled: boolean;
             };
         };
@@ -1211,6 +1224,7 @@ export interface components {
             candidate: components["schemas"]["Candidate"];
         };
         GeneratedProxyHost: {
+            location_id: components["schemas"]["ObjectId"] | null;
             route_id: string;
             listener_id: string;
             upstream_group_id: string;
@@ -1221,7 +1235,7 @@ export interface components {
             api_version: "v1";
             object_id: components["schemas"]["ObjectId"];
             owner_id: components["schemas"]["ObjectId"];
-            domain: string;
+            domains: string[];
             forward_host: string;
             forward_port: number;
             /** @enum {string} */
@@ -1229,8 +1243,9 @@ export interface components {
             /** @enum {string} */
             automatic_https: "disabled" | "managed";
             access_policy_ref: components["schemas"]["ObjectId"] | null;
+            locations: components["schemas"]["ProxyLocation"][];
             enabled: boolean;
-            generated: components["schemas"]["GeneratedProxyHost"] | null;
+            generated: components["schemas"]["GeneratedProxyHost"][] | null;
             candidate_hash: string;
             active_route_fingerprint: string;
             candidate_route_fingerprint: string;
@@ -1952,6 +1967,8 @@ export interface operations {
                     "application/json": components["schemas"]["ProxyHostCreate"];
                 };
             };
+            /** @description Managed HTTPS has no single selectable certificate covering every configured domain (`certificate_coverage_failed`) */
+            422: components["responses"]["Error"];
             default: components["responses"]["Error"];
         };
     };
@@ -2001,6 +2018,8 @@ export interface operations {
                     "application/json": components["schemas"]["ProxyHostCreate"];
                 };
             };
+            /** @description Managed HTTPS has no single selectable certificate covering every configured domain (`certificate_coverage_failed`) */
+            422: components["responses"]["Error"];
             default: components["responses"]["Error"];
         };
     };
@@ -2170,6 +2189,8 @@ export interface operations {
                     "application/json": components["schemas"]["ProxyHostCreate"];
                 };
             };
+            /** @description Managed HTTPS has no single selectable certificate covering every configured domain (`certificate_coverage_failed`) */
+            422: components["responses"]["Error"];
             default: components["responses"]["Error"];
         };
     };
@@ -2212,6 +2233,8 @@ export interface operations {
                     "application/json": components["schemas"]["ProxyHostValidation"];
                 };
             };
+            /** @description Managed HTTPS has no single selectable certificate covering every configured domain (`certificate_coverage_failed`) */
+            422: components["responses"]["Error"];
             default: components["responses"]["Error"];
         };
     };
@@ -2233,6 +2256,8 @@ export interface operations {
                     "application/json": components["schemas"]["PreparedProxyHost"];
                 };
             };
+            /** @description Managed HTTPS has no single selectable certificate covering every configured domain (`certificate_coverage_failed`) */
+            422: components["responses"]["Error"];
             default: components["responses"]["Error"];
         };
     };

@@ -44,6 +44,7 @@ import {
   webStatus,
   type Action,
   type ProxyHost,
+  type ProxyLocation,
   type Resource,
   type Session,
   type Stored,
@@ -169,26 +170,208 @@ export async function proxyHostLoader({ request }: { request: Request }) {
 }
 
 function proxyObject(form: FormData, owner: string, id?: string): ProxyHost {
-  const domain = String(form.get("domain") ?? "").trim().toLowerCase();
+  const domains = form.getAll("domains").map(String);
+  const locationIds = form.getAll("location_id").map(String);
+  const locationPaths = form.getAll("location_path").map(String);
+  const locationKinds = form.getAll("location_match_kind").map(String);
+  const locationHosts = form.getAll("location_forward_host").map(String);
+  const locationPorts = form.getAll("location_forward_port").map(Number);
+  const locationProtocols = form.getAll("location_forward_protocol").map(String);
+  const locationPolicies = form.getAll("location_access_policy_ref").map(String);
+  const locationEnabled = form.getAll("location_enabled").map(String);
+  const locationFieldCounts = [locationPaths, locationKinds, locationHosts, locationPorts, locationProtocols, locationPolicies, locationEnabled];
+  if (locationFieldCounts.some((values) => values.length !== locationIds.length)) {
+    throw new Response("Invalid Proxy Location fields", { status: 400 });
+  }
+  const locations: ProxyLocation[] = locationIds.map((locationId, index) => ({
+    id: locationId,
+    match_kind: locationKinds[index] as "exact" | "prefix",
+    path: locationPaths[index] ?? "",
+    forward_host: (locationHosts[index] ?? "").trim(),
+    forward_port: locationPorts[index] ?? 0,
+    forward_protocol: locationProtocols[index] as "http" | "https",
+    access_policy_ref: locationPolicies[index] || null,
+    enabled: locationEnabled[index] === "true",
+  }));
+  const primary = (domains[0] ?? "proxy-host").trim().toLowerCase().replace(/\.$/, "");
   const objectId =
     id ??
-    `proxy-${domain.replace(/[^a-z0-9]+/g, "-").replace(/-+$/g, "")}`.slice(0, 63);
+    `proxy-${primary.replace(/[^a-z0-9]+/g, "-").replace(/-+$/g, "")}`.slice(0, 63);
   return {
     api_version: "v1",
     metadata: { id: objectId, owner_id: owner },
     spec: {
-      domain,
+      domains,
       forward_host: String(form.get("forward_host") ?? "").trim(),
       forward_port: Number(form.get("forward_port")),
       forward_protocol: String(form.get("forward_protocol")) as "http" | "https",
       automatic_https: String(form.get("automatic_https")) as "disabled" | "managed",
       access_policy_ref: String(form.get("access_policy_ref") || "") || null,
+      locations,
       enabled: form.get("enabled") === "on",
     },
   };
 }
 
-function conflictResult(error: unknown, operation?: ProxyHostOperation): ProxyHostActionResult {
+const MAX_PROXY_HOST_DOMAINS = 32;
+const MAX_PROXY_HOST_LOCATIONS = 16;
+
+function newLocationId(): string {
+  return `loc-${crypto.randomUUID()}`;
+}
+
+function primaryDomain(object: ProxyHost): string {
+  return object.spec.domains[0] ?? "Proxy Host";
+}
+
+function locationCount(object: ProxyHost): number {
+  return object.spec.locations?.length ?? 0;
+}
+
+function DomainSummary({ object }: { object: ProxyHost }) {
+  const [primary, ...additional] = object.spec.domains;
+  return (
+    <details className="domain-summary">
+      <summary><strong>{primary}{additional.length > 0 ? ` +${additional.length} more` : ""}</strong></summary>
+      <ul>{object.spec.domains.map((domain) => <li key={domain}>{domain}</li>)}</ul>
+    </details>
+  );
+}
+
+function DomainFields({ initial }: { initial: string[] }) {
+  const [domains, setDomains] = useState(initial.length > 0 ? initial : [""]);
+  const normalized = domains.map((domain) => domain.toLowerCase().replace(/\.$/, ""));
+  const duplicates = new Set(
+    normalized.filter((domain, index) => domain !== "" && normalized.indexOf(domain) !== index),
+  );
+  const change = (index: number, value: string) =>
+    setDomains((current) => current.map((domain, offset) => offset === index ? value : domain));
+  const move = (index: number, offset: -1 | 1) => setDomains((current) => {
+    const next = [...current];
+    const [domain] = next.splice(index, 1);
+    if (domain !== undefined) next.splice(index + offset, 0, domain);
+    return next;
+  });
+  return (
+    <fieldset className="domain-fields">
+      <legend>Domains</legend>
+      <p className="muted">The first domain is the primary name. Every domain uses the same upstream and policy.</p>
+      {domains.map((domain, index) => {
+        const duplicate = duplicates.has(normalized[index]);
+        return (
+          <div className="domain-row" key={index}>
+            <label>
+              Domain {index + 1}{index === 0 ? " (primary)" : ""}
+              <input
+                name="domains"
+                required
+                maxLength={253}
+                value={domain}
+                onChange={(event) => change(index, event.currentTarget.value)}
+                aria-invalid={duplicate}
+                aria-describedby={duplicate ? `domain-${index}-error` : undefined}
+                placeholder={index === 0 ? "app.example.com" : "www.example.com"}
+              />
+            </label>
+            <div className="domain-actions" aria-label={`Domain ${index + 1} controls`}>
+              <button type="button" className="quiet" disabled={index === 0} onClick={() => move(index, -1)} aria-label={`Move ${domain || `domain ${index + 1}`} up`}>↑</button>
+              <button type="button" className="quiet" disabled={index === domains.length - 1} onClick={() => move(index, 1)} aria-label={`Move ${domain || `domain ${index + 1}`} down`}>↓</button>
+              <button type="button" className="quiet" disabled={domains.length === 1} onClick={() => setDomains((current) => current.filter((_, offset) => offset !== index))} aria-label={`Remove ${domain || `domain ${index + 1}`}`}>Remove</button>
+            </div>
+            {duplicate && <p id={`domain-${index}-error`} className="error" role="alert">Duplicate domain after case and trailing-dot normalization.</p>}
+          </div>
+        );
+      })}
+      <button type="button" className="quiet" disabled={domains.length >= MAX_PROXY_HOST_DOMAINS} onClick={() => setDomains((current) => [...current, ""])}>Add domain</button>
+      <span className="muted">{domains.length}/{MAX_PROXY_HOST_DOMAINS}</span>
+    </fieldset>
+  );
+}
+
+function LocationFields({
+  initial,
+  duplicate,
+  policies,
+}: {
+  initial: ProxyLocation[];
+  duplicate: boolean;
+  policies: string[];
+}) {
+  const [locations, setLocations] = useState<ProxyLocation[]>(() => initial.map((location) => ({
+    ...location,
+    id: duplicate ? newLocationId() : location.id,
+  })));
+  const duplicatePaths = new Set(
+    locations
+      .map((location) => location.path)
+      .filter((path, index, paths) => path !== "" && paths.indexOf(path) !== index),
+  );
+  const change = (index: number, update: Partial<ProxyLocation>) => setLocations((current) =>
+    current.map((location, offset) => offset === index ? { ...location, ...update } : location));
+  const move = (index: number, offset: -1 | 1) => setLocations((current) => {
+    const next = [...current];
+    const [location] = next.splice(index, 1);
+    if (location !== undefined) next.splice(index + offset, 0, location);
+    return next;
+  });
+  return (
+    <fieldset className="location-fields">
+      <legend>Custom locations</legend>
+      <p className="muted">More specific paths take priority. <code>/api/v1</code> is checked before <code>/api</code>. The default upstream remains the fallback.</p>
+      {locations.map((location, index) => {
+        const duplicatePath = duplicatePaths.has(location.path);
+        return (
+          <article className="location-row" key={location.id}>
+            <input type="hidden" name="location_id" value={location.id} />
+            <div className="field-row">
+              <label>Path
+                <input name="location_path" required maxLength={2048} value={location.path} onChange={(event) => change(index, { path: event.currentTarget.value })} aria-invalid={duplicatePath} aria-describedby={duplicatePath ? `${location.id}-path-error` : undefined} placeholder="/api" />
+              </label>
+              <label>Match
+                <select name="location_match_kind" value={location.match_kind} onChange={(event) => change(index, { match_kind: event.currentTarget.value as "exact" | "prefix" })}>
+                  <option value="prefix">Path and descendants</option>
+                  <option value="exact">Exact path only</option>
+                </select>
+              </label>
+            </div>
+            {duplicatePath && <p id={`${location.id}-path-error`} className="error" role="alert">Duplicate location path.</p>}
+            <div className="field-row">
+              <label>Forward host or IP<input name="location_forward_host" required maxLength={253} value={location.forward_host} onChange={(event) => change(index, { forward_host: event.currentTarget.value })} /></label>
+              <label>Forward port<input name="location_forward_port" type="number" min="1" max="65535" required value={location.forward_port} onChange={(event) => change(index, { forward_port: Number(event.currentTarget.value) })} /></label>
+            </div>
+            <div className="field-row">
+              <label>Upstream protocol<select name="location_forward_protocol" value={location.forward_protocol} onChange={(event) => change(index, { forward_protocol: event.currentTarget.value as "http" | "https" })}><option>http</option><option>https</option></select></label>
+              <label>Access policy<select name="location_access_policy_ref" value={location.access_policy_ref ?? ""} onChange={(event) => change(index, { access_policy_ref: event.currentTarget.value || null })}><option value="">Inherit host policy</option>{policies.map((policy) => <option key={policy}>{policy}</option>)}</select></label>
+              <label>State<select name="location_enabled" value={String(location.enabled)} onChange={(event) => change(index, { enabled: event.currentTarget.value === "true" })}><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
+            </div>
+            <div className="domain-actions" aria-label={`Location ${location.path || index + 1} controls`}>
+              <button type="button" className="quiet" disabled={index === 0} onClick={() => move(index, -1)} aria-label={`Move ${location.path || `location ${index + 1}`} up`}>↑</button>
+              <button type="button" className="quiet" disabled={index === locations.length - 1} onClick={() => move(index, 1)} aria-label={`Move ${location.path || `location ${index + 1}`} down`}>↓</button>
+              <button type="button" className="quiet" onClick={() => setLocations((current) => current.filter((_, offset) => offset !== index))} aria-label={`Remove ${location.path || `location ${index + 1}`}`}>Remove</button>
+            </div>
+          </article>
+        );
+      })}
+      <button type="button" className="quiet" disabled={locations.length >= MAX_PROXY_HOST_LOCATIONS} onClick={() => setLocations((current) => [...current, {
+        id: newLocationId(),
+        match_kind: "prefix",
+        path: "",
+        forward_host: "",
+        forward_port: 8080,
+        forward_protocol: "http",
+        access_policy_ref: null,
+        enabled: true,
+      }])}>Add location</button>
+      <span className="muted">{locations.length}/{MAX_PROXY_HOST_LOCATIONS}</span>
+    </fieldset>
+  );
+}
+
+function conflictResult(
+  error: unknown,
+  operation?: ProxyHostOperation,
+  domains: string[] = [],
+): ProxyHostActionResult {
   if (error instanceof ApiError) {
     if (error.code === "recovery_required") return recoveryRequiredResult();
     if (error.code === "audit_failed_after_save") {
@@ -221,6 +404,14 @@ function conflictResult(error: unknown, operation?: ProxyHostOperation): ProxyHo
         kind: "error",
         heading: "Save failed",
         message: "The Proxy Host was not saved and active routing is unchanged. Retry is allowed.",
+        reload: false,
+      };
+    }
+    if (error.code === "certificate_coverage_failed") {
+      return {
+        kind: "error",
+        heading: "Certificate does not cover every domain",
+        message: `No single selectable certificate covers this domain set: ${domains.join(", ")}. Import or configure one certificate that covers every domain before applying.`,
         reload: false,
       };
     }
@@ -306,12 +497,13 @@ async function saveAndApply(
   mutation: Promise<{ candidate: { id: string } }>,
   revision: string,
   operation: ProxyHostOperation,
+  domains: string[] = [],
 ) {
   let candidate: string;
   try {
     candidate = (await mutation).candidate.id;
   } catch (error) {
-    return conflictResult(error, operation);
+    return conflictResult(error, operation, domains);
   }
   try {
     await activateProxyHost(candidate, revision);
@@ -385,6 +577,7 @@ export async function proxyHostAction({ request }: { request: Request }) {
       updateProxyHost(id, object, generation(form), revision),
       revision,
       intent === "enable" ? "enabled" : "disabled",
+      object.spec.domains,
     );
   }
   throw new Response("Invalid action", { status: 400 });
@@ -441,16 +634,17 @@ export function ProxyHosts() {
               const applied = application.objects.find(({ object_id }) => object_id === object.metadata.id);
               return <li key={object.metadata.id}>
                 <div>
-                  <strong>{object.spec.domain}</strong>
+                  <DomainSummary object={object} />
                   <span>{object.metadata.id}</span>
                   <span>{object.spec.forward_protocol}://{object.spec.forward_host}:{object.spec.forward_port}</span>
+                  <span>{locationCount(object)} custom {locationCount(object) === 1 ? "location" : "locations"}</span>
                   <span>{!application.active_state_known ? "Active status unavailable" : applied?.desired_matches_active ? "Changes active" : "Saved but not active"}</span>
                 </div>
                 <div className="host-state">
                   <span className={object.spec.enabled ? "state good" : "state"}>{object.spec.enabled ? "Enabled" : "Disabled"}</span>
                   {(canUpdateDraft || canDelete || canCreateDraft) && (
                     <details className="action-menu">
-                      <summary aria-label={`Actions for ${object.spec.domain}`}>Actions</summary>
+                      <summary aria-label={`Actions for ${primaryDomain(object)}`}>Actions</summary>
                       <div className="actions">
                         {canUpdateDraft && !recoveryBlocked && <Link to={`/proxy-hosts/${encodeURIComponent(object.metadata.id)}/edit`}>Edit</Link>}
                         {canCreateDraft && !recoveryBlocked && <Link to={`/proxy-hosts/${encodeURIComponent(object.metadata.id)}/duplicate`}>Duplicate</Link>}
@@ -468,7 +662,8 @@ export function ProxyHosts() {
                           <Form
                             method="post"
                             onSubmit={(event) => {
-                              if (!confirm(`Delete Proxy Host ${object.spec.domain}?`)) event.preventDefault();
+                              const count = object.spec.domains.length;
+                              if (!confirm(`Delete Proxy Host ${primaryDomain(object)}${count > 1 ? ` and ${count - 1} additional domains` : ""}?`)) event.preventDefault();
                             }}
                           >
                             <input type="hidden" name="revision" value={revision} />
@@ -493,8 +688,9 @@ export function ProxyHosts() {
             {drafts.map((draft) => (
               <li key={draft.object.metadata.id}>
                 <div>
-                  <strong>{draft.object.spec.domain}</strong>
+                  <DomainSummary object={draft.object} />
                   <span>{draft.object.metadata.id}</span>
+                  <span>{locationCount(draft.object)} custom {locationCount(draft.object) === 1 ? "location" : "locations"}</span>
                   <span>Draft not applied</span>
                 </div>
                 <div className="host-state">
@@ -614,6 +810,7 @@ export async function proxyHostEditorAction({
       promoteProxyHostDraft(id, savedDraft.draft.generation, revision),
       revision,
       hostOperation(form),
+      object.spec.domains,
     );
   }
   if (mode === "edit") {
@@ -627,6 +824,7 @@ export async function proxyHostEditorAction({
       ),
       revision,
       "updated",
+      object.spec.domains,
     );
   }
   if (mode === "new" || mode === "duplicate") {
@@ -635,6 +833,7 @@ export async function proxyHostEditorAction({
       createProxyHost(object, revision),
       revision,
       "created",
+      object.spec.domains,
     );
   }
   throw new Response("Invalid action", { status: 400 });
@@ -660,16 +859,16 @@ export function ProxyHostEditor() {
     permits(session, mode === "edit" ? "update_proxy_host" : "create_proxy_host");
   const canSaveDraft = permits(session, mode === "edit" ? "update_proxy_host" : "create_proxy_host");
   const title = mode === "edit"
-    ? `Edit ${source?.spec.domain ?? "Proxy Host"}`
+    ? `Edit ${source ? primaryDomain(source) : "Proxy Host"}`
     : mode === "duplicate"
-      ? `Duplicate ${source?.spec.domain ?? "Proxy Host"}`
+      ? `Duplicate ${source ? primaryDomain(source) : "Proxy Host"}`
       : "New Proxy Host";
   return (
     <section className="narrow">
       <div className="page-heading">
         <div><p className="eyebrow">ROUTING</p><h2>{title}</h2><p>Save and apply validates the complete configuration before changing active routing.</p></div>
       </div>
-      {mode === "duplicate" && <p className="notice">The copy has a new identity and starts disabled. Change its domain before saving to avoid a route conflict.</p>}
+      {mode === "duplicate" && <p className="notice">The copy has a new identity and starts disabled. Change its domains before enabling it to avoid a route conflict.</p>}
       <ActionResult result={result} />
       {draft && <p className="notice">Draft not applied. Saving it does not change active routing.</p>}
       <article className="panel">
@@ -680,14 +879,15 @@ export function ProxyHostEditor() {
           <input type="hidden" name="applied_exists" value={host ? "true" : "false"} />
           <input type="hidden" name="mode" value={mode} />
           <input type="hidden" name="object_id" value={objectId} />
-          <label>Domain<input name="domain" required maxLength={253} defaultValue={source?.spec.domain ?? ""} placeholder="app.example.com" /></label>
+          <DomainFields initial={source?.spec.domains ?? [""]} />
+          <LocationFields initial={source?.spec.locations ?? []} duplicate={mode === "duplicate"} policies={policies.map(({ object }) => object.metadata.id)} />
           <div className="field-row">
-            <label>Forward host or IP<input name="forward_host" required maxLength={253} defaultValue={source?.spec.forward_host ?? ""} /></label>
-            <label>Forward port<input name="forward_port" type="number" min="1" max="65535" defaultValue={source?.spec.forward_port ?? 8080} required /></label>
+            <label>Default forward host or IP<input name="forward_host" required maxLength={253} defaultValue={source?.spec.forward_host ?? ""} /></label>
+            <label>Default forward port<input name="forward_port" type="number" min="1" max="65535" defaultValue={source?.spec.forward_port ?? 8080} required /></label>
           </div>
-          <label>Upstream protocol<select name="forward_protocol" defaultValue={source?.spec.forward_protocol ?? "http"}><option>http</option><option>https</option></select></label>
+          <label>Default upstream protocol<select name="forward_protocol" defaultValue={source?.spec.forward_protocol ?? "http"}><option>http</option><option>https</option></select></label>
           <label>HTTPS<select name="automatic_https" defaultValue={source?.spec.automatic_https ?? "disabled"}><option value="disabled">Disabled</option><option value="managed">Managed</option></select></label>
-          <label>Access policy<select name="access_policy_ref" defaultValue={source?.spec.access_policy_ref ?? ""}><option value="">None</option>{policies.map(({ object }) => <option key={object.metadata.id}>{object.metadata.id}</option>)}</select></label>
+          <label>Default access policy<select name="access_policy_ref" defaultValue={source?.spec.access_policy_ref ?? ""}><option value="">None</option>{policies.map(({ object }) => <option key={object.metadata.id}>{object.metadata.id}</option>)}</select></label>
           <label className="check"><input name="enabled" type="checkbox" defaultChecked={mode === "duplicate" ? false : source?.spec.enabled ?? true} />Enabled</label>
           <details><summary>Advanced controls</summary><p>AegisProxy derives listener, routing, timeout, and recovery defaults from these typed fields.</p></details>
           <div className="actions">

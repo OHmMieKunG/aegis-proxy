@@ -1,9 +1,10 @@
 //! Versioned high-level administration contracts.
 
-use std::{fmt, net::IpAddr, path::Path, str::FromStr};
+use std::{collections::BTreeSet, fmt, net::IpAddr, path::Path, str::FromStr};
 
 use aegisproxy_config::{
-    provider::ProviderScheme, validate_exact_host, validate_upstream_hostname,
+    MAX_PATH_BYTES, normalize_exact_host, provider::ProviderScheme, valid_route_path,
+    validate_exact_host, validate_upstream_hostname,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
@@ -13,6 +14,13 @@ pub const API_VERSION: &str = "v1";
 
 const MAX_OBJECT_ID_BYTES: usize = 64;
 const MAX_DOMAIN_BYTES: usize = 253;
+/// Maximum exact domains accepted by one typed Proxy Host.
+pub const MAX_PROXY_HOST_DOMAINS: usize = 32;
+const MAX_PROXY_HOST_DOMAIN_BYTES: usize = MAX_PROXY_HOST_DOMAINS * MAX_DOMAIN_BYTES;
+/// Maximum custom locations accepted by one typed Proxy Host.
+pub const MAX_PROXY_HOST_LOCATIONS: usize = 16;
+const MAX_PROXY_HOST_LOCATION_BYTES: usize =
+    MAX_PROXY_HOST_LOCATIONS * (MAX_OBJECT_ID_BYTES + MAX_PATH_BYTES + MAX_FORWARD_HOST_BYTES);
 const MAX_FORWARD_HOST_BYTES: usize = 253;
 const MAX_ACCESS_POLICY_SHARES: usize = 128;
 const MAX_ACCESS_POLICY_MIDDLEWARES: usize = 64;
@@ -267,11 +275,10 @@ pub enum AutomaticHttps {
 }
 
 /// Common user-facing Proxy Host desired state.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ProxyHostSpec {
-    /// Canonical public DNS name.
-    pub domain: String,
+    /// Ordered canonical public DNS names. The first is the display/primary domain.
+    pub domains: Vec<DomainName>,
     /// Configured forward host name or IP address.
     pub forward_host: String,
     /// Configured forward TCP port.
@@ -282,8 +289,155 @@ pub struct ProxyHostSpec {
     pub automatic_https: AutomaticHttps,
     /// Optional stored access-policy reference.
     pub access_policy_ref: Option<AccessPolicyRef>,
+    /// Ordered bounded custom routes; order is display-only.
+    pub locations: Vec<ProxyLocation>,
     /// Whether object contributes to active configuration.
     pub enabled: bool,
+}
+
+/// Supported custom-location path matcher.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProxyLocationMatch {
+    /// Match only the exact canonical request path.
+    Exact,
+    /// Match the canonical path and descendants on a segment boundary.
+    Prefix,
+}
+
+/// Embedded typed custom location owned and activated with its Proxy Host.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProxyLocation {
+    /// Stable identity independent of path and display order.
+    pub id: ObjectId,
+    /// Exact or segment-aware prefix matcher.
+    pub match_kind: ProxyLocationMatch,
+    /// Canonical case-sensitive request path.
+    pub path: String,
+    /// Explicit location upstream host or IP address.
+    pub forward_host: String,
+    /// Explicit location upstream TCP port.
+    pub forward_port: u16,
+    /// Explicit location upstream transport.
+    pub forward_protocol: ForwardProtocol,
+    /// Optional policy override; absent inherits the parent policy.
+    pub access_policy_ref: Option<AccessPolicyRef>,
+    /// Whether this location contributes runtime routes.
+    pub enabled: bool,
+}
+
+impl ProxyLocation {
+    fn validate_shape(&self) -> Result<(), ContractError> {
+        if self.path == "/"
+            || !valid_route_path(&self.path, self.match_kind == ProxyLocationMatch::Prefix)
+        {
+            return Err(ContractError::InvalidProxyLocation);
+        }
+        if self.forward_host.is_empty()
+            || self.forward_host.len() > MAX_FORWARD_HOST_BYTES
+            || (self.forward_host.parse::<IpAddr>().is_err()
+                && validate_upstream_hostname(&self.forward_host).is_err())
+            || self.forward_port == 0
+        {
+            return Err(ContractError::InvalidProxyLocation);
+        }
+        Ok(())
+    }
+}
+
+/// One normalized exact DNS name used by a typed Proxy Host.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct DomainName(String);
+
+impl DomainName {
+    /// Return the canonical lowercase ASCII name.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for DomainName {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl FromStr for DomainName {
+    type Err = ContractError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let domain = normalize_exact_host(value).map_err(|_| ContractError::InvalidDomain)?;
+        if domain.len() > MAX_DOMAIN_BYTES {
+            return Err(ContractError::InvalidDomain);
+        }
+        Ok(Self(domain))
+    }
+}
+
+impl<'de> Deserialize<'de> for DomainName {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProxyHostSpecInput {
+    domain: Option<String>,
+    domains: Option<Vec<String>>,
+    forward_host: String,
+    forward_port: u16,
+    forward_protocol: ForwardProtocol,
+    automatic_https: AutomaticHttps,
+    access_policy_ref: Option<AccessPolicyRef>,
+    #[serde(default)]
+    locations: Vec<ProxyLocation>,
+    enabled: bool,
+}
+
+impl<'de> Deserialize<'de> for ProxyHostSpec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let input = ProxyHostSpecInput::deserialize(deserializer)?;
+        let raw_domains = match (input.domain, input.domains) {
+            (Some(domain), None) => vec![domain],
+            (None, Some(domains)) => domains,
+            _ => return Err(serde::de::Error::custom(ContractError::InvalidDomain)),
+        };
+        if raw_domains.is_empty()
+            || raw_domains.len() > MAX_PROXY_HOST_DOMAINS
+            || raw_domains.iter().map(String::len).sum::<usize>() > MAX_PROXY_HOST_DOMAIN_BYTES
+        {
+            return Err(serde::de::Error::custom(ContractError::InvalidDomain));
+        }
+        let domains = raw_domains
+            .into_iter()
+            .map(|domain| domain.parse())
+            .collect::<Result<Vec<DomainName>, ContractError>>()
+            .map_err(serde::de::Error::custom)?;
+        let spec = Self {
+            domains,
+            forward_host: input.forward_host,
+            forward_port: input.forward_port,
+            forward_protocol: input.forward_protocol,
+            automatic_https: input.automatic_https,
+            access_policy_ref: input.access_policy_ref,
+            locations: input.locations,
+            enabled: input.enabled,
+        };
+        spec.validate_shape().map_err(serde::de::Error::custom)?;
+        Ok(spec)
+    }
 }
 
 /// Raw stream-listener protocol exposed by the typed control plane.
@@ -478,17 +632,64 @@ impl DiscoverySourceSpec {
 }
 
 impl ProxyHostSpec {
-    /// Validate bounded contract shape before canonical configuration compilation.
-    pub fn validate_shape(&self) -> Result<(), ContractError> {
-        if self.domain.is_empty()
-            || self.domain.len() > MAX_DOMAIN_BYTES
-            || !self.domain.is_ascii()
-            || self.domain.ends_with('.')
-            || self.domain.contains('*')
-            || self.domain.parse::<IpAddr>().is_ok()
-            || validate_exact_host(&self.domain).is_err()
+    /// Return the first user-visible domain used in bounded summaries.
+    #[must_use]
+    pub fn primary_domain(&self) -> Option<&DomainName> {
+        self.domains.first()
+    }
+
+    /// Validate only the bounded normalized domain collection.
+    pub fn validate_domains(&self) -> Result<(), ContractError> {
+        let domains = self.domains.iter().collect::<BTreeSet<_>>();
+        if self.domains.is_empty()
+            || self.domains.len() > MAX_PROXY_HOST_DOMAINS
+            || domains.len() != self.domains.len()
+            || self
+                .domains
+                .iter()
+                .map(|domain| domain.as_str().len())
+                .sum::<usize>()
+                > MAX_PROXY_HOST_DOMAIN_BYTES
+            || self.domains.iter().any(|domain| {
+                domain.as_str().len() > MAX_DOMAIN_BYTES
+                    || validate_exact_host(domain.as_str()).is_err()
+            })
         {
             return Err(ContractError::InvalidDomain);
+        }
+        Ok(())
+    }
+
+    /// Validate bounded contract shape before canonical configuration compilation.
+    pub fn validate_shape(&self) -> Result<(), ContractError> {
+        self.validate_domains()?;
+        let location_ids = self
+            .locations
+            .iter()
+            .map(|location| &location.id)
+            .collect::<BTreeSet<_>>();
+        let location_paths = self
+            .locations
+            .iter()
+            .map(|location| location.path.as_str())
+            .collect::<BTreeSet<_>>();
+        if self.locations.len() > MAX_PROXY_HOST_LOCATIONS
+            || location_ids.len() != self.locations.len()
+            || location_paths.len() != self.locations.len()
+            || self
+                .locations
+                .iter()
+                .map(|location| {
+                    location.id.as_str().len() + location.path.len() + location.forward_host.len()
+                })
+                .sum::<usize>()
+                > MAX_PROXY_HOST_LOCATION_BYTES
+            || self
+                .locations
+                .iter()
+                .any(|location| location.validate_shape().is_err())
+        {
+            return Err(ContractError::InvalidProxyLocation);
         }
         if self.forward_host.is_empty()
             || self.forward_host.len() > MAX_FORWARD_HOST_BYTES
@@ -522,6 +723,9 @@ pub enum ContractError {
     /// Forward port is zero.
     #[error("invalid forward port")]
     InvalidForwardPort,
+    /// Embedded custom location violates its bounded typed contract.
+    #[error("invalid proxy location")]
+    InvalidProxyLocation,
     /// Access policy is empty, duplicated, self-shared, or exceeds a fixed bound.
     #[error("invalid access policy")]
     InvalidAccessPolicy,
@@ -573,6 +777,8 @@ mod tests {
             Some("private-lan")
         );
         let encoded = serde_json::to_string(&object).expect("serialize object");
+        assert!(encoded.contains("\"domains\":[\"home.example.test\"]"));
+        assert!(!encoded.contains("\"domain\":"));
         let decoded: ApiObject<ProxyHostSpec> =
             serde_json::from_str(&encoded).expect("round trip object");
         assert_eq!(decoded, object);
@@ -612,23 +818,147 @@ mod tests {
     fn proxy_host_shape_requires_canonical_domain_and_upstream() {
         let mut object: ApiObject<ProxyHostSpec> =
             serde_json::from_str(OBJECT).expect("valid object");
-        for domain in [
-            "Example.test",
-            "example.test.",
-            "*.example.test",
-            "127.0.0.1",
-        ] {
-            object.spec.domain = domain.into();
-            assert_eq!(
-                object.spec.validate_shape(),
-                Err(ContractError::InvalidDomain)
-            );
+        for domain in ["*.example.test", "127.0.0.1"] {
+            assert!(domain.parse::<DomainName>().is_err());
         }
-        object.spec.domain = "example.test".into();
+        assert_eq!(
+            "Example.test."
+                .parse::<DomainName>()
+                .expect("normalized")
+                .as_str(),
+            "example.test"
+        );
+        object.spec.domains = vec!["example.test".parse().expect("domain")];
         object.spec.forward_host = "bad_host".into();
         assert_eq!(
             object.spec.validate_shape(),
             Err(ContractError::InvalidForwardHost)
+        );
+    }
+
+    #[test]
+    fn proxy_host_domains_normalize_and_remain_bounded_and_unambiguous() {
+        let plural = OBJECT.replace(
+            "\"domain\":\"home.example.test\"",
+            "\"domains\":[\"Example.COM.\",\"täst.example\"]",
+        );
+        let object: ApiObject<ProxyHostSpec> =
+            serde_json::from_str(&plural).expect("plural domains");
+        assert_eq!(
+            object
+                .spec
+                .domains
+                .iter()
+                .map(DomainName::as_str)
+                .collect::<Vec<_>>(),
+            ["example.com", "xn--tst-qla.example"]
+        );
+
+        let duplicate = OBJECT.replace(
+            "\"domain\":\"home.example.test\"",
+            "\"domains\":[\"Example.COM\",\"example.com.\"]",
+        );
+        assert!(serde_json::from_str::<ApiObject<ProxyHostSpec>>(&duplicate).is_err());
+        let idna_duplicate = OBJECT.replace(
+            "\"domain\":\"home.example.test\"",
+            "\"domains\":[\"täst.example\",\"xn--tst-qla.example\"]",
+        );
+        assert!(serde_json::from_str::<ApiObject<ProxyHostSpec>>(&idna_duplicate).is_err());
+        for invalid in [
+            "https://example.test",
+            "example.test:443",
+            "example.test/path",
+            "user@example.test",
+            " bad.example.test",
+            "*.example.test",
+            "127.0.0.1",
+        ] {
+            let value = OBJECT.replace("home.example.test", invalid);
+            assert!(
+                serde_json::from_str::<ApiObject<ProxyHostSpec>>(&value).is_err(),
+                "accepted {invalid:?}"
+            );
+        }
+        let ambiguous = OBJECT.replace(
+            "\"domain\":\"home.example.test\"",
+            "\"domain\":\"home.example.test\",\"domains\":[\"other.example.test\"]",
+        );
+        assert!(serde_json::from_str::<ApiObject<ProxyHostSpec>>(&ambiguous).is_err());
+        let oversized = OBJECT.replace(
+            "\"domain\":\"home.example.test\"",
+            &format!(
+                "\"domains\":{}",
+                serde_json::to_string(&vec!["a.example.test"; MAX_PROXY_HOST_DOMAINS + 1])
+                    .expect("domains")
+            ),
+        );
+        assert!(serde_json::from_str::<ApiObject<ProxyHostSpec>>(&oversized).is_err());
+    }
+
+    #[test]
+    fn proxy_locations_are_bounded_strict_and_use_canonical_paths() {
+        let with_locations = OBJECT.replace(
+            "\"access_policy_ref\":\"private-lan\"",
+            r#""access_policy_ref":"private-lan","locations":[
+                {"id":"loc-api","match_kind":"prefix","path":"/api","forward_host":"api.internal","forward_port":9000,"forward_protocol":"http","access_policy_ref":null,"enabled":true},
+                {"id":"loc-health","match_kind":"exact","path":"/health/","forward_host":"127.0.0.1","forward_port":9001,"forward_protocol":"https","access_policy_ref":"private-lan","enabled":false}
+            ]"#,
+        );
+        let object: ApiObject<ProxyHostSpec> =
+            serde_json::from_str(&with_locations).expect("valid locations");
+        assert_eq!(object.spec.locations.len(), 2);
+        assert_eq!(object.spec.locations[0].path, "/api");
+        assert_eq!(
+            object.spec.locations[1].match_kind,
+            ProxyLocationMatch::Exact
+        );
+
+        for invalid in [
+            "",
+            "api",
+            "/",
+            "/api/",
+            "/api//v1",
+            "/api/../v1",
+            "/api?x=1",
+            "/api#x",
+            "/api v1",
+            "/%61pi",
+            "https://host/api",
+        ] {
+            let value = with_locations.replace("\"/api\"", &format!("\"{invalid}\""));
+            assert!(
+                serde_json::from_str::<ApiObject<ProxyHostSpec>>(&value).is_err(),
+                "accepted {invalid:?}"
+            );
+        }
+        let duplicate_path = with_locations.replace("\"/health/\"", "\"/api\"");
+        assert!(serde_json::from_str::<ApiObject<ProxyHostSpec>>(&duplicate_path).is_err());
+        let duplicate_id = with_locations.replace("loc-health", "loc-api");
+        assert!(serde_json::from_str::<ApiObject<ProxyHostSpec>>(&duplicate_id).is_err());
+        let unknown = with_locations.replace("\"enabled\":false", "\"enabled\":false,\"raw\":true");
+        assert!(serde_json::from_str::<ApiObject<ProxyHostSpec>>(&unknown).is_err());
+
+        let mut too_many = object.clone();
+        too_many.spec.locations = (0..=MAX_PROXY_HOST_LOCATIONS)
+            .map(|index| {
+                let mut location = object.spec.locations[0].clone();
+                location.id = format!("loc-{index}").parse().expect("location ID");
+                location.path = format!("/path-{index}");
+                location
+            })
+            .collect();
+        assert_eq!(
+            too_many.spec.validate_shape(),
+            Err(ContractError::InvalidProxyLocation)
+        );
+
+        let mut excessive_path = object;
+        excessive_path.spec.locations[0].path =
+            format!("/{}", "a".repeat(aegisproxy_config::MAX_PATH_BYTES));
+        assert_eq!(
+            excessive_path.spec.validate_shape(),
+            Err(ContractError::InvalidProxyLocation)
         );
     }
 

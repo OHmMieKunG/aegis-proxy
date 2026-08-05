@@ -374,6 +374,7 @@ enum ApiError {
     RateLimited,
     Timeout,
     InvalidRequest,
+    CertificateCoverageFailed,
     NotFound,
     Conflict,
     ObjectConflict,
@@ -411,6 +412,10 @@ impl ApiError {
             Self::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
             Self::Timeout => (StatusCode::GATEWAY_TIMEOUT, "request_timeout"),
             Self::InvalidRequest => (StatusCode::BAD_REQUEST, "invalid_request"),
+            Self::CertificateCoverageFailed => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "certificate_coverage_failed",
+            ),
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             Self::Conflict => (StatusCode::CONFLICT, "revision_conflict"),
             Self::ObjectConflict => (StatusCode::CONFLICT, "object_conflict"),
@@ -442,6 +447,9 @@ impl ApiError {
             Self::RateLimited => "administrative rate limit exceeded",
             Self::Timeout => "administrative request timed out",
             Self::InvalidRequest => "request is invalid",
+            Self::CertificateCoverageFailed => {
+                "no single selectable certificate covers every configured domain"
+            }
             Self::NotFound => "resource was not found",
             Self::Conflict => "active revision changed",
             Self::ObjectConflict => "object state changed",
@@ -1268,6 +1276,9 @@ fn error_contract(mut response: Response, request_id: &str) -> Response {
                 "rate_limited" => "administrative rate limit exceeded",
                 "request_timeout" => "administrative request timed out",
                 "invalid_request" => "request is invalid",
+                "certificate_coverage_failed" => {
+                    "no single selectable certificate covers every configured domain"
+                }
                 "not_found" => "resource was not found",
                 "revision_conflict" => "active revision changed",
                 "persistence_failed" => "desired state was not persisted",

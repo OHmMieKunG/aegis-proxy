@@ -219,6 +219,17 @@ remain release-stage conditions and do not make the product production-ready.
 
 ## Phase 17 — NPMPlus core host model
 
+**Phase 17.1 multiple-domain unit:** bounded ordered exact domains are implemented through the
+typed contract, singular-record migration, legacy active-binding verification, compiler,
+certificate coverage, API/client, browser forms, drafts, restart, and compatibility evidence.
+The remaining Phase 17 host families are explicitly outside this unit.
+
+**Phase 17.2 Proxy Locations unit:** embedded stable-ID exact/prefix locations are implemented over
+the existing runtime matcher and parent Proxy Host draft/CAS/candidate/activation boundary. Paths,
+upstreams, count, policy inheritance/override, migration, exact-active compatibility, browser
+editing, and failure behavior are bounded under ADR-0033. Redirection and Dead Hosts remain future
+Phase 17 units.
+
 **Objective:** implement the core NPMPlus host families and complete Proxy Host behavior through
 bounded Rust-native objects.
 
@@ -244,9 +255,11 @@ evidence and matrix updates.
 share enforcement, no open redirects, no protected-header or request-target bypass, bounded cache/
 body/state, and one route match without rematching after errors or rewrites.
 
-**Migration requirements:** existing seven-field Proxy Hosts load unchanged with empty additional
-domains/locations and safe advanced defaults. New object files are additive. Import maps only
-recognized safe fields and reports unsupported Nginx content without executing it.
+**Migration requirements:** existing singular-domain Proxy Hosts load as one-element ordered domain
+lists; legacy active candidate hashes remain verifiable without automatic activation. Existing
+hosts and drafts migrate to zero locations; Phase 17.1 active hashes remain verifiable. New object
+files are additive. Import maps only recognized safe fields and reports unsupported Nginx content
+without executing it.
 
 **GUI requirements:** Hosts navigation with Proxy, Redirection, 404, and Streams views; simple
 common forms; nested location editor; progressive Advanced sections; lifecycle, conflict, preview,

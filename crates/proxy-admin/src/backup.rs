@@ -413,8 +413,9 @@ mod tests {
     use std::fs;
 
     use age::{secrecy::ExposeSecret, x25519};
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
 
-    use super::{BackupError, create_backup, validate_backup};
+    use super::{BackupError, BackupManifest, create_backup, validate_backup};
 
     #[test]
     fn encrypted_backup_validates_and_tampering_fails() {
@@ -487,6 +488,85 @@ mod tests {
             ),
             Err(BackupError::Invalid)
         ));
+        fs::remove_dir_all(root).expect("remove");
+    }
+
+    #[test]
+    fn backup_preserves_plural_applied_and_draft_proxy_hosts() {
+        #[cfg(unix)]
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "aegisproxy-backup-proxy-domains-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let state = root.join("state");
+        let admin = state.join("admin");
+        fs::create_dir_all(&admin).expect("admin directory");
+        #[cfg(unix)]
+        {
+            fs::set_permissions(&state, fs::Permissions::from_mode(0o700))
+                .expect("state permissions");
+            fs::set_permissions(&admin, fs::Permissions::from_mode(0o700))
+                .expect("admin permissions");
+        }
+        let mut applied: crate::ApiObject<crate::ProxyHostSpec> =
+            serde_json::from_value(serde_json::json!({
+                "api_version": "v1",
+                "metadata": {"id": "proxy-backup", "owner_id": "alice"},
+                "spec": {
+                    "domain": "primary.example.test",
+                    "forward_host": "127.0.0.1",
+                    "forward_port": 8080,
+                    "forward_protocol": "http",
+                    "automatic_https": "disabled",
+                    "access_policy_ref": null,
+                    "enabled": true
+                }
+            }))
+            .expect("legacy singular object");
+        applied
+            .spec
+            .domains
+            .push("alias.example.test".parse().expect("alias"));
+        let store = crate::ProxyHostStore::open(admin.join("proxy-hosts.json")).expect("store");
+        let stored = store.create(applied).expect("applied");
+        let mut draft = stored.object.clone();
+        draft.spec.domains = vec![
+            "draft.example.test".parse().expect("draft primary"),
+            "draft-alias.example.test".parse().expect("draft alias"),
+        ];
+        store
+            .create_draft(draft, Some(stored.generation))
+            .expect("draft");
+
+        let identity = x25519::Identity::generate();
+        let output = root.join("backup.age");
+        create_backup(&state, &output, &[identity.to_public().to_string()]).expect("backup");
+        let ciphertext = fs::read(&output).expect("backup bytes");
+        let identity_text = identity.to_string();
+        let plaintext = aegisproxy_secrets::decrypt_age(
+            &ciphertext,
+            identity_text.expose_secret().as_bytes(),
+            super::MAX_MANIFEST_BYTES,
+        )
+        .expect("decrypt backup");
+        let manifest: BackupManifest =
+            serde_json::from_slice(plaintext.as_ref()).expect("manifest");
+        let entry = manifest
+            .entries
+            .iter()
+            .find(|entry| entry.path == "admin/proxy-hosts.json")
+            .expect("Proxy Host store entry");
+        let store_json = String::from_utf8(STANDARD.decode(&entry.content_base64).expect("store"))
+            .expect("UTF-8 store");
+        assert!(store_json.contains("primary.example.test"));
+        assert!(store_json.contains("alias.example.test"));
+        assert!(store_json.contains("draft.example.test"));
+        assert!(store_json.contains("draft-alias.example.test"));
+        assert!(store_json.contains("\"domains\""));
+        assert!(!store_json.contains("\"domain\":"));
         fs::remove_dir_all(root).expect("remove");
     }
 }

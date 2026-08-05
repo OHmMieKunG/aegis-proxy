@@ -243,7 +243,12 @@ pub(super) async fn create_unified_candidate(
             &access_policies,
             &certificates,
         )
-        .map_err(|_| ApiError::InvalidRequest)?
+        .map_err(|error| match error {
+            crate::ProxyHostPreparationError::ManagedHttpsDomainsUnavailable => {
+                ApiError::CertificateCoverageFailed
+            }
+            _ => ApiError::InvalidRequest,
+        })?
         .config()
         .clone();
         let config = crate::compile_stream_hosts(
@@ -262,13 +267,13 @@ pub(super) async fn create_unified_candidate(
     .await
     {
         Ok(Ok(config)) => config,
-        Ok(Err(_)) => {
-            return Err(audited_failure(
-                audit,
-                "invalid_typed_candidate",
-                ApiError::InvalidRequest,
-            )
-            .await);
+        Ok(Err(error)) => {
+            let audit_code = if matches!(error, ApiError::CertificateCoverageFailed) {
+                "certificate_coverage_failed"
+            } else {
+                "invalid_typed_candidate"
+            };
+            return Err(audited_failure(audit, audit_code, error).await);
         }
         Err(_) => {
             return Err(
@@ -660,7 +665,7 @@ async fn certificate_dependencies(
             let policy = crate::select_managed_https_policy(
                 &metadata,
                 &object.metadata.owner_id,
-                &object.spec.domain,
+                &object.spec.domains,
             )
             .map_err(|_| ApiError::InvalidRequest)?;
             let id = metadata

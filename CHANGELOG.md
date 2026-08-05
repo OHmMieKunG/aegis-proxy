@@ -4,6 +4,16 @@ AegisProxy has not published a supported release.
 
 ## Unreleased
 
+- Added bounded stable-ID Proxy Locations to applied and draft Proxy Hosts. Exact and
+  segment-aware prefix paths compile across every parent domain with deterministic precedence,
+  explicit upstreams, parent-policy inheritance or authorized override, structured browser
+  controls, zero-location migration, and exact Phase 17.1 active-binding compatibility.
+- Added bounded ordered multiple-domain Proxy Hosts across applied and draft APIs, deterministic
+  IDNA normalization, whole-state conflict checks, one exact route per domain with one shared
+  upstream, all-domain certificate coverage, browser add/remove/reorder controls, and strict
+  singular-record migration that preserves exact legacy active candidate bindings. Managed HTTPS
+  coverage rejection now has a stable `certificate_coverage_failed` API code and names the entered
+  domain set in the browser without attempting activation.
 - Implemented Rust reverse-proxy foundation through historical phases 0–13.
 - Rebased documentation around verified current state and the active roadmap.
 - Reset the product roadmap around NPMPlus-compatible daily management workflows, with Caddy-style

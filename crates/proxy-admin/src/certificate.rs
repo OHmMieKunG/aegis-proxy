@@ -221,16 +221,18 @@ pub fn compile_certificate_metadata(
 pub fn select_managed_https_policy(
     certificates: &BTreeMap<ObjectId, CertificateMetadata>,
     owner_id: &ObjectId,
-    domain: &str,
+    domains: &[crate::DomainName],
 ) -> Result<ManagedHttpsPolicy, CertificateCompileError> {
     let covering = certificates
         .values()
         .filter(|certificate| {
             certificate.enabled
-                && certificate
-                    .hosts
-                    .iter()
-                    .any(|host| host_matches(host, domain))
+                && domains.iter().all(|domain| {
+                    certificate
+                        .hosts
+                        .iter()
+                        .any(|host| host_matches(host, domain.as_str()))
+                })
         })
         .collect::<Vec<_>>();
     if covering.is_empty() {
@@ -311,17 +313,32 @@ mod tests {
         let metadata = compile_certificate_metadata(&object, &config).expect("metadata");
         let certificates = BTreeMap::from([(object.metadata.id.clone(), metadata.clone())]);
         for (owner, domain) in [("alice", "example.test"), ("bob", "one.apps.example.test")] {
+            let domains = [domain.parse().expect("domain")];
             assert_eq!(
-                select_managed_https_policy(&certificates, &owner.parse().expect("owner"), domain)
-                    .expect("policy"),
+                select_managed_https_policy(
+                    &certificates,
+                    &owner.parse().expect("owner"),
+                    &domains,
+                )
+                .expect("policy"),
                 metadata.policy
             );
         }
+        let domains = [
+            "example.test".parse().expect("domain"),
+            "one.apps.example.test".parse().expect("domain"),
+        ];
+        assert_eq!(
+            select_managed_https_policy(&certificates, &"alice".parse().expect("owner"), &domains,)
+                .expect("one certificate covers every domain"),
+            metadata.policy
+        );
+        let domains = ["example.test".parse().expect("domain")];
         assert_eq!(
             select_managed_https_policy(
                 &certificates,
                 &"mallory".parse().expect("owner"),
-                "example.test"
+                &domains,
             ),
             Err(CertificateCompileError::Unauthorized)
         );
@@ -338,7 +355,7 @@ mod tests {
             select_managed_https_policy(
                 &certificates,
                 &"alice".parse().expect("owner"),
-                "two.deep.apps.example.test"
+                &["two.deep.apps.example.test".parse().expect("domain")],
             ),
             Err(CertificateCompileError::DomainNotCovered)
         );
@@ -347,7 +364,7 @@ mod tests {
             select_managed_https_policy(
                 &certificates,
                 &"alice".parse().expect("owner"),
-                "example.test"
+                &["example.test".parse().expect("domain")],
             ),
             Err(CertificateCompileError::Ambiguous)
         );

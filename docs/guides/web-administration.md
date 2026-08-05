@@ -25,9 +25,19 @@ browser storage.
 ## Common tasks
 
 - **Proxy Hosts:** create, edit, enable, disable, duplicate, or delete a host from the host list.
+  Add, remove, or reorder as many as 32 exact domains. The first is the primary display name and
+  the list summarizes additional names as `+N more`; expanding it shows every normalized domain.
+  All names share one default upstream, HTTPS choice, and access policy. Wildcards and per-domain
+  settings are not supported. Add up to sixteen structured custom locations for exact paths or
+  path-and-descendant prefixes. Each location has one explicit upstream, can inherit or override
+  the host Access Policy, and can be disabled without deletion. More-specific paths win; `/api`
+  matches `/api` and `/api/...` but not `/api2`. The default upstream remains fallback.
+  Managed HTTPS requires one selectable certificate to cover the complete domain set. The API
+  returns `certificate_coverage_failed`, and the editor keeps the entered names visible while it
+  identifies the set that needs a covering certificate.
   **Save and apply** carries the active-state and object-generation preconditions through the
   existing typed mutation and transactional activation path. A duplicate opens as an unsaved,
-  disabled form with a new object ID; change its domain before saving.
+  disabled form with a new object ID and fresh location IDs; change its domain before saving.
   **Save draft** durably stores an inactive working copy and performs no compilation or activation.
   The list labels it **Draft not applied**. Reopen it to edit, **Discard draft** without changing
   desired or active routing, or **Save and apply** to promote one exact draft generation before

@@ -4,6 +4,7 @@ import type { components, paths } from "./generated/api";
 export type Session = components["schemas"]["BrowserSession"];
 export type Action = components["schemas"]["TokenScope"];
 export type ProxyHost = components["schemas"]["ProxyHostObject"];
+export type ProxyLocation = components["schemas"]["ProxyLocation"];
 export type StoredProxyHost = components["schemas"]["StoredProxyHost"];
 export type StoredProxyHostDraft = components["schemas"]["StoredProxyHostDraft"];
 export type ProxyHostApplicationState = components["schemas"]["ProxyHostApplicationState"];

@@ -34,6 +34,22 @@ fn object(id: &str, owner: &str, domain: &str) -> ApiObject<ProxyHostSpec> {
     .expect("typed object")
 }
 
+fn add_location(object: &mut ApiObject<ProxyHostSpec>, id: &str, path: &str) {
+    object.spec.locations.push(
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "match_kind": "prefix",
+            "path": path,
+            "forward_host": "127.0.0.1",
+            "forward_port": 9002,
+            "forward_protocol": "http",
+            "access_policy_ref": null,
+            "enabled": true
+        }))
+        .expect("location"),
+    );
+}
+
 fn access_policy(id: &str, generation: u64) -> StoredAccessPolicy {
     StoredAccessPolicy {
         generation,
@@ -184,17 +200,21 @@ fn persistence_uncertainty_blocks_mutation_until_validated_reopen() {
     let store = ProxyHostStore::open(&path).expect("store");
     let owner: ObjectId = "alice".parse().expect("owner");
     let id: ObjectId = "proxy-a".parse().expect("id");
+    let mut multi = object("proxy-a", "alice", "a.example.test");
+    multi
+        .spec
+        .domains
+        .push("alias.example.test".parse().expect("domain"));
+    add_location(&mut multi, "loc-api", "/api");
 
     FAIL_BEFORE_RENAME.set(true);
-    let result = store.create(object("proxy-a", "alice", "a.example.test"));
+    let result = store.create(multi.clone());
     FAIL_BEFORE_RENAME.set(false);
     assert!(matches!(result, Err(ProxyHostStoreError::Io(_))));
     assert!(!store.recovery_required());
     assert!(store.get(&owner, &id).is_none());
 
-    let stored = store
-        .create(object("proxy-a", "alice", "a.example.test"))
-        .expect("retry create");
+    let stored = store.create(multi).expect("retry create");
     let mut changed = stored.object;
     changed.spec.enabled = false;
     FAIL_PARENT_SYNC.set(true);
@@ -275,14 +295,14 @@ fn drafts_are_separate_cas_state_and_promote_exactly_once() {
         .expect("applied object");
     let epoch = store.snapshot().epoch();
     let mut draft_object = applied.object.clone();
-    draft_object.spec.domain = "draft.example.test".into();
+    draft_object.spec.domains = vec!["draft.example.test".parse().expect("domain")];
     let draft = store
         .create_draft(draft_object, Some(applied.generation))
         .expect("draft");
     assert_eq!(draft.base_generation, Some(1));
     assert_eq!(store.snapshot().epoch(), epoch);
     assert_eq!(
-        store.snapshot().objects()[0].object.spec.domain,
+        store.snapshot().objects()[0].object.spec.domains[0].as_str(),
         "a.example.test"
     );
 
@@ -302,7 +322,10 @@ fn drafts_are_separate_cas_state_and_promote_exactly_once() {
         .promote_draft_if_epoch(&owner, &id, 2, epoch)
         .expect("promote");
     assert_eq!(promoted.generation, 2);
-    assert_eq!(promoted.object.spec.domain, "draft.example.test");
+    assert_eq!(
+        promoted.object.spec.domains[0].as_str(),
+        "draft.example.test"
+    );
     assert!(store.get_draft(&owner, &id).is_none());
     assert!(matches!(
         store.promote_draft_if_epoch(&owner, &id, 2, epoch),
@@ -357,21 +380,33 @@ fn draft_failures_recover_without_entering_desired_snapshots() {
     let store = ProxyHostStore::open(&path).expect("store");
     let owner: ObjectId = "alice".parse().expect("owner");
     let id: ObjectId = "proxy-a".parse().expect("id");
+    let mut multi = object("proxy-a", "alice", "draft.example.test");
+    multi
+        .spec
+        .domains
+        .push("draft-alias.example.test".parse().expect("domain"));
+    add_location(&mut multi, "loc-draft", "/draft");
 
     FAIL_BEFORE_RENAME.set(true);
-    let result = store.create_draft(object("proxy-a", "alice", "draft.example.test"), None);
+    let result = store.create_draft(multi.clone(), None);
     FAIL_BEFORE_RENAME.set(false);
     assert!(matches!(result, Err(ProxyHostStoreError::Io(_))));
     assert!(!store.recovery_required());
     assert!(store.get_draft(&owner, &id).is_none());
 
     FAIL_PARENT_SYNC.set(true);
-    let result = store.create_draft(object("proxy-a", "alice", "draft.example.test"), None);
+    let result = store.create_draft(multi, None);
     FAIL_PARENT_SYNC.set(false);
     assert!(matches!(result, Err(ProxyHostStoreError::Indeterminate(_))));
     assert!(store.recovery_required());
     assert!(store.snapshot().objects().is_empty());
-    assert!(store.get_draft(&owner, &id).is_some());
+    assert_eq!(
+        store.get_draft(&owner, &id).map(|draft| (
+            draft.object.spec.domains.len(),
+            draft.object.spec.locations.len()
+        )),
+        Some((2, 1))
+    );
     assert!(matches!(
         store.discard_draft(&owner, &id, 1),
         Err(ProxyHostStoreError::RecoveryRequired)
@@ -410,7 +445,7 @@ fn draft_promotion_and_discard_fail_closed_at_atomic_publication() {
     assert_eq!(
         store
             .get(&owner, &id)
-            .map(|stored| stored.object.spec.domain),
+            .map(|stored| stored.object.spec.domains[0].to_string()),
         Some("applied.example.test".into())
     );
     assert!(store.get_draft(&owner, &id).is_some());
@@ -430,7 +465,7 @@ fn draft_promotion_and_discard_fail_closed_at_atomic_publication() {
     assert_eq!(
         store
             .get(&owner, &id)
-            .map(|stored| stored.object.spec.domain),
+            .map(|stored| stored.object.spec.domains[0].to_string()),
         Some("draft.example.test".into())
     );
     assert!(matches!(
@@ -443,7 +478,7 @@ fn draft_promotion_and_discard_fail_closed_at_atomic_publication() {
     assert_eq!(
         reopened
             .get(&owner, &id)
-            .map(|stored| (stored.generation, stored.object.spec.domain)),
+            .map(|stored| (stored.generation, stored.object.spec.domains[0].to_string())),
         Some((2, "draft.example.test".into()))
     );
     assert!(reopened.get_draft(&owner, &id).is_none());
@@ -455,21 +490,37 @@ fn schema_one_migrates_as_applied_and_keeps_legacy_bindings_valid() {
     let (path, root) = temporary_store("draft-migration");
     fs::create_dir_all(path.parent().expect("parent")).expect("directory");
     set_private_directory_permissions(path.parent().expect("parent")).expect("private directory");
-    let legacy = ProxyHostFileV1 {
-        schema_version: STORE_SCHEMA_VERSION,
-        objects: vec![StoredProxyHost {
-            generation: 3,
-            object: object("proxy-a", "alice", "a.example.test"),
-        }],
-    };
     write_private_file(
         &path,
-        &serde_json::to_vec_pretty(&legacy).expect("legacy JSON"),
+        &serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "objects": [{
+                "generation": 3,
+                "object": {
+                    "api_version": "v1",
+                    "metadata": {"id": "proxy-a", "owner_id": "alice"},
+                    "spec": {
+                        "domain": "A.Example.Test.",
+                        "forward_host": "127.0.0.1",
+                        "forward_port": 9001,
+                        "forward_protocol": "http",
+                        "automatic_https": "disabled",
+                        "access_policy_ref": null,
+                        "enabled": true
+                    }
+                }
+            }]
+        }))
+        .expect("legacy JSON"),
     )
     .expect("legacy file");
     let store = ProxyHostStore::open(&path).expect("open schema one");
     let owner: ObjectId = "alice".parse().expect("owner");
     assert_eq!(store.list(&owner).len(), 1);
+    assert_eq!(
+        store.list(&owner)[0].object.spec.domains[0].as_str(),
+        "a.example.test"
+    );
     assert!(store.list_drafts(&owner).is_empty());
     let objects = vec![object("proxy-a", "alice", "a.example.test")];
     assert_eq!(
@@ -482,6 +533,81 @@ fn schema_one_migrates_as_applied_and_keeps_legacy_bindings_valid() {
     let value: serde_json::Value =
         serde_json::from_slice(&fs::read(&path).expect("schema two bytes")).expect("JSON");
     assert_eq!(value["schema_version"], PROXY_HOST_FILE_SCHEMA_VERSION);
+    assert_eq!(
+        value["objects"][0]["object"]["spec"]["domains"],
+        serde_json::json!(["a.example.test"])
+    );
+    assert_eq!(
+        value["objects"][0]["object"]["spec"]["locations"],
+        serde_json::json!([])
+    );
+    assert!(
+        value["objects"][0]["object"]["spec"]
+            .get("domain")
+            .is_none()
+    );
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn schema_two_singular_applied_and_draft_records_load_as_domain_lists() {
+    let (path, root) = temporary_store("singular-draft-migration");
+    fs::create_dir_all(path.parent().expect("parent")).expect("directory");
+    set_private_directory_permissions(path.parent().expect("parent")).expect("private directory");
+    let spec = |domain: &str| {
+        serde_json::json!({
+            "domain": domain,
+            "forward_host": "127.0.0.1",
+            "forward_port": 9001,
+            "forward_protocol": "http",
+            "automatic_https": "disabled",
+            "access_policy_ref": null,
+            "enabled": true
+        })
+    };
+    write_private_file(
+        &path,
+        &serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 2,
+            "objects": [{
+                "generation": 7,
+                "object": {
+                    "api_version": "v1",
+                    "metadata": {"id": "proxy-a", "owner_id": "alice"},
+                    "spec": spec("Applied.Example.Test.")
+                }
+            }],
+            "drafts": [{
+                "generation": 4,
+                "base_generation": 7,
+                "object": {
+                    "api_version": "v1",
+                    "metadata": {"id": "proxy-a", "owner_id": "alice"},
+                    "spec": spec("Draft.Example.Test.")
+                }
+            }]
+        }))
+        .expect("legacy schema two"),
+    )
+    .expect("store file");
+
+    let store = ProxyHostStore::open(&path).expect("migrated store");
+    let owner = "alice".parse().expect("owner");
+    let id = "proxy-a".parse().expect("ID");
+    let applied = store.get(&owner, &id).expect("applied");
+    let draft = store.get_draft(&owner, &id).expect("draft");
+    assert_eq!(
+        (applied.generation, applied.object.spec.domains[0].as_str()),
+        (7, "applied.example.test")
+    );
+    assert_eq!(
+        (
+            draft.generation,
+            draft.base_generation,
+            draft.object.spec.domains[0].as_str()
+        ),
+        (4, Some(7), "draft.example.test")
+    );
     fs::remove_dir_all(root).expect("cleanup");
 }
 
@@ -531,6 +657,47 @@ fn rejects_conflicts_tampering_and_broad_permissions() {
             Err(ProxyHostStoreError::Invalid)
         ));
     }
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn enabled_multi_domain_claims_are_atomic_while_disabled_conflicts_are_allowed() {
+    let (path, root) = temporary_store("multi-domain-claims");
+    let store = ProxyHostStore::open(&path).expect("store");
+    let mut first = object("proxy-a", "alice", "a.example.test");
+    first
+        .spec
+        .domains
+        .push("shared.example.test".parse().expect("domain"));
+    store.create(first).expect("multi-domain create");
+
+    let mut second = object("proxy-b", "bob", "shared.example.test");
+    assert!(matches!(
+        store.create(second.clone()),
+        Err(ProxyHostStoreError::Conflict)
+    ));
+    second.spec.enabled = false;
+    let disabled = store.create(second).expect("disabled conflict");
+    let mut enabled = disabled.object.clone();
+    enabled.spec.enabled = true;
+    assert!(matches!(
+        store.update(enabled, disabled.generation),
+        Err(ProxyHostStoreError::Conflict)
+    ));
+    let mut draft_object = disabled.object;
+    draft_object.spec.enabled = true;
+    let draft = store
+        .create_draft(draft_object, Some(disabled.generation))
+        .expect("conflicting inactive draft");
+    assert!(matches!(
+        store.promote_draft_if_epoch(
+            &"bob".parse().expect("owner"),
+            &"proxy-b".parse().expect("ID"),
+            draft.generation,
+            store.snapshot().epoch(),
+        ),
+        Err(ProxyHostStoreError::Conflict)
+    ));
     fs::remove_dir_all(root).expect("cleanup");
 }
 
@@ -771,6 +938,137 @@ fn unified_candidate_is_schema_two_ordered_and_tamper_evident() {
 }
 
 #[test]
+fn legacy_single_domain_active_binding_loads_and_clones_without_rehashing() {
+    let (path, root) = temporary_store("legacy-active-binding");
+    let store = ProxyHostStore::open(&path).expect("store");
+    let revision = format!("{:020}-{}", 1, "ab".repeat(32));
+    let target = format!("{:020}-{}", 2, "cd".repeat(32));
+    let objects = vec![object("proxy-a", "alice", "a.example.test")];
+    let legacy_objects = candidate_store::legacy_proxy_host_objects(&objects)
+        .expect("one-domain legacy representation");
+    let binding_hash = format!(
+        "{:x}",
+        Sha256::digest(
+            serde_json::to_vec(&LegacyUnifiedBinding {
+                schema_version: CANDIDATE_SCHEMA_V2,
+                proxy_hosts: &legacy_objects,
+                stream_hosts: &[],
+                discovery_sources: &[],
+                access_policies: &[],
+                certificates: &[],
+            })
+            .expect("legacy binding bytes")
+        )
+    );
+    let candidate_dir = root.join("admin/proxy-host-candidates");
+    create_private_directory(&candidate_dir).expect("candidate directory");
+    write_private_file(
+        &candidate_dir.join(format!("{revision}.json")),
+        &serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 2,
+            "revision_id": revision.clone(),
+            "binding_hash": binding_hash.clone(),
+            "objects": [{
+                "api_version": "v1",
+                "metadata": {"id": "proxy-a", "owner_id": "alice"},
+                "spec": {
+                    "domain": "a.example.test",
+                    "forward_host": "127.0.0.1",
+                    "forward_port": 9001,
+                    "forward_protocol": "http",
+                    "automatic_https": "disabled",
+                    "access_policy_ref": null,
+                    "enabled": true
+                }
+            }],
+            "access_policies": [],
+            "stream_hosts": [],
+            "discovery_sources": [],
+            "certificates": []
+        }))
+        .expect("candidate JSON"),
+    )
+    .expect("legacy candidate");
+
+    let bound = store
+        .load_candidate(&revision, &binding_hash)
+        .expect("exact legacy active binding");
+    assert_eq!(
+        bound.objects()[0].spec.domains[0].as_str(),
+        "a.example.test"
+    );
+    store
+        .clone_candidate_binding(&revision, &target, &binding_hash)
+        .expect("provider revision clone");
+    assert!(store.load_candidate(&target, &binding_hash).is_ok());
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn plural_domain_no_location_active_binding_remains_exact_after_location_migration() {
+    let (path, root) = temporary_store("plural-active-binding");
+    let store = ProxyHostStore::open(&path).expect("store");
+    let revision = format!("{:020}-{}", 1, "ef".repeat(32));
+    let mut objects = vec![object("proxy-a", "alice", "a.example.test")];
+    objects[0]
+        .spec
+        .domains
+        .push("www.a.example.test".parse().expect("domain"));
+    let legacy_objects = candidate_store::legacy_plural_proxy_host_objects(&objects)
+        .expect("location-free plural representation");
+    let binding_hash = format!(
+        "{:x}",
+        Sha256::digest(
+            serde_json::to_vec(&LegacyPluralUnifiedBinding {
+                schema_version: CANDIDATE_SCHEMA_V2,
+                proxy_hosts: &legacy_objects,
+                stream_hosts: &[],
+                discovery_sources: &[],
+                access_policies: &[],
+                certificates: &[],
+            })
+            .expect("legacy binding bytes")
+        )
+    );
+    let candidate_dir = root.join("admin/proxy-host-candidates");
+    create_private_directory(&candidate_dir).expect("candidate directory");
+    write_private_file(
+        &candidate_dir.join(format!("{revision}.json")),
+        &serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 2,
+            "revision_id": revision.clone(),
+            "binding_hash": binding_hash.clone(),
+            "objects": [{
+                "api_version": "v1",
+                "metadata": {"id": "proxy-a", "owner_id": "alice"},
+                "spec": {
+                    "domains": ["a.example.test", "www.a.example.test"],
+                    "forward_host": "127.0.0.1",
+                    "forward_port": 9001,
+                    "forward_protocol": "http",
+                    "automatic_https": "disabled",
+                    "access_policy_ref": null,
+                    "enabled": true
+                }
+            }],
+            "access_policies": [],
+            "stream_hosts": [],
+            "discovery_sources": [],
+            "certificates": []
+        }))
+        .expect("candidate JSON"),
+    )
+    .expect("candidate file");
+
+    let bound = store
+        .load_candidate(&revision, &binding_hash)
+        .expect("exact phase-17.1 binding");
+    assert_eq!(bound.objects()[0].spec.locations, []);
+    assert_eq!(bound.binding_hash(), binding_hash);
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
 fn candidate_reconciliation_prunes_only_valid_unretained_snapshots() {
     let (path, root) = temporary_store("candidate-retention");
     let store = ProxyHostStore::open(&path).expect("store");
@@ -926,7 +1224,7 @@ fn rollback_journal_aborts_and_recovers_by_active_revision() {
     assert_eq!(
         store
             .get(&owner, &id)
-            .map(|stored| (stored.generation, stored.object.spec.domain)),
+            .map(|stored| (stored.generation, stored.object.spec.domains[0].to_string())),
         Some((2, "target.example.test".into()))
     );
     store
@@ -937,7 +1235,7 @@ fn rollback_journal_aborts_and_recovers_by_active_revision() {
     assert_eq!(
         store
             .get(&owner, &id)
-            .map(|stored| (stored.generation, stored.object.spec.domain)),
+            .map(|stored| (stored.generation, stored.object.spec.domains[0].to_string())),
         Some((1, "a.example.test".into()))
     );
 
@@ -954,7 +1252,7 @@ fn rollback_journal_aborts_and_recovers_by_active_revision() {
     assert_eq!(
         reopened
             .get(&owner, &id)
-            .map(|stored| stored.object.spec.domain),
+            .map(|stored| stored.object.spec.domains[0].to_string()),
         Some("a.example.test".into())
     );
 
@@ -971,7 +1269,7 @@ fn rollback_journal_aborts_and_recovers_by_active_revision() {
     assert_eq!(
         committed
             .get(&owner, &id)
-            .map(|stored| stored.object.spec.domain),
+            .map(|stored| stored.object.spec.domains[0].to_string()),
         Some("target.example.test".into())
     );
     assert!(!root.join("admin/proxy-host-rollback.json").exists());

@@ -9,6 +9,20 @@ impl ProxyHostStore {
         expected_hash: &str,
     ) -> Result<BoundProxyHostCandidate, ProxyHostStoreError> {
         let source = self.load_candidate(source_revision, expected_hash)?;
+        let current_hash = if source.schema_version == CANDIDATE_SCHEMA_V2 {
+            Self::unified_binding_hash(
+                &source.objects,
+                &source.stream_hosts,
+                &source.discovery_sources,
+                &source.access_policies,
+                &source.certificates,
+            )?
+        } else {
+            Self::binding_hash_with_access_policies(&source.objects, &source.access_policies)?
+        };
+        if current_hash != expected_hash {
+            return self.persist_legacy_candidate_clone(target_revision, expected_hash, source);
+        }
         if source.schema_version == CANDIDATE_SCHEMA_V2 {
             self.bind_unified_candidate(
                 target_revision,
@@ -350,17 +364,64 @@ impl ProxyHostStore {
             )?,
             _ => return Err(ProxyHostStoreError::Invalid),
         };
-        if file.revision_id != revision_id || file.binding_hash != binding_hash {
+        let hash_matches = file.binding_hash == binding_hash
+            || legacy_candidate_hashes(
+                &file,
+                &objects,
+                &access_policies,
+                &stream_hosts,
+                &discovery_sources,
+                &certificates,
+            )?
+            .iter()
+            .any(|legacy| legacy == &file.binding_hash);
+        if file.revision_id != revision_id || !hash_matches {
             return Err(ProxyHostStoreError::Invalid);
         }
         Ok(BoundProxyHostCandidate {
             schema_version: file.schema_version,
-            binding_hash,
+            binding_hash: file.binding_hash,
             objects,
             stream_hosts,
             discovery_sources,
             access_policies,
             certificates,
+        })
+    }
+
+    fn persist_legacy_candidate_clone(
+        &self,
+        revision_id: &str,
+        expected_hash: &str,
+        source: BoundProxyHostCandidate,
+    ) -> Result<BoundProxyHostCandidate, ProxyHostStoreError> {
+        validate_revision_id(revision_id)?;
+        create_private_directory(&self.candidate_dir)?;
+        let path = self.candidate_path(revision_id);
+        if path.exists() {
+            return self.load_candidate(revision_id, expected_hash);
+        }
+        if directory_entry_count(&self.candidate_dir)? >= MAX_CANDIDATE_SNAPSHOTS {
+            return Err(ProxyHostStoreError::Limit);
+        }
+        let bytes = serde_json::to_vec_pretty(&ProxyHostCandidateFile {
+            schema_version: source.schema_version,
+            revision_id: revision_id.to_owned(),
+            binding_hash: expected_hash.to_owned(),
+            objects: source.objects.clone(),
+            access_policies: source.access_policies.clone(),
+            stream_hosts: source.stream_hosts.clone(),
+            discovery_sources: source.discovery_sources.clone(),
+            certificates: source.certificates.clone(),
+        })
+        .map_err(|_| ProxyHostStoreError::Invalid)?;
+        if bytes.len() as u64 > MAX_TRANSACTION_BYTES {
+            return Err(ProxyHostStoreError::Limit);
+        }
+        self.persist_candidate_binding(&path, &bytes)?;
+        Ok(BoundProxyHostCandidate {
+            binding_hash: expected_hash.to_owned(),
+            ..source
         })
     }
 
@@ -407,6 +468,135 @@ impl ProxyHostStore {
     pub(crate) fn fail_next_candidate_sync(&self) {
         FAIL_CANDIDATE_SYNC.set(true);
     }
+}
+
+fn legacy_candidate_hashes(
+    file: &ProxyHostCandidateFile,
+    objects: &[ApiObject<ProxyHostSpec>],
+    access_policies: &[StoredAccessPolicy],
+    stream_hosts: &[ApiObject<StreamHostSpec>],
+    discovery_sources: &[ApiObject<DiscoverySourceSpec>],
+    certificates: &[StoredCertificate],
+) -> Result<Vec<String>, ProxyHostStoreError> {
+    let mut hashes = Vec::new();
+    if let Some(objects) = legacy_proxy_host_objects(objects) {
+        let bytes = match file.schema_version {
+            CANDIDATE_SCHEMA_V1
+                if stream_hosts.is_empty()
+                    && discovery_sources.is_empty()
+                    && certificates.is_empty() =>
+            {
+                if access_policies.is_empty() {
+                    serde_json::to_vec(&LegacyProxyHostBinding {
+                        schema_version: STORE_SCHEMA_VERSION,
+                        objects: &objects,
+                    })
+                } else {
+                    serde_json::to_vec(&LegacyProxyHostPolicyBinding {
+                        schema_version: STORE_SCHEMA_VERSION,
+                        objects: &objects,
+                        access_policies,
+                    })
+                }
+            }
+            CANDIDATE_SCHEMA_V2 => serde_json::to_vec(&LegacyUnifiedBinding {
+                schema_version: CANDIDATE_SCHEMA_V2,
+                proxy_hosts: &objects,
+                stream_hosts,
+                discovery_sources,
+                access_policies,
+                certificates,
+            }),
+            _ => return Ok(hashes),
+        }
+        .map_err(|_| ProxyHostStoreError::Invalid)?;
+        hashes.push(format!("{:x}", Sha256::digest(bytes)));
+    }
+    if let Some(objects) = legacy_plural_proxy_host_objects(objects) {
+        let bytes = match file.schema_version {
+            CANDIDATE_SCHEMA_V1
+                if stream_hosts.is_empty()
+                    && discovery_sources.is_empty()
+                    && certificates.is_empty() =>
+            {
+                if access_policies.is_empty() {
+                    serde_json::to_vec(&LegacyPluralProxyHostBinding {
+                        schema_version: STORE_SCHEMA_VERSION,
+                        objects: &objects,
+                    })
+                } else {
+                    serde_json::to_vec(&LegacyPluralProxyHostPolicyBinding {
+                        schema_version: STORE_SCHEMA_VERSION,
+                        objects: &objects,
+                        access_policies,
+                    })
+                }
+            }
+            CANDIDATE_SCHEMA_V2 => serde_json::to_vec(&LegacyPluralUnifiedBinding {
+                schema_version: CANDIDATE_SCHEMA_V2,
+                proxy_hosts: &objects,
+                stream_hosts,
+                discovery_sources,
+                access_policies,
+                certificates,
+            }),
+            _ => return Ok(hashes),
+        }
+        .map_err(|_| ProxyHostStoreError::Invalid)?;
+        hashes.push(format!("{:x}", Sha256::digest(bytes)));
+    }
+    Ok(hashes)
+}
+
+pub(super) fn legacy_plural_proxy_host_objects(
+    objects: &[ApiObject<ProxyHostSpec>],
+) -> Option<Vec<LegacyPluralProxyHostObject<'_>>> {
+    objects
+        .iter()
+        .map(|object| {
+            object
+                .spec
+                .locations
+                .is_empty()
+                .then_some(LegacyPluralProxyHostObject {
+                    api_version: &object.api_version,
+                    metadata: &object.metadata,
+                    spec: LegacyPluralProxyHostSpec {
+                        domains: &object.spec.domains,
+                        forward_host: &object.spec.forward_host,
+                        forward_port: object.spec.forward_port,
+                        forward_protocol: object.spec.forward_protocol,
+                        automatic_https: object.spec.automatic_https,
+                        access_policy_ref: &object.spec.access_policy_ref,
+                        enabled: object.spec.enabled,
+                    },
+                })
+        })
+        .collect()
+}
+
+pub(super) fn legacy_proxy_host_objects(
+    objects: &[ApiObject<ProxyHostSpec>],
+) -> Option<Vec<LegacyProxyHostObject<'_>>> {
+    objects
+        .iter()
+        .map(|object| {
+            let domain = object.spec.domains.first()?;
+            (object.spec.domains.len() == 1).then_some(LegacyProxyHostObject {
+                api_version: &object.api_version,
+                metadata: &object.metadata,
+                spec: LegacyProxyHostSpec {
+                    domain: domain.as_str(),
+                    forward_host: &object.spec.forward_host,
+                    forward_port: object.spec.forward_port,
+                    forward_protocol: object.spec.forward_protocol,
+                    automatic_https: object.spec.automatic_https,
+                    access_policy_ref: &object.spec.access_policy_ref,
+                    enabled: object.spec.enabled,
+                },
+            })
+        })
+        .collect()
 }
 
 #[cfg(not(test))]

@@ -33,11 +33,13 @@ use validation_acme::validate_acme;
 use validation_middleware::validate_middleware;
 pub use validation_platform::estimated_metric_series;
 use validation_platform::{validate_admin, validate_observability, validate_providers};
+pub use validation_routing::{
+    normalize_exact_host, validate_egress_ip, validate_exact_host, validate_upstream_hostname,
+};
 use validation_routing::{
     valid_certificate_host, valid_id, valid_upstream_host, validate_route_matchers,
     validate_tcp_route, validate_unique_strings, validate_upstream_policy,
 };
-pub use validation_routing::{validate_egress_ip, validate_exact_host, validate_upstream_hostname};
 
 /// Maximum configuration bytes accepted by the offline parser.
 pub const MAX_CONFIG_BYTES: usize = 2 * 1024 * 1024;
@@ -61,7 +63,25 @@ const MAX_ROUTE_HEADERS: usize = 32;
 const MAX_ROUTE_MIDDLEWARES: usize = 64;
 const MAX_HEADER_NAME_BYTES: usize = 128;
 const MAX_HEADER_VALUE_BYTES: usize = 1_024;
-const MAX_PATH_BYTES: usize = 2_048;
+/// Maximum canonical route-path bytes accepted by configuration and typed locations.
+pub const MAX_PATH_BYTES: usize = 2_048;
+
+/// Return whether a route path is canonical for the exact or prefix matcher.
+#[must_use]
+pub fn valid_route_path(path: &str, prefix: bool) -> bool {
+    !path.is_empty()
+        && path.len() <= MAX_PATH_BYTES
+        && path.is_ascii()
+        && path.bytes().all(|byte| byte.is_ascii_graphic())
+        && path.starts_with('/')
+        && !path.contains('%')
+        && !path.contains('\\')
+        && !path.contains('?')
+        && !path.contains('#')
+        && !path.contains("//")
+        && (!prefix || path == "/" || !path.ends_with('/'))
+        && !path.split('/').any(|segment| matches!(segment, "." | ".."))
+}
 const MAX_ACME_ISSUERS: usize = 32;
 const MAX_ACME_CERTIFICATES: usize = 1024;
 const MAX_ACME_DNS_PROVIDERS: usize = 32;

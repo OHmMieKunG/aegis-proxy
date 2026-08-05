@@ -83,9 +83,9 @@ bounded generation compare-and-swap, and deny-unknown-fields parsing.
 
 ### `ProxyHost`
 
-Keep the existing required fields:
+Keep the existing workflow fields:
 
-- `domain`
+- bounded ordered `domains` (first value is primary)
 - `forward_protocol`
 - `forward_host`
 - `forward_port`
@@ -93,10 +93,8 @@ Keep the existing required fields:
 - `access_policy_ref`
 - `enabled`
 
-Add versioned optional fields with defaults rather than replacing them:
+Add versioned optional fields with defaults rather than replacing the remaining workflow:
 
-- `additional_domains`, default empty; the GUI presents `domain` plus these values as one Domain
-  names control.
 - `locations`, default empty.
 - bounded typed forwarding, header, caching, buffering, timeout, WebSocket, gRPC, HSTS, redirect,
   and common-protection controls behind Advanced.
@@ -314,7 +312,8 @@ existing drift gate; do not introduce a second API model or hand-maintained clie
 
 | Rework | Classification | Migration | Security boundary | Compatibility risk |
 |---|---|---|---|---|
-| Proxy Host multiple domains, locations, and advanced fields | Public contract; additive schema | Safe defaults for existing seven-field objects | Existing ownership/conflict/compiler boundary | Medium |
+| Proxy Host multiple domains | Public contract; singular input migration to bounded plural output | One-element list; legacy active hashes retained | Existing ownership/conflict/compiler boundary | Medium, implemented under ADR-0032 |
+| Proxy Host locations and advanced fields | Public contract; additive schema | Safe defaults for existing objects | Existing ownership/conflict/compiler boundary | Medium |
 | Redirection Host and Dead Host | New public contracts; additive schema/runtime | New objects; importer mapping later | Domain ownership and terminal-response safety | Medium |
 | Ordered Access Policy | Public contract evolution | Convert existing middleware refs without reading secrets | Authentication, authorization, and network policy | High |
 | Certificate lifecycle and DNS credentials | Public contract evolution | Preserve opaque certificate and credential references | Private keys, DNS authority, issuance, and renewal | High |

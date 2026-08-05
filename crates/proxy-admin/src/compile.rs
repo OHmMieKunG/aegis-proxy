@@ -7,14 +7,17 @@ use std::{
 };
 
 use aegisproxy_config::{
-    Config, EndpointConfig, RouteConfig, validate, validate_exact_host, validate_upstream_hostname,
+    Config, EndpointConfig, RouteConfig, validate, validate_upstream_hostname,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::access_policy::AccessPolicyMetadata;
 use crate::object_store::MAX_PROXY_HOSTS;
-use crate::{ApiObject, AutomaticHttps, ForwardProtocol, ObjectId, ProxyHostSpec};
+use crate::{
+    AccessPolicyRef, ApiObject, AutomaticHttps, ForwardProtocol, ObjectId, ProxyHostSpec,
+    ProxyLocation, ProxyLocationMatch,
+};
 
 /// Existing certificate policy used for managed HTTPS intent.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -39,7 +42,7 @@ pub struct CompileContext<'a> {
     pub access_policies: &'a BTreeMap<ObjectId, AccessPolicyMetadata>,
     /// Existing owner/object identities retained by the control plane.
     pub claimed_objects: &'a BTreeSet<(ObjectId, ObjectId)>,
-    /// Existing exact domain ownership, including disabled objects.
+    /// Existing exact domain ownership from enabled applied objects.
     pub claimed_domains: &'a BTreeMap<String, (ObjectId, ObjectId)>,
     /// Prepared certificate/listener policy required for managed HTTPS.
     pub managed_https: Option<&'a ManagedHttpsPolicy>,
@@ -169,6 +172,9 @@ pub enum ProxyHostCompileError {
     /// Forward port is zero.
     #[error("invalid forward port")]
     InvalidPort,
+    /// Custom location is malformed, duplicated, or ambiguous.
+    #[error("invalid proxy location")]
+    InvalidLocation,
     /// Requested transport is unsupported.
     #[error("unsupported forward protocol")]
     UnsupportedProtocol,
@@ -224,35 +230,44 @@ pub fn compile_proxy_host(
         return Err(ProxyHostCompileError::ConflictingObjectId);
     }
 
-    validate_domain(&object.spec.domain)?;
+    object.spec.validate_shape().map_err(map_contract_error)?;
     validate_forward_host(&object.spec.forward_host)?;
     if object.spec.forward_port == 0 {
         return Err(ProxyHostCompileError::InvalidPort);
     }
-    if context.claimed_domains.contains_key(&object.spec.domain)
-        || context.base_config.routes.iter().any(|route| {
-            route
-                .hosts
-                .iter()
-                .any(|host| host_matches(host, &object.spec.domain))
+    if object.spec.enabled
+        && object.spec.domains.iter().any(|domain| {
+            context.claimed_domains.contains_key(domain.as_str())
+                || context.base_config.routes.iter().any(|route| {
+                    route
+                        .hosts
+                        .iter()
+                        .any(|host| host_matches(host, domain.as_str()))
+                })
         })
     {
         return Err(ProxyHostCompileError::ConflictingDomain);
     }
 
-    let middlewares = resolve_access_policy(object, context)?;
+    let middlewares = resolve_access_policy_ref(
+        object.spec.access_policy_ref.as_ref(),
+        &object.metadata.owner_id,
+        context,
+    )?;
     let listener_id = resolve_listener(object, context)?;
     let mut config = context.base_config.clone();
     if object.spec.enabled {
         let namespace = namespace(&object.metadata.owner_id, &object.metadata.id);
         let group_id = format!("{namespace}-upstream");
         let endpoint_id = format!("{namespace}-endpoint");
-        let route_id = format!("{namespace}-route");
+        let route_ids = managed_route_ids(&namespace, object.spec.domains.len());
         if config
             .upstream_groups
             .iter()
             .any(|group| group.id == group_id)
-            || config.routes.iter().any(|route| route.id == route_id)
+            || route_ids
+                .iter()
+                .any(|route_id| config.routes.iter().any(|route| route.id == *route_id))
             || config
                 .upstream_groups
                 .iter()
@@ -274,21 +289,24 @@ pub fn compile_proxy_host(
             .cloned()
             .ok_or(ProxyHostCompileError::InternalInvariant)?;
         group.id = group_id.clone();
-        group.endpoints = vec![compile_endpoint(object, prototype, endpoint_id)?];
+        group.endpoints = vec![compile_endpoint(object, prototype.clone(), endpoint_id)?];
         config.upstream_groups.push(group);
-        config.routes.push(RouteConfig {
-            id: route_id,
-            listeners: vec![listener_id],
-            hosts: vec![object.spec.domain.clone()],
-            paths: Vec::new(),
-            path_prefixes: Vec::new(),
-            methods: Vec::new(),
-            headers: Vec::new(),
-            default: false,
-            priority: 0,
-            middlewares,
-            upstream_group: Some(group_id),
-        });
+        for (route_id, domain) in route_ids.into_iter().zip(&object.spec.domains) {
+            config.routes.push(RouteConfig {
+                id: route_id,
+                listeners: vec![listener_id.clone()],
+                hosts: vec![domain.to_string()],
+                paths: Vec::new(),
+                path_prefixes: Vec::new(),
+                methods: Vec::new(),
+                headers: Vec::new(),
+                default: false,
+                priority: 0,
+                middlewares: middlewares.clone(),
+                upstream_group: Some(group_id.clone()),
+            });
+        }
+        compile_locations(object, context, &listener_id, &prototype, &mut config)?;
     }
     validate(&config).map_err(|_| ProxyHostCompileError::SemanticValidation)?;
     Ok(ProxyHostCandidate {
@@ -347,7 +365,13 @@ pub fn compile_proxy_hosts(
     let mut config = manual.clone();
 
     for object in &desired {
-        if manual_hosts.conflicts(&object.spec.domain) {
+        if object.spec.enabled
+            && object
+                .spec
+                .domains
+                .iter()
+                .any(|domain| manual_hosts.conflicts(domain.as_str()))
+        {
             return Err(ProxyHostCompileError::ConflictingDomain);
         }
         let identity = (object.metadata.owner_id.clone(), object.metadata.id.clone());
@@ -361,15 +385,22 @@ pub fn compile_proxy_hosts(
             claimed_domains: &empty_domains,
             managed_https: context.managed_https.get(&identity),
         };
-        let middlewares = resolve_access_policy(object, &single)?;
+        let middlewares = resolve_access_policy_ref(
+            object.spec.access_policy_ref.as_ref(),
+            &object.metadata.owner_id,
+            &single,
+        )?;
         let listener_id = resolve_listener(object, &single)?;
         if !object.spec.enabled {
             continue;
         }
         let ids = ManagedIds::new(object);
-        if !route_ids.insert(ids.route.clone())
-            || !group_ids.insert(ids.group.clone())
+        if !group_ids.insert(ids.group.clone())
             || !endpoint_ids.insert(ids.endpoint.clone())
+            || ids
+                .routes
+                .iter()
+                .any(|route_id| !route_ids.insert(route_id.clone()))
         {
             return Err(ProxyHostCompileError::ConflictingObjectId);
         }
@@ -377,19 +408,66 @@ pub fn compile_proxy_hosts(
         group.id = ids.group.clone();
         group.endpoints = vec![compile_endpoint(object, prototype.clone(), ids.endpoint)?];
         config.upstream_groups.push(group);
-        config.routes.push(RouteConfig {
-            id: ids.route,
-            listeners: vec![listener_id],
-            hosts: vec![object.spec.domain.clone()],
-            paths: Vec::new(),
-            path_prefixes: Vec::new(),
-            methods: Vec::new(),
-            headers: Vec::new(),
-            default: false,
-            priority: 0,
-            middlewares,
-            upstream_group: Some(ids.group),
-        });
+        for (route_id, domain) in ids.routes.into_iter().zip(&object.spec.domains) {
+            config.routes.push(RouteConfig {
+                id: route_id,
+                listeners: vec![listener_id.clone()],
+                hosts: vec![domain.to_string()],
+                paths: Vec::new(),
+                path_prefixes: Vec::new(),
+                methods: Vec::new(),
+                headers: Vec::new(),
+                default: false,
+                priority: 0,
+                middlewares: middlewares.clone(),
+                upstream_group: Some(ids.group.clone()),
+            });
+        }
+        let mut locations = object
+            .spec
+            .locations
+            .iter()
+            .filter(|location| location.enabled)
+            .collect::<Vec<_>>();
+        locations.sort_by(|left, right| left.id.cmp(&right.id));
+        for location in locations {
+            let location_ids = LocationManagedIds::new(object, location);
+            if !group_ids.insert(location_ids.group.clone())
+                || !endpoint_ids.insert(location_ids.endpoint.clone())
+                || location_ids
+                    .routes
+                    .iter()
+                    .any(|route_id| !route_ids.insert(route_id.clone()))
+            {
+                return Err(ProxyHostCompileError::ConflictingObjectId);
+            }
+            let mut group = template.clone();
+            group.id = location_ids.group.clone();
+            group.endpoints = vec![compile_location_endpoint(
+                location,
+                prototype.clone(),
+                location_ids.endpoint,
+            )?];
+            config.upstream_groups.push(group);
+            let location_middlewares = resolve_access_policy_ref(
+                location
+                    .access_policy_ref
+                    .as_ref()
+                    .or(object.spec.access_policy_ref.as_ref()),
+                &object.metadata.owner_id,
+                &single,
+            )?;
+            for (route_id, domain) in location_ids.routes.into_iter().zip(&object.spec.domains) {
+                config.routes.push(location_route(
+                    route_id,
+                    listener_id.clone(),
+                    domain.to_string(),
+                    location,
+                    location_middlewares.clone(),
+                    location_ids.group.clone(),
+                ));
+            }
+        }
     }
     validate(&config).map_err(|_| ProxyHostCompileError::SemanticValidation)?;
     Ok(ProxyHostSetCandidate {
@@ -400,24 +478,55 @@ pub fn compile_proxy_hosts(
 
 #[derive(Clone)]
 struct ManagedIds {
-    route: String,
+    routes: Vec<String>,
     group: String,
     endpoint: String,
 }
 
-impl ManagedIds {
-    fn new(object: &ApiObject<ProxyHostSpec>) -> Self {
-        let namespace = namespace(&object.metadata.owner_id, &object.metadata.id);
+#[derive(Clone)]
+struct LocationManagedIds {
+    routes: Vec<String>,
+    group: String,
+    endpoint: String,
+}
+
+impl LocationManagedIds {
+    fn new(object: &ApiObject<ProxyHostSpec>, location: &ProxyLocation) -> Self {
+        let namespace =
+            location_namespace(&object.metadata.owner_id, &object.metadata.id, &location.id);
         Self {
-            route: format!("{namespace}-route"),
+            routes: managed_route_ids(&namespace, object.spec.domains.len()),
             group: format!("{namespace}-upstream"),
             endpoint: format!("{namespace}-endpoint"),
         }
     }
 }
 
-pub(super) fn managed_upstream_group_id(object: &ApiObject<ProxyHostSpec>) -> String {
-    ManagedIds::new(object).group
+impl ManagedIds {
+    fn new(object: &ApiObject<ProxyHostSpec>) -> Self {
+        let namespace = namespace(&object.metadata.owner_id, &object.metadata.id);
+        Self {
+            routes: managed_route_ids(&namespace, object.spec.domains.len()),
+            group: format!("{namespace}-upstream"),
+            endpoint: format!("{namespace}-endpoint"),
+        }
+    }
+}
+
+pub(super) fn managed_upstream_group_ids(object: &ApiObject<ProxyHostSpec>) -> Vec<String> {
+    if !object.spec.enabled {
+        return Vec::new();
+    }
+    let mut groups = vec![ManagedIds::new(object).group];
+    groups.extend(
+        object
+            .spec
+            .locations
+            .iter()
+            .filter(|location| location.enabled)
+            .map(|location| LocationManagedIds::new(object, location).group),
+    );
+    groups
 }
 
 fn canonical_objects(
@@ -434,7 +543,7 @@ fn canonical_objects(
     let mut identities = BTreeSet::new();
     let mut domains = BTreeSet::new();
     for object in &objects {
-        validate_domain(&object.spec.domain)?;
+        object.spec.validate_shape().map_err(map_contract_error)?;
         validate_forward_host(&object.spec.forward_host)?;
         if object.spec.forward_port == 0 {
             return Err(ProxyHostCompileError::InvalidPort);
@@ -442,7 +551,13 @@ fn canonical_objects(
         if !identities.insert((&object.metadata.owner_id, &object.metadata.id)) {
             return Err(ProxyHostCompileError::ConflictingObjectId);
         }
-        if !domains.insert(&object.spec.domain) {
+        if object.spec.enabled
+            && object
+                .spec
+                .domains
+                .iter()
+                .any(|domain| !domains.insert(domain))
+        {
             return Err(ProxyHostCompileError::ConflictingDomain);
         }
     }
@@ -455,14 +570,75 @@ fn strip_managed_resources(
 ) -> Result<Config, ProxyHostCompileError> {
     let mut routes = BTreeMap::new();
     let mut groups = BTreeMap::new();
+    let mut routes_by_group = BTreeMap::<String, BTreeSet<String>>::new();
     let mut endpoints = BTreeSet::new();
-    for object in current {
+    for object in current.iter().filter(|object| object.spec.enabled) {
         let ids = ManagedIds::new(object);
-        if routes.insert(ids.route, ids.group.clone()).is_some()
-            || groups.insert(ids.group, ids.endpoint.clone()).is_some()
+        if groups
+            .insert(ids.group.clone(), ids.endpoint.clone())
+            .is_some()
             || !endpoints.insert(ids.endpoint)
         {
             return Err(ProxyHostCompileError::ConflictingObjectId);
+        }
+        for (route, domain) in ids.routes.into_iter().zip(&object.spec.domains) {
+            if routes
+                .insert(
+                    route.clone(),
+                    ExpectedManagedRoute {
+                        group: ids.group.clone(),
+                        host: domain.to_string(),
+                        paths: Vec::new(),
+                        path_prefixes: Vec::new(),
+                    },
+                )
+                .is_some()
+            {
+                return Err(ProxyHostCompileError::ConflictingObjectId);
+            }
+            routes_by_group
+                .entry(ids.group.clone())
+                .or_default()
+                .insert(route);
+        }
+        for location in object
+            .spec
+            .locations
+            .iter()
+            .filter(|location| location.enabled)
+        {
+            let ids = LocationManagedIds::new(object, location);
+            if groups
+                .insert(ids.group.clone(), ids.endpoint.clone())
+                .is_some()
+                || !endpoints.insert(ids.endpoint)
+            {
+                return Err(ProxyHostCompileError::ConflictingObjectId);
+            }
+            for (route, domain) in ids.routes.into_iter().zip(&object.spec.domains) {
+                let (paths, path_prefixes) = match location.match_kind {
+                    ProxyLocationMatch::Exact => (vec![location.path.clone()], Vec::new()),
+                    ProxyLocationMatch::Prefix => (Vec::new(), vec![location.path.clone()]),
+                };
+                if routes
+                    .insert(
+                        route.clone(),
+                        ExpectedManagedRoute {
+                            group: ids.group.clone(),
+                            host: domain.to_string(),
+                            paths,
+                            path_prefixes,
+                        },
+                    )
+                    .is_some()
+                {
+                    return Err(ProxyHostCompileError::ConflictingObjectId);
+                }
+                routes_by_group
+                    .entry(ids.group.clone())
+                    .or_default()
+                    .insert(route);
+            }
         }
     }
 
@@ -470,19 +646,19 @@ fn strip_managed_resources(
     let mut seen_routes = BTreeSet::new();
     let mut retained_routes = Vec::with_capacity(config.routes.len());
     for route in std::mem::take(&mut config.routes) {
-        let Some(group) = routes.get(&route.id) else {
+        let Some(expected) = routes.get(&route.id) else {
             retained_routes.push(route);
             continue;
         };
         if route.listeners.len() != 1
-            || route.hosts.len() != 1
-            || !route.paths.is_empty()
-            || !route.path_prefixes.is_empty()
+            || route.hosts.as_slice() != [expected.host.as_str()]
+            || route.paths != expected.paths
+            || route.path_prefixes != expected.path_prefixes
             || !route.methods.is_empty()
             || !route.headers.is_empty()
             || route.default
             || route.priority != 0
-            || route.upstream_group.as_ref() != Some(group)
+            || route.upstream_group.as_ref() != Some(&expected.group)
         {
             return Err(ProxyHostCompileError::ManagedResourceConflict);
         }
@@ -511,13 +687,23 @@ fn strip_managed_resources(
     }
     config.upstream_groups = retained_groups;
 
-    for (route, group) in routes {
-        if seen_routes.contains(&route) != seen_groups.contains(&group) {
+    for (group, expected_routes) in routes_by_group {
+        if expected_routes.is_subset(&seen_routes) != seen_groups.contains(&group)
+            || (!expected_routes.is_disjoint(&seen_routes)
+                && !expected_routes.is_subset(&seen_routes))
+        {
             return Err(ProxyHostCompileError::ManagedResourceConflict);
         }
     }
     validate(&config).map_err(|_| ProxyHostCompileError::ManagedResourceConflict)?;
     Ok(config)
+}
+
+struct ExpectedManagedRoute {
+    group: String,
+    host: String,
+    paths: Vec<String>,
+    path_prefixes: Vec<String>,
 }
 
 #[derive(Default)]
@@ -547,16 +733,6 @@ impl DomainClaims {
     }
 }
 
-fn validate_domain(domain: &str) -> Result<(), ProxyHostCompileError> {
-    if !domain.is_ascii() || domain.ends_with('.') || domain.contains('*') {
-        return Err(ProxyHostCompileError::UnsupportedDomainForm);
-    }
-    if domain.parse::<IpAddr>().is_ok() || validate_exact_host(domain).is_err() {
-        return Err(ProxyHostCompileError::InvalidDomain);
-    }
-    Ok(())
-}
-
 fn validate_forward_host(host: &str) -> Result<(), ProxyHostCompileError> {
     if host.parse::<IpAddr>().is_ok() {
         return Ok(());
@@ -564,11 +740,12 @@ fn validate_forward_host(host: &str) -> Result<(), ProxyHostCompileError> {
     validate_upstream_hostname(host).map_err(|_| ProxyHostCompileError::InvalidUpstreamHost)
 }
 
-fn resolve_access_policy(
-    object: &ApiObject<ProxyHostSpec>,
+fn resolve_access_policy_ref(
+    reference: Option<&AccessPolicyRef>,
+    owner_id: &ObjectId,
     context: &CompileContext<'_>,
 ) -> Result<Vec<String>, ProxyHostCompileError> {
-    let Some(reference) = object.spec.access_policy_ref.as_ref() else {
+    let Some(reference) = reference else {
         return Ok(Vec::new());
     };
     let policy = context
@@ -576,7 +753,7 @@ fn resolve_access_policy(
         .get(reference.id())
         .filter(|policy| policy.is_enabled())
         .ok_or(ProxyHostCompileError::MissingAccessPolicy)?;
-    if !policy.permits(&object.metadata.owner_id) {
+    if !policy.permits(owner_id) {
         return Err(ProxyHostCompileError::UnauthorizedAccessPolicy);
     }
     Ok(policy.middleware_ids().to_vec())
@@ -608,13 +785,15 @@ fn resolve_listener(
                         && listener.certificates.contains(&policy.certificate_id)
                 })
                 .ok_or(ProxyHostCompileError::InvalidCertificatePolicy)?;
-            certificate_covers(
-                context.base_config,
-                &policy.certificate_id,
-                &object.spec.domain,
-            )
-            .then(|| listener.id.clone())
-            .ok_or(ProxyHostCompileError::InvalidCertificatePolicy)
+            object
+                .spec
+                .domains
+                .iter()
+                .all(|domain| {
+                    certificate_covers(context.base_config, &policy.certificate_id, domain.as_str())
+                })
+                .then(|| listener.id.clone())
+                .ok_or(ProxyHostCompileError::InvalidCertificatePolicy)
         }
     }
 }
@@ -654,6 +833,145 @@ fn compile_endpoint(
     Ok(endpoint)
 }
 
+fn compile_location_endpoint(
+    location: &ProxyLocation,
+    mut endpoint: EndpointConfig,
+    endpoint_id: String,
+) -> Result<EndpointConfig, ProxyHostCompileError> {
+    let scheme = match location.forward_protocol {
+        ForwardProtocol::Http => "http",
+        ForwardProtocol::Https => "https",
+    };
+    endpoint.id = endpoint_id;
+    endpoint
+        .url
+        .set_scheme(scheme)
+        .map_err(|_| ProxyHostCompileError::UnsupportedProtocol)?;
+    endpoint
+        .url
+        .set_host(Some(&location.forward_host))
+        .map_err(|_| ProxyHostCompileError::InvalidUpstreamHost)?;
+    endpoint
+        .url
+        .set_port(Some(location.forward_port))
+        .map_err(|_| ProxyHostCompileError::InvalidPort)?;
+    endpoint.url.set_path("");
+    endpoint.url.set_query(None);
+    endpoint.url.set_fragment(None);
+    endpoint.server_name = match location.forward_protocol {
+        ForwardProtocol::Http => None,
+        ForwardProtocol::Https => Some(location.forward_host.clone()),
+    };
+    if matches!(location.forward_protocol, ForwardProtocol::Http) {
+        endpoint.ca_bundle = None;
+    }
+    Ok(endpoint)
+}
+
+fn compile_locations(
+    object: &ApiObject<ProxyHostSpec>,
+    context: &CompileContext<'_>,
+    listener_id: &str,
+    prototype: &EndpointConfig,
+    config: &mut Config,
+) -> Result<(), ProxyHostCompileError> {
+    let mut locations = object
+        .spec
+        .locations
+        .iter()
+        .filter(|location| location.enabled)
+        .collect::<Vec<_>>();
+    locations.sort_by(|left, right| left.id.cmp(&right.id));
+    for location in locations {
+        let ids = LocationManagedIds::new(object, location);
+        if config
+            .upstream_groups
+            .iter()
+            .any(|group| group.id == ids.group)
+            || ids
+                .routes
+                .iter()
+                .any(|route_id| config.routes.iter().any(|route| route.id == *route_id))
+        {
+            return Err(ProxyHostCompileError::ConflictingObjectId);
+        }
+        let mut group = context
+            .base_config
+            .upstream_groups
+            .iter()
+            .find(|group| group.id == context.upstream_template_id)
+            .cloned()
+            .ok_or(ProxyHostCompileError::InternalInvariant)?;
+        group.id = ids.group.clone();
+        group.endpoints = vec![compile_location_endpoint(
+            location,
+            prototype.clone(),
+            ids.endpoint,
+        )?];
+        config.upstream_groups.push(group);
+        let middlewares = resolve_access_policy_ref(
+            location
+                .access_policy_ref
+                .as_ref()
+                .or(object.spec.access_policy_ref.as_ref()),
+            &object.metadata.owner_id,
+            context,
+        )?;
+        for (route_id, domain) in ids.routes.into_iter().zip(&object.spec.domains) {
+            config.routes.push(location_route(
+                route_id,
+                listener_id.to_owned(),
+                domain.to_string(),
+                location,
+                middlewares.clone(),
+                ids.group.clone(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn location_route(
+    id: String,
+    listener_id: String,
+    domain: String,
+    location: &ProxyLocation,
+    middlewares: Vec<String>,
+    group: String,
+) -> RouteConfig {
+    RouteConfig {
+        id,
+        listeners: vec![listener_id],
+        hosts: vec![domain],
+        paths: if location.match_kind == ProxyLocationMatch::Exact {
+            vec![location.path.clone()]
+        } else {
+            Vec::new()
+        },
+        path_prefixes: if location.match_kind == ProxyLocationMatch::Prefix {
+            vec![location.path.clone()]
+        } else {
+            Vec::new()
+        },
+        methods: Vec::new(),
+        headers: Vec::new(),
+        default: false,
+        priority: 0,
+        middlewares,
+        upstream_group: Some(group),
+    }
+}
+
+fn map_contract_error(error: crate::ContractError) -> ProxyHostCompileError {
+    match error {
+        crate::ContractError::InvalidDomain => ProxyHostCompileError::InvalidDomain,
+        crate::ContractError::InvalidForwardHost => ProxyHostCompileError::InvalidUpstreamHost,
+        crate::ContractError::InvalidForwardPort => ProxyHostCompileError::InvalidPort,
+        crate::ContractError::InvalidProxyLocation => ProxyHostCompileError::InvalidLocation,
+        _ => ProxyHostCompileError::InternalInvariant,
+    }
+}
+
 pub(super) fn namespace(owner: &ObjectId, object: &ObjectId) -> String {
     let mut digest = Sha256::new();
     digest.update(owner.as_str().as_bytes());
@@ -663,6 +981,28 @@ pub(super) fn namespace(owner: &ObjectId, object: &ObjectId) -> String {
     let mut output = String::from("ph-");
     for byte in &digest[..16] {
         output.push_str(&format!("{byte:02x}"));
+    }
+    output
+}
+
+pub(super) fn location_namespace(
+    owner: &ObjectId,
+    object: &ObjectId,
+    location: &ObjectId,
+) -> String {
+    let mut digest = Sha256::new();
+    digest.update(owner.as_str().as_bytes());
+    digest.update([0]);
+    digest.update(object.as_str().as_bytes());
+    digest.update([0]);
+    digest.update(location.as_str().as_bytes());
+    let digest = digest.finalize();
+    // Location groups remain in the established Proxy Host namespace so later
+    // whole-state compilers never mistake them for reusable manual templates.
+    let mut output = String::from("ph-l-");
+    for byte in &digest[..16] {
+        use std::fmt::Write as _;
+        let _ = write!(output, "{byte:02x}");
     }
     output
 }
@@ -692,6 +1032,18 @@ fn certificate_covers(config: &Config, certificate_id: &str, domain: &str) -> bo
                 .map(|certificate| &certificate.hosts)
         })
         .is_some_and(|hosts| hosts.iter().any(|host| host_matches(host, domain)))
+}
+
+pub(super) fn managed_route_ids(namespace: &str, domain_count: usize) -> Vec<String> {
+    (0..domain_count)
+        .map(|index| {
+            if index == 0 {
+                format!("{namespace}-route")
+            } else {
+                format!("{namespace}-route-{}", index + 1)
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

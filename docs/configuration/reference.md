@@ -45,18 +45,31 @@ change Unix peer or bearer authentication. See
 
 ## Typed Proxy Host compilation
 
-Phase 15 provides a compiler from the strict seven-field Proxy Host object into this same schema-v1
-model. It adds no TOML fields. Canonical lowercase ASCII domains are required; Unicode, trailing
-dots, IP literals, and wildcards are rejected. Forward destinations accept canonical DNS names or
-IP literals with explicit nonzero ports and only `http` or verified `https`.
+The typed compiler maps one Proxy Host into the same schema-v1 runtime model without adding TOML
+fields. `domains` contains 1–32 ordered exact DNS names. The shared validator converts case and
+Unicode IDNA input to lowercase ASCII, removes one terminal root dot, and rejects duplicate
+normalized names, IP literals, wildcards, schemes, ports, paths, userinfo, whitespace, and invalid
+DNS labels. The first name is the primary display domain; order participates in the desired-state
+hash but never changes the stable object ID. Forward destinations accept canonical DNS names or IP
+literals with explicit nonzero ports and only `http` or verified `https`.
 
-Enabled objects add one deterministic route, upstream group, and endpoint. Group policy is copied
+Enabled objects add one deterministic exact route per domain and one shared upstream group and
+endpoint. Group policy is copied
 from an explicitly selected validated template, preserving egress, DNS, health, retry, circuit, and
 resource limits. Access-policy references resolve to existing middleware IDs and fail when missing,
 disabled, unauthorized, or semantically incompatible. Disabled objects remain in typed
 control-plane state but add no route or upstream. Managed HTTPS selects an existing HTTPS listener
 and certificate covering the domain; compilation neither orders nor claims issuance of a
-certificate. Every result passes the normal semantic validator before it becomes a candidate.
+certificate. That single certificate must cover every domain. Every result passes the normal
+semantic validator before it becomes a candidate.
+
+`locations` contains zero to sixteen embedded stable-ID exact or segment-prefix routes. Paths are
+case-sensitive canonical ASCII, begin with `/`, and reject custom `/`, percent encoding,
+backslashes, repeated slashes, dot segments, query, fragment, scheme, and authority. Prefix paths
+cannot end in `/`. Exact matching wins, then the longest segment prefix, then the parent host route.
+Every enabled location has one explicit HTTP/HTTPS upstream shared across the parent domains. A
+null policy inherits the parent policy; an explicit reference must be enabled and owner-permitted.
+WebSocket and gRPC use the normal HTTP runtime and have no separate location flag.
 
 The current library-only Access Policy contract contains `enabled`, bounded explicit
 `shared_with`, and 1–64 canonical middleware references. It carries no middleware body or secret.
@@ -126,7 +139,7 @@ records. Update replaces the exact owner/object identity; delete removes it. Bot
 require the current object generation, return candidate metadata, and never change active revision.
 Every typed candidate has a strict immutable snapshot of its complete owner/object-ordered desired
 state plus exact referenced Access Policy records. Its SHA-256 binding is recorded in revision
-metadata. Snapshot files contain seven-field objects and secret-free policy ownership/middleware
+metadata. Snapshot files contain bounded secret-free Proxy Host objects and policy ownership/middleware
 metadata but no plaintext credentials, are capped at the bounded transaction size, and the
 directory is capped at 1,000 entries. Admin startup and pre-bind reconciliation validate the
 complete bounded directory and remove only snapshots whose authoritative configuration revisions
@@ -140,10 +153,11 @@ desired objects, and invokes the same coordinator. Restart recovery reconciles t
 the durable active revision before Admin starts. Access Policy and Certificate persistence,
 dedicated scopes, and owner-scoped routes exist.
 
-Typed Proxy Host desired state has a separate internal schema-v1 JSON store. It is bounded to 4,096
-objects and 2 MiB, uses private directory/file permissions, stable owner/object ordering, globally
-unique domains, and object-local generations beginning at one. Create rejects existing identity or
-domain; update/delete require exact generation. File replacement is durable and atomic within its
+Typed Proxy Host desired state has one internal schema-2 JSON store containing separate applied and
+draft namespaces. It is bounded to 4,096 records and 2 MiB, uses private directory/file permissions,
+stable owner/object ordering, unique domains across enabled applied hosts, and object-local
+generations beginning at one. Create rejects existing identity or enabled-domain conflicts;
+update/delete require exact generation. File replacement is durable and atomic within its
 directory. Administration opens it at `<state_dir>/admin/proxy-hosts.json`; list/get are owner
 scoped, stable, and require `read_proxy_hosts`. Validation/preview reject its claimed IDs/domains.
 This store is not active configuration. Create writes only after complete-state compilation,

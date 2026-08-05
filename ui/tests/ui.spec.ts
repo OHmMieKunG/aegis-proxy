@@ -151,12 +151,22 @@ test("Proxy Host browser lifecycle saves, applies, conflicts safely, and retains
     api_version: "v1" as const,
     metadata: { id: "proxy-existing", owner_id: "uid-1000" },
     spec: {
-      domain: "existing.example.com",
+      domains: ["existing.example.com"],
       forward_host: "127.0.0.1",
       forward_port: 8080,
       forward_protocol: "http" as const,
       automatic_https: "disabled" as const,
       access_policy_ref: null,
+      locations: [] as Array<{
+        id: string;
+        match_kind: "exact" | "prefix";
+        path: string;
+        forward_host: string;
+        forward_port: number;
+        forward_protocol: "http" | "https";
+        access_policy_ref: string | null;
+        enabled: boolean;
+      }>,
       enabled: true,
     },
   };
@@ -317,7 +327,8 @@ test("Proxy Host browser lifecycle saves, applies, conflicts safely, and retains
     if (request.method() === "POST") {
       const object = request.postDataJSON() as typeof original;
       if (hosts.some(({ object: current }) =>
-        current.metadata.id === object.metadata.id || current.spec.domain === object.spec.domain
+        current.metadata.id === object.metadata.id
+          || current.spec.domains.some((domain) => object.spec.domains.includes(domain))
       )) {
         return json(route, {
           error: { code: "invalid_request", message: "conflict", details: [], request_id: "test" },
@@ -367,48 +378,73 @@ test("Proxy Host browser lifecycle saves, applies, conflicts safely, and retains
   await page.goto("/proxy-hosts");
   await expect(page.locator("main")).not.toContainText(/\bcandidate\b|\brevision\b|activation CAS/i);
   await page.getByRole("link", { name: "New Proxy Host" }).click();
-  await page.getByLabel("Domain").fill("app.example.com");
-  await page.getByLabel("Forward host or IP").fill("127.0.0.1");
+  await page.getByRole("textbox", { name: "Domain 1 (primary)" }).fill("app.example.com");
+  await page.getByRole("button", { name: "Add domain" }).click();
+  await page.getByRole("textbox", { name: "Domain 2", exact: true }).fill("www.app.example.com");
+  await page.getByRole("button", { name: "Move www.app.example.com up" }).click();
+  await expect(page.getByRole("textbox", { name: "Domain 1 (primary)" })).toHaveValue("www.app.example.com");
+  await page.getByRole("button", { name: "Move www.app.example.com down" }).click();
+  await page.getByRole("button", { name: "Add domain" }).click();
+  await page.getByRole("textbox", { name: "Domain 3", exact: true }).fill("remove.example.com");
+  await page.getByRole("button", { name: "Remove remove.example.com" }).click();
+  await page.getByLabel("Default forward host or IP").fill("127.0.0.1");
+  await page.getByRole("button", { name: "Add location" }).click();
+  const apiLocation = page.locator(".location-row").first();
+  await apiLocation.getByLabel("Path", { exact: true }).fill("/api");
+  await apiLocation.getByLabel("Forward host or IP").fill("api.internal");
+  await apiLocation.getByLabel("Forward port").fill("9000");
+  await page.getByRole("button", { name: "Add location" }).click();
+  const removedLocation = page.locator(".location-row").nth(1);
+  await removedLocation.getByLabel("Path", { exact: true }).fill("/remove");
+  await removedLocation.getByLabel("Forward host or IP").fill("remove.internal");
+  await page.getByRole("button", { name: "Move /remove up" }).click();
+  await page.getByRole("button", { name: "Remove /remove" }).click();
   await page.getByRole("button", { name: "Save and apply" }).click();
   await expect(page.getByText("Proxy Host created. Changes active.")).toBeVisible();
+  await expect(page.getByText("app.example.com +1 more")).toBeVisible();
+  expect(hosts.find(({ object }) => object.spec.domains.includes("app.example.com"))?.object.spec.locations).toMatchObject([
+    { path: "/api", forward_host: "api.internal", forward_port: 9000, match_kind: "prefix", enabled: true },
+  ]);
 
   await openActions("app.example.com");
   await page.getByRole("link", { name: "Edit" }).click();
-  await page.getByLabel("Forward port").fill("8181");
+  await page.getByLabel("Default forward port").fill("8181");
   await page.getByRole("button", { name: "Save draft" }).click();
   await expect(page.getByText("Draft saved. It is not applied to routing.")).toBeVisible();
-  expect(hosts.find(({ object }) => object.spec.domain === "app.example.com")?.object.spec.forward_port).toBe(8080);
-  expect(activeHosts.find(({ object }) => object.spec.domain === "app.example.com")?.object.spec.forward_port).toBe(8080);
+  expect(hosts.find(({ object }) => object.spec.domains.includes("app.example.com"))?.object.spec.forward_port).toBe(8080);
+  expect(activeHosts.find(({ object }) => object.spec.domains.includes("app.example.com"))?.object.spec.forward_port).toBe(8080);
   await page.getByRole("link", { name: "Edit draft" }).click();
   await expect(page.getByText("Draft not applied. Saving it does not change active routing.")).toBeVisible();
-  await expect(page.getByLabel("Forward port")).toHaveValue("8181");
-  await page.getByLabel("Forward port").fill("9090");
+  await expect(page.getByLabel("Default forward port")).toHaveValue("8181");
+  await expect(page.locator(".location-row").getByLabel("Path", { exact: true })).toHaveValue("/api");
+  await page.locator(".location-row").getByLabel("Forward port").fill("9100");
+  await page.getByLabel("Default forward port").fill("9090");
   await page.getByRole("button", { name: "Save and apply" }).click();
   await expect(page.getByText("Proxy Host updated. Changes active.")).toBeVisible();
-  expect(activeHosts.find(({ object }) => object.spec.domain === "app.example.com")?.object.spec.forward_port).toBe(9090);
+  expect(activeHosts.find(({ object }) => object.spec.domains.includes("app.example.com"))?.object.spec.forward_port).toBe(9090);
   expect(drafts).toHaveLength(0);
 
   await openActions("app.example.com");
   await page.getByRole("link", { name: "Edit" }).click();
-  await page.getByLabel("Forward port").fill("9190");
+  await page.getByLabel("Default forward port").fill("9190");
   await page.getByRole("button", { name: "Save draft" }).click();
   await page.getByRole("link", { name: "Edit draft" }).click();
   await page.getByRole("button", { name: "Discard draft" }).click();
   await expect(page.getByText("Draft discarded. Applied and active routing are unchanged.")).toBeVisible();
   expect(drafts).toHaveLength(0);
-  expect(activeHosts.find(({ object }) => object.spec.domain === "app.example.com")?.object.spec.forward_port).toBe(9090);
+  expect(activeHosts.find(({ object }) => object.spec.domains.includes("app.example.com"))?.object.spec.forward_port).toBe(9090);
 
   await openActions("app.example.com");
   await page.getByRole("link", { name: "Edit" }).click();
-  await page.getByLabel("Forward port").fill("9190");
+  await page.getByLabel("Default forward port").fill("9190");
   await page.getByRole("button", { name: "Save draft" }).click();
   await page.getByRole("link", { name: "Edit draft" }).click();
   failNextActivation = true;
   await page.getByRole("button", { name: "Save and apply" }).click();
   await expect(page.getByText("Activation failed")).toBeVisible();
   expect(drafts).toHaveLength(0);
-  expect(hosts.find(({ object }) => object.spec.domain === "app.example.com")?.object.spec.forward_port).toBe(9190);
-  expect(activeHosts.find(({ object }) => object.spec.domain === "app.example.com")?.object.spec.forward_port).toBe(9090);
+  expect(hosts.find(({ object }) => object.spec.domains.includes("app.example.com"))?.object.spec.forward_port).toBe(9190);
+  expect(activeHosts.find(({ object }) => object.spec.domains.includes("app.example.com"))?.object.spec.forward_port).toBe(9090);
   await page.goto("/proxy-hosts");
   await expect(page.getByText("Saved but not active").first()).toBeVisible();
 
@@ -417,13 +453,13 @@ test("Proxy Host browser lifecycle saves, applies, conflicts safely, and retains
   await page.getByRole("button", { name: "Disable" }).click();
   await expect(page.getByText("Activation failed")).toBeVisible();
   await expect(page.getByText(/previously active routing remains/)).toBeVisible();
-  expect(hosts.find(({ object }) => object.spec.domain === "app.example.com")?.object.spec.enabled).toBe(false);
-  expect(activeHosts.find(({ object }) => object.spec.domain === "app.example.com")?.object.spec.enabled).toBe(true);
+  expect(hosts.find(({ object }) => object.spec.domains.includes("app.example.com"))?.object.spec.enabled).toBe(false);
+  expect(activeHosts.find(({ object }) => object.spec.domains.includes("app.example.com"))?.object.spec.enabled).toBe(true);
 
   await expect(page.getByText("Disabled", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Enable" }).click();
   await expect(page.getByText("Proxy Host enabled. Changes active.")).toBeVisible();
-  expect(activeHosts.find(({ object }) => object.spec.domain === "app.example.com")?.object.spec.enabled).toBe(true);
+  expect(activeHosts.find(({ object }) => object.spec.domains.includes("app.example.com"))?.object.spec.enabled).toBe(true);
 
   await openActions("app.example.com");
   conflictNextActivation = true;
@@ -437,28 +473,33 @@ test("Proxy Host browser lifecycle saves, applies, conflicts safely, and retains
   await openActions("app.example.com");
   await page.getByRole("link", { name: "Duplicate" }).click();
   await expect(page.getByRole("heading", { name: "Duplicate app.example.com" })).toBeVisible();
-  await expect(page.getByLabel("Domain")).toHaveValue("app.example.com");
-  await expect(page.getByLabel("Forward port")).toHaveValue("9190");
-  await expect(page.getByLabel("Enabled")).not.toBeChecked();
+  await expect(page.getByRole("textbox", { name: "Domain 1 (primary)" })).toHaveValue("app.example.com");
+  await expect(page.getByRole("textbox", { name: "Domain 2", exact: true })).toHaveValue("www.app.example.com");
+  await expect(page.getByLabel("Default forward port")).toHaveValue("9190");
+  await expect(page.getByRole("checkbox", { name: "Enabled" })).not.toBeChecked();
   expect(hosts).toHaveLength(2);
   await page.getByRole("button", { name: "Save and apply" }).click();
   await expect(page.getByText("Validation failed")).toBeVisible();
   expect(hosts).toHaveLength(2);
-  await page.getByLabel("Domain").fill("copy.example.com");
+  await page.getByRole("textbox", { name: "Domain 1 (primary)" }).fill("copy.example.com");
+  await page.getByRole("textbox", { name: "Domain 2", exact: true }).fill("www.copy.example.com");
   await page.getByRole("button", { name: "Save and apply" }).click();
   await expect(page.getByText("Proxy Host created. Changes active.")).toBeVisible();
-  const copy = hosts.find(({ object }) => object.spec.domain === "copy.example.com");
+  const copy = hosts.find(({ object }) => object.spec.domains.includes("copy.example.com"));
+  const appOriginal = hosts.find(({ object }) => object.spec.domains.includes("app.example.com"));
   expect(copy?.object.metadata.id).not.toBe("proxy-app-example-com");
   expect(copy?.object.spec.enabled).toBe(false);
+  expect(copy?.object.spec.locations[0].id).not.toBe(appOriginal?.object.spec.locations[0].id);
+  expect(copy?.object.spec.locations[0].path).toBe("/api");
 
   await openActions("app.example.com");
   await page.getByRole("link", { name: "Edit" }).click();
-  await expect(page.getByLabel("Forward port")).toHaveValue("9190");
-  const app = hosts.find(({ object }) => object.spec.domain === "app.example.com");
+  await expect(page.getByLabel("Default forward port")).toHaveValue("9190");
+  const app = hosts.find(({ object }) => object.spec.domains.includes("app.example.com"));
   if (!app) throw new Error("expected app host");
   app.generation += 1;
   app.object.spec.forward_port = 9191;
-  await page.getByLabel("Forward port").fill("9292");
+  await page.getByLabel("Default forward port").fill("9292");
   await page.getByRole("button", { name: "Save and apply" }).click();
   await expect(page.getByText("Conflict detected")).toBeVisible();
   await expect(page.getByRole("button", { name: "Reload current state" })).toBeVisible();
@@ -473,7 +514,7 @@ test("Proxy Host browser lifecycle saves, applies, conflicts safely, and retains
   await page.getByRole("button", { name: "Delete" }).click();
   await expect(page.getByText("Proxy Host deleted. Changes active.")).toBeVisible();
   expect(deleteRequests).toBe(1);
-  expect(hosts.some(({ object }) => object.spec.domain === "copy.example.com")).toBe(false);
+  expect(hosts.some(({ object }) => object.spec.domains.includes("copy.example.com"))).toBe(false);
 });
 
 test("Proxy Host destructive controls require exact permissions", async ({ page }) => {
@@ -489,7 +530,7 @@ test("Proxy Host destructive controls require exact permissions", async ({ page 
         api_version: "v1",
         metadata: { id: "proxy-example", owner_id: "uid-1000" },
         spec: {
-          domain: "example.test",
+          domains: ["example.test"],
           forward_host: "127.0.0.1",
           forward_port: 8080,
           forward_protocol: "http",
@@ -507,6 +548,35 @@ test("Proxy Host destructive controls require exact permissions", async ({ page 
   await expect(page.getByRole("link", { name: "Duplicate" })).toHaveCount(0);
 });
 
+test("Proxy Host managed HTTPS rejects an uncovered multi-domain set without activation", async ({ page }) => {
+  await mockApi(page);
+  let activationAttempted = false;
+  await page.route("**/v1/proxy-hosts", async (route) => {
+    if (route.request().method() === "GET") return json(route, []);
+    const object = route.request().postDataJSON() as { spec: { domains: string[] } };
+    expect(object.spec.domains).toEqual(["covered.example.test", "uncovered.example.test"]);
+    return json(route, {
+      error: { code: "certificate_coverage_failed", message: "certificate coverage", details: [], request_id: "test" },
+    }, 422);
+  });
+  await page.route("**/v1/config/typed-candidates/*/activate", (route) => {
+    activationAttempted = true;
+    return json(route, {});
+  });
+
+  await page.goto("/proxy-hosts/new");
+  await page.getByRole("textbox", { name: "Domain 1 (primary)" }).fill("covered.example.test");
+  await page.getByRole("button", { name: "Add domain" }).click();
+  await page.getByRole("textbox", { name: "Domain 2", exact: true }).fill("uncovered.example.test");
+  await page.getByLabel("Default forward host or IP").fill("127.0.0.1");
+  await page.locator('select[name="automatic_https"]').selectOption("managed");
+  await page.getByRole("button", { name: "Save and apply" }).click();
+  await expect(page.getByText("Certificate does not cover every domain")).toBeVisible();
+  await expect(page.getByText(/covered\.example\.test, uncovered\.example\.test/)).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Domain 2", exact: true })).toHaveValue("uncovered.example.test");
+  expect(activationAttempted).toBeFalsy();
+});
+
 test("Proxy Host draft actions remain visible without activation permission", async ({ page }) => {
   await mockApi(page, {
     ...adminSession,
@@ -519,7 +589,7 @@ test("Proxy Host draft actions remain visible without activation permission", as
       api_version: "v1",
       metadata: { id: "proxy-draft-only", owner_id: "uid-1000" },
       spec: {
-        domain: "draft-only.example.test",
+        domains: ["draft-only.example.test"],
         forward_host: "127.0.0.1",
         forward_port: 8080,
         forward_protocol: "http",
@@ -558,7 +628,7 @@ test("Proxy Host recovery-required response reports uncertainty and blocks mutat
       api_version: "v1",
       metadata: { id: "proxy-recovery", owner_id: "uid-1000" },
       spec: {
-        domain: "recovery.example.test",
+        domains: ["recovery.example.test"],
         forward_host: "127.0.0.1",
         forward_port: 8080,
         forward_protocol: "http",
@@ -614,7 +684,7 @@ test("Proxy Host audit failures distinguish saved and active outcomes", async ({
       api_version: "v1",
       metadata: { id: "proxy-audit", owner_id: "uid-1000" },
       spec: {
-        domain: "audit.example.test",
+        domains: ["audit.example.test"],
         forward_host: "127.0.0.1",
         forward_port: 8080,
         forward_protocol: "http",
